@@ -1,4 +1,5 @@
 // electron-main.js — IMARA LINKS Desktop App
+require('dotenv').config();                // Load .env before any other require
 const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');

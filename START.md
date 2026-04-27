@@ -1,309 +1,158 @@
-# ✅ CLEANUP COMPLETE - Ready to Use!
+# IMARA LINKS — How to Run
 
-## What's Left (Clean & Essential)
+## Two ways to run
 
-```
-imara/
-├── 📖 GUIDE.md                    ← ONE COMPREHENSIVE GUIDE (READ THIS)
-├── 📖 README.md                   ← Overview
-│
-├── 🚀 Electron App
-│   ├── electron-main.js           ← Desktop app launcher
-│   ├── electron-builder.yml       ← Build config
-│   ├── preload.js                 ← IPC security bridge
-│   └── electron-is-dev.js         ← Dev detection
-│
-├── 🛠️ Backend (API)
-│   ├── server.js                  ← Express server
-│   ├── package.json               ← Dependencies
-│   ├── db/sqlite-schema.js        ← SQLite database
-│   ├── middleware/                ← Auth, validation
-│   ├── routes/                    ← API endpoints
-│   └── scripts/                   ← Database utilities
-│
-├── 🎨 Frontend (UI)
-│   ├── index.html, login.html, etc.
-│   ├── shared.js, shared.css
-│   └── All pages working
-│
-├── ⚙️ Configuration
-│   ├── .env                       ← Settings
-│   ├── .github/workflows/         ← Auto-build
-│   └── assets/                    ← Icons
-│
-└── 🗄️ .git/                       ← Version control
-```
-
-**Total Files:** Essential files only  
-**Documentation:** 1 comprehensive guide (GUIDE.md)  
-**Clutter:** Completely removed
+| Mode | Command | Use for |
+|------|---------|---------|
+| **Electron app** | `npm run electron-dev` | Normal daily use — opens a desktop window |
+| **Backend only** | `cd backend && npm start` | API-only / headless / testing |
 
 ---
 
-## 🚀 Quick Start (30 seconds)
+## Prerequisites
+
+- **Node.js 18+** — download from https://nodejs.org (LTS version)
+- **Windows** — the Electron desktop app targets Windows; backend-only works on any OS
+
+Check your version:
+```
+node --version    # should print v18.x.x or higher
+npm --version
+```
+
+---
+
+## First-time setup
 
 ```bash
-# Navigate to project
-cd "c:\Users\Admin\Desktop\My systems\imara"
+# 1. Enter the project folder
+cd imara-fixed          # (or wherever you unzipped it)
 
-# Install & run
+# 2. Install all dependencies (takes ~1 min, only needed once)
+cd backend
 npm install
+cd ..
+
+# 3. Start the Electron desktop app
+cd backend
 npm run electron-dev
 ```
 
-**That's it!** The app will start with:
-- ✅ Electron window
-- ✅ SQLite database auto-initialized
-- ✅ Login screen ready
-- ✅ DevTools open for debugging
+That's it. On first launch the app will:
+- Create the database file at `C:\Users\<you>\.imara\imara.db`
+- Create all tables automatically
+- Seed one default owner account
 
-**Login credentials:**
-- Username: `owner`
-- Password: `owner1234`
-
----
-
-## 🧪 Test Everything (Following GUIDE.md)
-
-The comprehensive **GUIDE.md** contains:
-
-✅ **Quick Start** - Get running in 5 minutes  
-✅ **Testing Everything** - Full testing checklist  
-✅ **Building Installer** - Create .exe  
-✅ **Deploying Updates** - Push to GitHub  
-✅ **Project Structure** - What's where  
-✅ **Configuration** - How to customize  
-✅ **Troubleshooting** - Common issues & fixes  
-✅ **Performance Targets** - What to expect  
-✅ **Security Checklist** - Before deployment  
-✅ **Quick Reference** - Commands & paths  
+**Default login credentials:**
+```
+Username:  owner
+Password:  owner1234
+```
+Change this password immediately after first login (top-right menu → Change Password).
 
 ---
 
-## 📋 Testing Checklist (5 min)
+## Running backend-only (no desktop window)
 
-Follow this to verify everything works:
+Useful if you want to access the app from a browser or test API calls:
 
-### Step 1: Database
 ```bash
-npm run electron-dev
-# ✅ App launches
-# ✅ Backend starts
-# ✅ Database created at ~/.imara/imara.db
+cd backend
+npm start
 ```
 
-### Step 2: Login
-```
-Username: owner
-Password: owner1234
-# ✅ Dashboard loads
-```
+Then open your browser at: **http://localhost:3001**
 
-### Step 3: Create Invoice
-```
-Dashboard → Invoices → New Invoice
-Fill form → Save
-# ✅ Invoice created successfully
-```
-
-### Step 4: Check All Features
-```
-✅ Dashboard - displays data
-✅ Daily - can enter data
-✅ Invoices - working
-✅ Inventory - working
-✅ Reports - working
-✅ Settings - working
-```
-
-### Step 5: Verify API
-```
-Browser: http://localhost:9000/health
-# ✅ Returns: {"status":"ok","timestamp":"..."}
-```
+Health check: http://localhost:3001/health should return `{"status":"ok"}`
 
 ---
 
-## 📦 Build & Deploy
+## Electron mode — what's happening under the hood
 
-### Build Installer
+When you run `npm run electron-dev`, the Electron process:
+1. Loads `.env` from the project root
+2. Initialises the SQLite database (`~/.imara/imara.db`)
+3. Starts an embedded Express server on **port 9000**
+4. Opens a desktop window pointing to `http://localhost:9000`
+
+All API calls go to `http://localhost:9000/api/...`
+
+---
+
+## Port reference
+
+| Mode | Frontend | API |
+|------|----------|-----|
+| Electron | http://localhost:9000 | http://localhost:9000/api |
+| Backend-only | http://localhost:3001 | http://localhost:3001/api |
+
+---
+
+## Environment variables (`.env`)
+
+The `.env` file lives in the project root. Key settings:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DATABASE_TYPE` | `local` | `local` = SQLite, `neon` = PostgreSQL |
+| `JWT_SECRET` | (see file) | Change this before sharing with anyone |
+| `NODE_ENV` | `development` | Set to `production` for release builds |
+
+---
+
+## Build a Windows installer
+
 ```bash
+cd backend
 npm run build
-# Creates: dist/IMARA-LINKS-Setup-2.0.0.exe
 ```
 
-### Deploy to Users
-```bash
-git tag v2.0.0
-git push origin v2.0.0
-# GitHub auto-builds and releases
-# Users can download from GitHub
-```
+Output: `backend/dist/IMARA-LINKS-Setup-2.0.0.exe`
 
-### Update Users
-```bash
-# Make changes
-git add . && git commit -m "fix: issue"
-git push origin main
+Share this `.exe` with users. They double-click it to install — no Node.js needed on their machine.
 
-# Create new version
+---
+
+## Releasing a new version (GitHub auto-build)
+
+```bash
+git add .
+git commit -m "release: v2.0.1 - description"
 git tag v2.0.1
-git push origin v2.0.1
-# Users get auto-update notification
+git push origin main --tags
 ```
 
----
-
-## 📖 How to Use GUIDE.md
-
-The **GUIDE.md** is your complete reference:
-
-1. **First Time?** → Read "Quick Start"
-2. **Want to Test?** → Follow "Testing Everything Works"
-3. **Build Installer?** → See "Building the Installer"
-4. **Deploy Updates?** → Check "Deploying Updates to Users"
-5. **Something Broken?** → Look in "Troubleshooting"
-6. **Need Command?** → Find in "Quick Reference"
+GitHub Actions will automatically build the Windows installer and attach it to a GitHub Release. Users with the app installed will see an auto-update prompt.
 
 ---
 
-## ✨ What You Have Now
+## Troubleshooting
 
-### ✅ Complete System
-- Local SQLite database
-- Electron desktop app
-- Express REST API
-- Responsive frontend
-- Auto-update system
+**"JWT_SECRET environment variable is required"**
+→ The `.env` file is missing or not being loaded. Make sure `.env` exists in the project root (not inside `backend/`).
 
-### ✅ Ready to Deploy
-- GitHub Actions workflow configured
-- Electron-builder for installers
-- Automatic releases from tags
-- Auto-update checking built-in
+**"Cannot find module 'sqlite3'"**
+→ Run `cd backend && npm install`
 
-### ✅ Tested & Working
-- Database initializes automatically
-- All tables created with indexes
-- Default user created (owner/owner1234)
-- All routes functional
-- Frontend loads correctly
+**White screen / blank window**
+→ The backend didn't start in time. Wait 3 seconds and press `Ctrl+R` in the app window to reload, or check the terminal for error messages.
 
-### ✅ Documented
-- One comprehensive guide (GUIDE.md)
-- Quick reference sections
-- Testing checklist
-- Troubleshooting section
-- Performance metrics
+**Port 9000 already in use**
+→ Another process is using port 9000. Kill it or restart your machine.
+
+**Database errors on first run**
+→ Delete `C:\Users\<you>\.imara\imara.db` and restart — it will be recreated fresh.
+
+**App opens but login fails with "Internal server error"**
+→ Check the terminal — look for a SQL error. If you see `no such column` or `syntax error`, the database migration may need to run. Delete the `.imara` folder and restart.
 
 ---
 
-## 🎯 Next Steps
-
-### Option 1: Quick Test (10 min)
-```bash
-npm install
-npm run electron-dev
-# Login and test features
-```
-
-### Option 2: Full Deployment (30 min)
-```bash
-npm install
-npm run electron-dev        # Test
-npm run build               # Create installer
-git add . && git commit -m "Release v2.0.0"
-git tag v2.0.0
-git push origin v2.0.0      # Auto-builds and deploys
-```
-
-### Option 3: Just Deploy (5 min)
-```bash
-npm install
-npm run build
-# Share dist/IMARA-LINKS-Setup-2.0.0.exe with users
-```
-
----
-
-## 📁 Files at a Glance
-
-| File | Purpose |
-|------|---------|
-| **GUIDE.md** | Everything you need to know |
-| **README.md** | System overview |
-| **.env** | Configuration settings |
-| **electron-main.js** | Electron entry point |
-| **backend/server.js** | Express API server |
-| **backend/db/sqlite-schema.js** | Database layer |
-| **frontend/** | All HTML/CSS/JS files |
-| **.github/workflows/build.yml** | GitHub auto-build |
-| **electron-builder.yml** | Installer config |
-
----
-
-## 💡 Key Commands
-
-```bash
-npm install              # Install dependencies
-npm run electron-dev    # Start development
-npm run build           # Build installer
-npm start               # Run backend only
-```
-
----
-
-## 🔗 Important Locations
+## File locations
 
 ```
-Database:        ~/.imara/imara.db
-Frontend:        http://localhost:9000
-API:             http://localhost:9000/api/
-Dev Tools:       F12 in app
-Configuration:   .env file
-Build Output:    dist/IMARA-LINKS-Setup-2.0.0.exe
+Project root       — wherever you unzipped imara-fixed/
+Database file      — C:\Users\<you>\.imara\imara.db
+Logs               — printed to terminal during dev
+Build output       — backend/dist/
 ```
-
----
-
-## ✅ Quality Check
-
-All systems verified:
-
-✅ SQLite database layer complete  
-✅ Electron app launcher working  
-✅ Express server running  
-✅ Frontend loading correctly  
-✅ Authentication functional  
-✅ All routes responsive  
-✅ Database auto-initializing  
-✅ Default user created  
-✅ All tables with indexes  
-✅ ACID transactions enabled  
-✅ Error handling complete  
-✅ GitHub Actions configured  
-✅ Electron-builder ready  
-✅ Documentation comprehensive  
-
----
-
-## 🎉 You're All Set!
-
-Everything is clean, simple, and ready to use.
-
-**Start here:**
-
-1. Read the first section of **GUIDE.md** (2 min)
-2. Run `npm install && npm run electron-dev` (3 min)
-3. Login and test (5 min)
-4. Deploy when ready
-
-**That's it!** 🚀
-
----
-
-**Version:** 2.0.0  
-**Status:** ✅ Production Ready  
-**Cleanup:** ✅ Complete  
-
-**Enjoy your clean, working system!** 💯
