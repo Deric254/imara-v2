@@ -17,12 +17,20 @@ jobs:
       with:
         node-version: '18'
 
-    - name: Install backend dependencies
+    # Step 1: Install root-level node_modules (express, sqlite3, etc.)
+    # electron-builder's "app": ".." points here, so node_modules must exist here.
+    - name: Install root dependencies
+      run: npm install
+      working-directory: .
+
+    # Step 2: Install backend devDependencies (electron, electron-builder, nodemon)
+    - name: Install backend dev dependencies
       run: npm install
       working-directory: backend
 
+    # Step 3: Build the Windows installer from the backend folder
     - name: Build Windows installer
-      run: npm run electron-build:win
+      run: npm run build
       working-directory: backend
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
