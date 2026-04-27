@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "electron-dev": "electron .",
-    "electron-build": "electron-builder",
+    "electron-dev": "electron ..",
+    "electron-build": "electron-builder --config",
     "electron-build:win": "electron-builder --win",
     "electron-build:mac": "electron-builder --mac",
     "electron-build:linux": "electron-builder --linux",
@@ -17,32 +17,48 @@
   "build": {
     "appId": "com.imara.links",
     "productName": "IMARA LINKS",
-    "files": [
-      "server.js",
-      "electron-main.js",
-      "db/**/*",
-      "middleware/**/*",
-      "routes/**/*",
-      "frontend/**/*",
-      "node_modules/**/*",
-      "package.json"
-    ],
     "directories": {
-      "buildResources": "assets"
+      "app": "..",
+      "buildResources": "../assets",
+      "output": "dist"
     },
+    "files": [
+      "electron-main.js",
+      "electron-is-dev.js",
+      "preload.js",
+      "backend/db/**/*",
+      "backend/middleware/**/*",
+      "backend/routes/**/*",
+      "backend/package.json",
+      "frontend/**/*",
+      "assets/**/*",
+      "node_modules/**/*",
+      "!node_modules/.cache/**/*",
+      "!**/*.map",
+      "!**/*.md",
+      "!**/.git/**/*"
+    ],
     "win": {
       "target": [
         "nsis",
         "portable"
       ],
-      "certificateFile": null
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "IMARA LINKS"
+      "shortcutName": "IMARA LINKS",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Deric254",
+      "repo": "imara"
     }
   },
   "dependencies": {

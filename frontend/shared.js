@@ -1,9 +1,19 @@
 // shared.js — IMARA LINKS v3 (stable auth, ACID-aware)
+// API base: in Electron the server runs on localhost:9000.
+// In standalone browser mode it runs on localhost:3001.
+// We detect by checking if we're served from port 9000 (Electron) or 3001 (standalone).
 const API = (typeof window !== 'undefined' && window.API_BASE)
   ? window.API_BASE
-  : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-      ? 'http://localhost:3001/api'
-      : 'https://imara-links-api.onrender.com/api');
+  : (() => {
+      if (typeof window === 'undefined') return 'http://localhost:9000/api';
+      const port = window.location.port;
+      const host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1') {
+        // Use the same port we were served from — works for both Electron (9000) and standalone (3001)
+        return `http://${host}:${port || 9000}/api`;
+      }
+      return 'https://imara-links-api.onrender.com/api';
+    })();
 
 const Store = {
   get token() { return localStorage.getItem('il_token'); },

@@ -16,10 +16,8 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: backend/package-lock.json
 
-    - name: Install dependencies
+    - name: Install backend dependencies
       run: npm install
       working-directory: backend
 
@@ -29,9 +27,9 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload Release Asset
+    - name: Upload Release
       uses: softprops/action-gh-release@v2
       with:
-        files: backend/dist/IMARA-LINKS-Setup-*.exe
+        files: backend/dist/*.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
