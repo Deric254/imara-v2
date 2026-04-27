@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Users IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+const me = requireAuth(['owner','admin']);
+if (!me) throw '';
+const pg = renderLayout('users.html');
+
+pg.innerHTML = `
+<div class="section-header">
+  <div class="section-title">User Management</div>
+  <button class="btn btn-primary btn-sm" onclick="showAddModal()">+ Add User</button>
+</div>
+
+<div class="table-wrap">
+  <table><thead><tr>
+    <th>Name</th><th>Username</th><th>Role</th><th>Contact</th><th>Status</th><th>Since</th><th>Actions</th>
+  </tr></thead>
+  <tbody id="uTable"><tr class="loading-row"><td colspan="7"><div class="spinner"></div></td></tr></tbody>
+  </table>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-overlay" id="addModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">Add User</div>
+    <div class="form-row">
+      <div class="form-group"><label class="label">Full Name *</label><input class="input" id="am_name" placeholder="Full name"></div>
+      <div class="form-group"><label class="label">Username *</label><input class="input" id="am_user" placeholder="username"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="label">Password *</label><input class="input" type="password" id="am_pass" placeholder="Min 8 chars"></div>
+      <div class="form-group">
+        <label class="label">Role *</label>
+        <select class="input" id="am_role">
+          <option value="knuckler">Knuckler</option>
+          <option value="operator">Operator</option>
+          ${me.role === 'owner' ? '<option value="admin">Admin</option>' : ''}
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="label">Phone</label><input class="input" id="am_phone" placeholder="+254..." type="tel"></div>
+      <div class="form-group"><label class="label">Email</label><input class="input" id="am_email" placeholder="email@example.com" type="email"></div>
+    </div>
+    <div id="am_err" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('addModal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="addUser()">Create User</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit User Modal (admin/owner editing any user) -->
+<div class="modal-overlay" id="editModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">Edit User</div>
+    <input type="hidden" id="em_id">
+    <div class="form-row">
+      <div class="form-group"><label class="label">Full Name *</label><input class="input" id="em_name" placeholder="Full name"></div>
+      <div class="form-group">
+        <label class="label">Username *</label>
+        <input class="input" id="em_user" placeholder="username" ${me.role !== 'owner' ? 'disabled style="opacity:.65;cursor:not-allowed;background:var(--g50)"' : ''}>
+        <div id="em_user_note" style="font-size:0.7rem;color:var(--muted);margin-top:0.3rem;display:${me.role === 'owner' ? 'none' : 'block'}">Only the System Owner can change usernames.</div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="label">Phone</label><input class="input" id="em_phone" placeholder="+254..." type="tel"></div>
+      <div class="form-group"><label class="label">Email</label><input class="input" id="em_email" placeholder="email@example.com" type="email"></div>
+    </div>
+    <div id="em_err" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('editModal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div class="modal-overlay" id="resetModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">Reset Password</div>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">Resetting password for: <strong id="rm_name"></strong></div>
+    <input type="hidden" id="rm_id">
+    <div class="form-group"><label class="label">New Password *</label><input class="input" type="password" id="rm_pass" placeholder="Min 8 chars"></div>
+    <div id="rm_err" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('resetModal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="doReset()">Reset Password</button>
+    </div>
+  </div>
+</div>
+`;
+
+async function load() {
+  try {
+    const users = await api('GET', '/users');
+    const tb    = document.getElementById('uTable');
+    if (!users || !users.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="empty"><div class="empty-text">No users found</div></td></tr>';
+      return;
+    }
+    tb.innerHTML = users.map(u => {
+      const isMe          = u.id === me.id;
+      const canDeactivate = !isMe && u.role !== 'owner' && !(u.role === 'admin' && me.role !== 'owner');
+      const canEdit       = u.role !== 'owner' || me.role === 'owner';
+      const statusBadge   = u.active
+        ? '<span class="badge badge-green">Active</span>'
+        : '<span class="badge badge-red">Inactive</span>';
+      const roleBadge     = {
+        owner: '<span class="badge badge-green">Owner</span>',
+        admin: '<span class="badge badge-blue">Admin</span>',
+        knuckler: '<span class="badge badge-orange">Knuckler</span>',
+        operator: '<span class="badge badge-purple">Operator</span>',
+      }[u.role] || u.role;
+
+      const contact = [u.phone, u.email].filter(Boolean).join(' · ') || '<span style="color:var(--muted);font-size:.8rem">—</span>';
+
+      const actions = [];
+      if (canEdit)
+        actions.push(`<button class="btn btn-secondary btn-sm" onclick='showEdit(${JSON.stringify({id:u.id,full_name:u.full_name,username:u.username,phone:u.phone||"",email:u.email||""})})'>Edit</button>`);
+      // Admin can issue a reset token for the owner (normal reset-pwd is blocked for owner if caller is admin)
+      if (u.role === 'owner' && me.role === 'admin') {
+        actions.push(`<button class="btn btn-secondary btn-sm" onclick="issueOwnerReset()" title="Generate a one-time token the owner can use to set a new password">🔑 Issue Reset</button>`);
+      } else {
+        actions.push(`<button class="btn btn-secondary btn-sm" onclick="showReset(${u.id},'${escHtml(u.full_name).replace(/'/g,"\\'")}')">Reset Pwd</button>`);
+      }
+      if (canDeactivate && u.active)
+        actions.push(`<button class="btn btn-danger btn-sm" onclick="toggleUser(${u.id},0,'${escHtml(u.full_name).replace(/'/g,"\\'")}')">Deactivate</button>`);
+      if (!u.active)
+        actions.push(`<button class="btn btn-secondary btn-sm" onclick="toggleUser(${u.id},1,'${escHtml(u.full_name).replace(/'/g,"\\'")}')">Activate</button>`);
+
+      return `<tr style="${!u.active?'opacity:.5':''}">
+        <td><strong>${escHtml(u.full_name)}</strong>${isMe?' <span style="font-size:.7rem;color:var(--g500)">(you)</span>':''}</td>
+        <td class="mono">${escHtml(u.username)}</td>
+        <td>${roleBadge}</td>
+        <td style="font-size:.78rem">${contact}</td>
+        <td>${statusBadge}</td>
+        <td class="mono" style="font-size:.8rem">${u.created_at?.slice(0,10)||'—'}</td>
+        <td style="display:flex;gap:.35rem;flex-wrap:wrap">${actions.join('')}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    showToast(e.error || 'Failed to load users', 'error');
+  }
+}
+
+function showAddModal() {
+  ['am_name','am_user','am_pass','am_phone','am_email'].forEach(id => document.getElementById(id).value = '');
+  showErr('am_err','');
+  document.getElementById('addModal').style.display = 'flex';
+}
+
+async function addUser() {
+  showErr('am_err','');
+  const full_name = document.getElementById('am_name').value.trim();
+  const username  = document.getElementById('am_user').value.trim();
+  const password  = document.getElementById('am_pass').value;
+  const role      = document.getElementById('am_role').value;
+  const phone     = document.getElementById('am_phone').value.trim();
+  const email     = document.getElementById('am_email').value.trim();
+  if (!full_name) return showErr('am_err','Full name required');
+  if (!username || username.length < 3) return showErr('am_err','Username min 3 chars');
+  if (!password || password.length < 8) return showErr('am_err','Password min 8 chars');
+  try {
+    await api('POST', '/users', { full_name, username, password, role, phone, email });
+    showToast(`User ${username} created`);
+    document.getElementById('addModal').style.display = 'none';
+    load();
+  } catch(e) { showErr('am_err', e.error || (e.errors?.[0]?.msg) || 'Failed'); }
+}
+
+function showEdit(u) {
+  document.getElementById('em_id').value    = u.id;
+  document.getElementById('em_name').value  = u.full_name;
+  document.getElementById('em_user').value  = u.username;
+  document.getElementById('em_phone').value = u.phone;
+  document.getElementById('em_email').value = u.email;
+  showErr('em_err','');
+  document.getElementById('editModal').style.display = 'flex';
+}
+
+async function saveEdit() {
+  showErr('em_err','');
+  const id        = document.getElementById('em_id').value;
+  const full_name = document.getElementById('em_name').value.trim();
+  const username  = document.getElementById('em_user').value.trim();
+  const phone     = document.getElementById('em_phone').value.trim();
+  const email     = document.getElementById('em_email').value.trim();
+  
+  if (!full_name) return showErr('em_err','Full name required');
+  if (me.role === 'owner' && (!username || username.length < 3)) return showErr('em_err','Username min 3 chars');
+
+  try {
+    const payload = { full_name, phone, email };
+    if (me.role === 'owner') payload.username = username;
+
+    await api('PATCH', `/users/${id}`, payload);
+    showToast('User profile updated');
+    document.getElementById('editModal').style.display = 'none';
+    load();
+  } catch(e) { showErr('em_err', e.error || 'Failed'); }
+}
+
+function showReset(id, name) {
+  document.getElementById('rm_id').value       = id;
+  document.getElementById('rm_name').textContent = name;
+  document.getElementById('rm_pass').value     = '';
+  showErr('rm_err','');
+  document.getElementById('resetModal').style.display = 'flex';
+}
+
+async function doReset() {
+  showErr('rm_err','');
+  const id   = document.getElementById('rm_id').value;
+  const pass = document.getElementById('rm_pass').value;
+  if (!pass || pass.length < 8) return showErr('rm_err','Min 8 characters');
+  try {
+    await api('POST', `/users/${id}/reset-password`, { new_password: pass });
+    showToast('Password reset successfully');
+    document.getElementById('resetModal').style.display = 'none';
+  } catch(e) { showErr('rm_err', e.error||'Failed'); }
+}
+
+async function toggleUser(id, activate, name) {
+  const action = activate ? 'activate' : 'deactivate';
+  if (!activate && !confirm(`Deactivate ${name}? They will not be able to log in.`)) return;
+  try {
+    await api('PATCH', `/users/${id}/${action}`);
+    showToast(`User ${activate ? 'activated' : 'deactivated'}`);
+    load();
+  } catch(e) { showToast(e.error||'Failed', 'error'); }
+}
+
+load();
+
+async function issueOwnerReset() {
+  if (!confirm('Generate a one-time reset token for the Owner?\n\nThe token expires in 30 minutes. Give it to the owner to use on the login screen.')) return;
+  try {
+    const r = await api('POST', '/users/owner/admin-reset');
+    showOwnerTokenModal(r.reset_token, r.expires_in_minutes);
+  } catch(e) { showToast(e.error || 'Failed to generate token', 'error'); }
+}
+
+function showOwnerTokenModal(token, mins) {
+  document.getElementById('ownerTokenValue').textContent = token;
+  document.getElementById('ownerTokenMins').textContent = mins;
+  document.getElementById('ownerTokenModal').style.display = 'flex';
+}
+
+function copyOwnerToken() {
+  const t = document.getElementById('ownerTokenValue').textContent;
+  navigator.clipboard.writeText(t).then(() => showToast('Token copied to clipboard')).catch(() => {
+    // fallback
+    const el = document.createElement('textarea');
+    el.value = t; document.body.appendChild(el); el.select();
+    document.execCommand('copy'); document.body.removeChild(el);
+    showToast('Token copied');
+  });
+}
+</script>
+
+<!-- Owner Reset Token Modal -->
+<div id="ownerTokenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border-radius:16px;padding:2rem;width:100%;max-width:460px;margin:1rem;box-shadow:var(--shadow-md);box-sizing:border-box">
+    <div style="font-size:1.05rem;font-weight:700;color:var(--ink);margin-bottom:1rem">🔑 Owner Reset Token</div>
+    <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;font-size:.83rem;color:#92400e">
+      ⚠️ Share this token with the owner now — it is shown only once and expires in <strong><span id="ownerTokenMins"></span> minutes</strong>.
+    </div>
+    <div style="background:var(--g50);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;font-family:monospace;font-size:.78rem;word-break:break-all;color:var(--ink)" id="ownerTokenValue"></div>
+    <p style="font-size:.82rem;color:var(--muted);margin-bottom:1.25rem">
+      The owner goes to the login page → clicks 🔑 → selects "Use admin token" → pastes this token and sets a new password.
+    </p>
+    <div style="display:flex;gap:.5rem">
+      <button class="btn btn-secondary" onclick="document.getElementById('ownerTokenModal').style.display='none'" style="flex:1">Close</button>
+      <button class="btn btn-primary" onclick="copyOwnerToken()" style="flex:1">📋 Copy Token</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

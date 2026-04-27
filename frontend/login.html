@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IMARA LINKS Sign In</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+html {
+  scroll-behavior: smooth;
+}
+body {
+  margin: 0; padding: 0; min-height: 100vh;
+  font-family: var(--font); background: var(--bg);
+  overflow-x: hidden;
+}
+
+.login-container {
+  display: flex; min-height: 100vh; width: 100%;
+}
+
+.login-left {
+  flex: 1; background: var(--bg); display: flex; flex-direction: column; 
+  justify-content: center; align-items: center;
+  padding: 2.5rem 2rem; max-width: 520px; box-sizing: border-box;
+}
+
+.login-left-content {
+  width: 100%; max-width: 400px; display: flex; flex-direction: column;
+}
+
+.login-right {
+  flex: 1.2; background: var(--g900); 
+  background-image: url('welcome.png');
+  background-size: cover; background-position: center; position: relative;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh;
+}
+
+.login-right::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(8, 61, 40, 0.85) 0%, rgba(8, 61, 40, 0.6) 100%);
+}
+
+.login-right::after {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at center, transparent 0%, rgba(8, 61, 40, 0.3) 100%);
+}
+
+.right-panel-content {
+  position: relative; z-index: 2; text-align: center; color: white;
+  padding: 4rem 4rem 8rem 4rem;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.decorative-logo {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  opacity: 0.4;
+  pointer-events: none;
+  user-select: none;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.2));
+  z-index: 1;
+}
+
+.decorative-logo.top-left {
+  top: 2rem;
+  left: 2rem;
+  width: 50px;
+  height: 50px;
+  transform: rotate(-15deg);
+}
+
+.decorative-logo.top-right {
+  top: 2rem;
+  right: 2rem;
+  width: 40px;
+  height: 40px;
+  transform: rotate(20deg);
+}
+
+.decorative-logo.bottom-left {
+  bottom: 2rem;
+  left: 2rem;
+  width: 55px;
+  height: 55px;
+  transform: rotate(10deg);
+}
+
+.decorative-logo.bottom-right {
+  bottom: 2rem;
+  right: 2rem;
+  width: 55px;
+  height: 55px;
+  transform: rotate(-25deg);
+}
+
+
+.right-panel-title {
+  font-family: var(--font-display); font-size: 3.5rem; font-weight: 700;
+  margin-bottom: 1.5rem; color: white; text-shadow: 0 2px 15px rgba(0,0,0,0.4);
+  line-height: 1.1;
+}
+
+.right-panel-slogan {
+  font-size: 1.6rem; font-weight: 400; opacity: 0.95;
+  font-style: italic; margin-bottom: 3rem; line-height: 1.4;
+  text-shadow: 0 1px 8px rgba(0,0,0,0.3);
+}
+
+.right-panel-features {
+  display: flex; flex-direction: column; gap: 1.5rem; max-width: 350px; margin: 0 auto;
+}
+
+.feature-item {
+  display: flex; align-items: center; gap: 1.2rem; font-size: 1.1rem;
+  opacity: 0.9; padding: 0.8rem 1rem; background: rgba(255,255,255,0.1);
+  border-radius: 16px; backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.feature-item:hover {
+  opacity: 1; background: rgba(255,255,255,0.15);
+  transform: translateY(-2px);
+}
+
+.feature-icon {
+  width: 32px; height: 32px; background: var(--g400); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; color: white; flex-shrink: 0;
+}
+
+.login-logo-container {
+  display: none;
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.login-title {
+  font-size: 3.2rem;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 0.8rem 0;
+  font-family: var(--font-display);
+  letter-spacing: -0.5px;
+}
+
+.login-slogan {
+  font-size: 1.2rem;
+  color: var(--muted);
+  margin: 0;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.login-card {
+  background: var(--surface); border-radius: 20px; padding: 2rem;
+  box-shadow: var(--shadow-md); border: 1px solid var(--border);
+}
+
+.login-card h2 {
+  font-size: 1.1rem; font-weight: 600; color: var(--ink); margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.form-group {
+  margin-bottom: 1.25rem;
+}
+
+.form-group label {
+  display: block; font-size: 0.9rem; font-weight: 500; color: var(--ink); margin-bottom: 0.5rem;
+}
+
+.input {
+  width: 100%; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 12px;
+  font-size: 0.95rem; transition: all 0.2s ease; box-sizing: border-box;
+  background: var(--surface);
+}
+
+.input:focus {
+  outline: none; border-color: var(--g400); box-shadow: 0 0 0 3px rgba(58, 181, 125, 0.1);
+}
+
+.btn-primary {
+  width: 100%; padding: 0.875rem; background: var(--g500); color: white; border: none;
+  border-radius: 12px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-primary:hover {
+  background: var(--g600); transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.login-footer {
+  text-align: center; margin-top: 1.5rem; margin-bottom: 1rem; padding-bottom: 0.5rem;
+}
+
+.login-footer a {
+  color: var(--g500); text-decoration: none; font-size: 0.9rem; padding: 0.5rem 0; display: inline-block;
+}
+
+.login-footer a:hover {
+  text-decoration: underline; color: var(--g600);
+}
+
+.alert {
+  padding: 0.75rem; border-radius: 12px; margin-bottom: 1rem; font-size: 0.9rem;
+  display: none;
+}
+
+.alert-err {
+  background: rgba(220, 38, 38, 0.1); border: 1px solid var(--red); color: var(--red);
+}
+
+/* Hide mobile content on desktop */
+.mobile-right-panel {
+  display: none;
+}
+
+/* Small screen heights (laptops) */
+@media (max-height: 800px) {
+  .login-logo-container {
+    width: 120px; height: 120px;
+  }
+  .login-logo-fb {
+    height: 120px; font-size: 2.5rem;
+  }
+  .right-panel-title {
+    font-size: 2.5rem;
+  }
+  .right-panel-slogan {
+    font-size: 1.2rem; margin-bottom: 2rem;
+  }
+  .login-left {
+    padding: 1.5rem;
+  }
+}
+
+@media (max-height: 650px) {
+  .login-title {
+    font-size: 2.4rem;
+  }
+  
+  .login-slogan {
+    font-size: 1rem;
+  }
+  .login-title {
+    font-size: 1.4rem;
+  }
+  .login-slogan {
+    margin-bottom: 1rem;
+  }
+  .login-card {
+    padding: 1.25rem;
+  }
+  .login-brand {
+    margin-bottom: 1rem !important;
+  }
+  .right-panel-features {
+    gap: 0.75rem;
+  }
+  .feature-item {
+    padding: 0.5rem; font-size: 0.9rem;
+  }
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .login-container {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+    padding: 1rem 0;
+  }
+  
+  .login-left {
+    max-width: 100%;
+    padding: 1.5rem;
+    height: auto;
+    min-height: auto;
+    justify-content: flex-start;
+    box-sizing: border-box;
+    overflow: visible;
+  }
+  
+  .login-right {
+    display: none;
+  }
+  
+  .mobile-right-panel {
+    display: block;
+  }
+  
+  .login-logo-container {
+    width: 160px;
+    height: 160px;
+    margin: 0 auto 1rem;
+  }
+  
+  .login-logo-fb {
+    font-size: 3rem;
+    height: 160px;
+  }
+  
+  .login-slogan {
+    margin-bottom: 1.5rem;
+  }
+  
+  /* Mobile right panel content */
+  .mobile-right-panel {
+    background: var(--g900);
+    background-image: url('welcome.png');
+    background-size: cover; background-position: center; position: relative;
+    border-radius: var(--radius); margin-top: 1rem; padding: 1rem;
+    overflow: visible;
+    margin-bottom: 2rem;
+  }
+  
+  .mobile-right-panel::before {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(8, 61, 40, 0.85) 0%, rgba(8, 61, 40, 0.6) 100%);
+  }
+  
+  .mobile-right-panel::after {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(circle at center, transparent 0%, rgba(8, 61, 40, 0.3) 100%);
+  }
+  
+  .mobile-right-content {
+    position: relative; z-index: 2; text-align: center; color: white;
+  }
+  
+  .mobile-right-title {
+    font-family: var(--font-display); font-size: 1.5rem; font-weight: 700;
+    margin-bottom: 0.75rem; color: white; text-shadow: 0 2px 15px rgba(0,0,0,0.4);
+    line-height: 1.1;
+  }
+  
+  .mobile-right-slogan {
+    font-size: 1rem; font-weight: 400; opacity: 0.95;
+    font-style: italic; margin-bottom: 1rem; line-height: 1.4;
+    text-shadow: 0 1px 8px rgba(0,0,0,0.3);
+  }
+  
+  .mobile-features {
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  
+  .mobile-feature-item {
+    display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem;
+    opacity: 0.9; padding: 0.5rem; background: rgba(255,255,255,0.1);
+    border-radius: 12px; backdrop-filter: blur(10px);
+  }
+  
+  .mobile-feature-icon {
+    width: 24px; height: 24px; background: var(--g400); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8rem; color: white; flex-shrink: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding-bottom: 2rem;
+  }
+  
+  .login-left {
+    padding: 1rem;
+  }
+  
+  .login-title {
+    font-size: 2rem;
+  }
+  
+  .login-slogan {
+    font-size: 0.9rem;
+  }
+  
+  .login-slogan {
+    margin-bottom: 1rem;
+  }
+  
+  .login-card {
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+  }
+  
+  .login-footer {
+    margin-top: 1.5rem;
+    padding-bottom: 1rem;
+  }
+  
+  .input {
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+}
+</style>
+</head>
+<body>
+<div class="login-container">
+  <div class="login-left">
+    <div class="login-left-content">
+      <div class="login-brand">
+        <div class="login-title" id="bizName">IMARA LINKS</div>
+        <div class="login-slogan" id="bizSlogan">Built strong by imara</div>
+      </div>
+
+      <div class="login-card">
+        <h2>Sign in to your account</h2>
+        <div id="sessionNotice" class="alert" style="display:none;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;font-size:.875rem"></div>
+        <div id="loginErr" class="alert alert-err">
+          <span id="loginErrMsg"></span>
+        </div>
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input class="input" id="username" type="text" placeholder="Enter username" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <div style="position: relative;">
+            <input class="input" id="password" type="password" placeholder="Enter password" autocomplete="current-password">
+            <button type="button" id="togglePassword" onclick="togglePasswordVisibility()" 
+                    style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); 
+                           background: none; border: none; cursor: pointer; padding: 4px; 
+                           color: var(--g500); font-size: 16px;" title="Toggle password visibility">
+              👁️
+            </button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.5rem; margin-top: 1.25rem;">
+          <button class="btn btn-primary" id="loginBtn" onclick="doLogin()" style="flex: 3;">
+            Sign In
+          </button>
+          <button class="btn btn-secondary" onclick="showForgot()" style="flex: 1; display: flex; align-items: center; justify-content: center; background: var(--g50); color: var(--g500); border: 1px solid var(--border);" title="Forgot Password">
+            🔑
+          </button>
+        </div>
+      </div>
+      <div class="login-footer">
+        <a href="manual.html" target="_blank" style="display:flex; align-items:center; justify-content:center; gap:0.5rem; color:var(--g500); font-weight:600; text-decoration:none;">
+          <span>📖</span> View System User Manual
+        </a>
+        <div style="font-size:0.75rem; color:var(--muted); margin-top:0.5rem">Operational Intelligence & Data Integrity Guide</div>
+      </div>
+      
+      <!-- Mobile right panel content -->
+      <div class="mobile-right-panel">
+        <div class="mobile-right-content">
+          <div class="mobile-right-title" id="mobileBizName">IMARA LINKS</div>
+          <div class="mobile-right-slogan" id="mobileBizSlogan"></div>
+          <div class="mobile-features">
+            <div class="mobile-feature-item">
+              <div class="mobile-feature-icon">📊</div>
+              <span>Track Production & Sales in Real-Time</span>
+            </div>
+            <div class="mobile-feature-item">
+              <div class="mobile-feature-icon">📦</div>
+              <span>Smart Inventory Management System</span>
+            </div>
+            <div class="mobile-feature-item">
+              <div class="mobile-feature-icon">📈</div>
+              <span>Advanced Business Analytics & Reports</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <div class="login-right">
+    <div class="right-panel-content">
+      <img src="logo.png" alt="" class="decorative-logo top-left">
+      <img src="logo.png" alt="" class="decorative-logo top-right">
+      <img src="logo.png" alt="" class="decorative-logo bottom-left">
+      <img src="logo.png" alt="" class="decorative-logo bottom-right">
+      
+      <div class="right-panel-title" id="rightBizName">IMARA LINKS</div>
+      <div class="right-panel-slogan" id="rightBizSlogan"></div>
+      <div class="right-panel-features">
+        <div class="feature-item">
+          <div class="feature-icon">📊</div>
+          <span>Track Production & Sales in Real-Time</span>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">📦</div>
+          <span>Smart Inventory Management System</span>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">📈</div>
+          <span>Advanced Business Analytics & Reports</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="shared.js"></script>
+<script>
+// Redirect only if token exists AND is not expired
+// Decode JWT expiry without a library — payload is base64url segment [1]
+(function checkExistingSession() {
+  // Show a notice if we were redirected here due to session expiry
+  const reason = new URLSearchParams(window.location.search).get('reason');
+  if (reason === 'session_expired') {
+    const notice = document.getElementById('sessionNotice');
+    if (notice) {
+      notice.textContent = 'Your session has expired. Please sign in again.';
+      notice.style.display = 'block';
+    }
+    // Clean the URL without reloading
+    history.replaceState(null, '', 'login.html');
+  }
+
+  const token = Store.token;
+  const user  = Store.user;
+  if (!token || !user) return; // nothing stored → stay on login page
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    const nowSec  = Math.floor(Date.now() / 1000);
+    if (payload.exp && payload.exp > nowSec) {
+      // Token is genuinely valid — redirect to appropriate home
+      const roleHome = { owner: 'dashboard.html', admin: 'system-health.html', knuckler: 'daily.html', operator: 'daily.html' };
+      location.href = roleHome[user.role] || 'daily.html';
+    } else {
+      // Token is expired — wipe it so the login form is shown cleanly
+      Store.clear();
+    }
+  } catch(_) {
+    // Malformed token — clear and show login
+    Store.clear();
+  }
+})();
+
+// Load public branding
+fetch(API + '/auth/public-config')
+  .then(r => r.json())
+  .then(cfg => {
+    const bizName = cfg.business_name || 'IMARA LINKS';
+    const bizSlogan = cfg.business_slogan || 'Built strong by imara';
+    
+    // Update Document Title
+    document.title = `${bizName} — Sign In`;
+    
+    // Update All Brand Names
+    document.querySelectorAll('[id*="BizName"]').forEach(el => el.textContent = bizName);
+    
+    // Update Slogans
+    document.getElementById('bizSlogan').textContent = bizSlogan;
+    document.getElementById('rightBizSlogan').textContent = bizSlogan;
+    document.getElementById('mobileBizSlogan').textContent = bizSlogan;
+    
+    // Update Fallback Logo Text
+    const fallback = document.getElementById('loginLogoFallback');
+    if (fallback) fallback.textContent = bizName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  })
+  .catch(err => {
+    console.error('Branding load error:', err);
+    const defaultSlogan = 'Built strong by imara';
+    document.getElementById('bizSlogan').textContent = defaultSlogan;
+    document.getElementById('rightBizSlogan').textContent = defaultSlogan;
+    document.getElementById('mobileBizSlogan').textContent = defaultSlogan;
+  });
+
+document.getElementById('username').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('password').focus();
+});
+document.getElementById('password').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+function togglePasswordVisibility() {
+  const passwordInput = document.getElementById('password');
+  const toggleBtn = document.getElementById('togglePassword');
+  
+  if (passwordInput.type === 'password') {
+    passwordInput.type = 'text';
+    toggleBtn.textContent = '🙈';
+    toggleBtn.title = 'Hide password';
+  } else {
+    passwordInput.type = 'password';
+    toggleBtn.textContent = '👁️';
+    toggleBtn.title = 'Show password';
+  }
+}
+
+async function doLogin() {
+  const btn    = document.getElementById('loginBtn');
+  const u      = document.getElementById('username').value.trim();
+  const p      = document.getElementById('password').value;
+  const errDiv = document.getElementById('loginErr');
+  const errMsg = document.getElementById('loginErrMsg');
+
+  if (!u || !p) {
+    errMsg.textContent = 'Please enter username and password';
+    errDiv.style.display = 'block';
+    return;
+  }
+
+  btn.disabled    = true;
+  btn.textContent = 'Signing in…';
+  errDiv.style.display = 'none';
+
+  try {
+    const data = await api('POST', '/auth/login', { username: u, password: p });
+    Store.set(data.token, data.user);
+    // Land directly on the right page for each role — no intermediate redirect
+    const roleHome = {
+      owner:    'dashboard.html',
+      admin:    'system-health.html',
+      knuckler: 'daily.html',
+      operator: 'daily.html',
+    };
+    location.href = roleHome[data.user.role] || 'daily.html';
+  } catch(e) {
+    errMsg.textContent   = e.error || 'Login failed. Please try again.';
+    errDiv.style.display = 'block';
+    btn.disabled    = false;
+    btn.textContent = 'Sign In';
+  }
+}
+</script>
+<!-- ── Forgot Password Modal ──────────────────────────────────────────────── -->
+<div id="forgotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border-radius:16px;padding:2rem;width:100%;max-width:420px;margin:1rem;box-shadow:var(--shadow-md);box-sizing:border-box">
+    <div style="font-size:1.05rem;font-weight:700;color:var(--ink);margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between">
+      <span>🔑 Reset Password</span>
+      <button onclick="closeForgot()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:var(--muted);padding:0;line-height:1">&times;</button>
+    </div>
+
+    <!-- Step 1: enter username -->
+    <div id="fp_step1">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">Enter your username to retrieve your security questions.</p>
+      <div class="form-group">
+        <label class="form-group label" style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">Username</label>
+        <input class="input" id="fp_username" type="text" placeholder="Your username" autocomplete="username">
+      </div>
+      <div id="fp_err1" style="color:var(--red);font-size:.82rem;margin-bottom:.5rem;display:none"></div>
+      <div style="display:flex;gap:.5rem;margin-top:1rem">
+        <button class="btn btn-secondary" onclick="closeForgot()" style="flex:1">Cancel</button>
+        <button class="btn btn-primary" onclick="fpLoadQuestions()" style="flex:2">Continue</button>
+      </div>
+      <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);font-size:.8rem;color:var(--muted);text-align:center">
+        No security questions set? <strong>Contact your admin</strong> — they can issue a reset token for you.
+      </div>
+    </div>
+
+    <!-- Step 2: answer questions -->
+    <div id="fp_step2" style="display:none">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">Answer all three questions exactly as you set them (not case-sensitive).</p>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.82rem;font-weight:600;color:var(--ink);display:block;margin-bottom:.3rem" id="fp_q1label"></label>
+        <input class="input" id="fp_a1" type="text" placeholder="Your answer" autocomplete="off">
+      </div>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.82rem;font-weight:600;color:var(--ink);display:block;margin-bottom:.3rem" id="fp_q2label"></label>
+        <input class="input" id="fp_a2" type="text" placeholder="Your answer" autocomplete="off">
+      </div>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.82rem;font-weight:600;color:var(--ink);display:block;margin-bottom:.3rem" id="fp_q3label"></label>
+        <input class="input" id="fp_a3" type="text" placeholder="Your answer" autocomplete="off">
+      </div>
+      <div id="fp_err2" style="color:var(--red);font-size:.82rem;margin-bottom:.5rem;display:none"></div>
+      <div style="display:flex;gap:.5rem;margin-top:1rem">
+        <button class="btn btn-secondary" onclick="fpBack()" style="flex:1">Back</button>
+        <button class="btn btn-primary" onclick="fpVerify()" style="flex:2">Verify Answers</button>
+      </div>
+    </div>
+
+    <!-- Step 3: set new password -->
+    <div id="fp_step3" style="display:none">
+      <div style="background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;font-size:.83rem;color:#166534">
+        ✅ Identity verified. Enter your new password below.
+      </div>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">New Password (min 8 characters)</label>
+        <input class="input" id="fp_newpass" type="password" placeholder="New password" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">Confirm New Password</label>
+        <input class="input" id="fp_confpass" type="password" placeholder="Confirm password" autocomplete="new-password">
+      </div>
+      <div id="fp_err3" style="color:var(--red);font-size:.82rem;margin-bottom:.5rem;display:none"></div>
+      <button class="btn btn-primary" onclick="fpSetPassword()" style="width:100%;margin-top:.5rem">Set New Password</button>
+    </div>
+
+    <!-- Step 4: use admin-issued token -->
+    <div id="fp_step_token" style="display:none">
+      <p style="font-size:.85rem;color:var(--muted);margin-bottom:1rem">Your admin has issued a reset token. Paste it below along with your new password.</p>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">Reset Token</label>
+        <input class="input" id="fp_admintoken" type="text" placeholder="Paste token from admin" autocomplete="off" style="font-family:monospace;font-size:.8rem">
+      </div>
+      <div class="form-group" style="margin-bottom:.85rem">
+        <label style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">New Password (min 8 characters)</label>
+        <input class="input" id="fp_token_newpass" type="password" placeholder="New password" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label style="font-size:.85rem;font-weight:500;display:block;margin-bottom:.4rem">Confirm New Password</label>
+        <input class="input" id="fp_token_confpass" type="password" placeholder="Confirm password" autocomplete="new-password">
+      </div>
+      <div id="fp_err_token" style="color:var(--red);font-size:.82rem;margin-bottom:.5rem;display:none"></div>
+      <div style="display:flex;gap:.5rem;margin-top:.5rem">
+        <button class="btn btn-secondary" onclick="fpShowTokenStep(false)" style="flex:1">Back</button>
+        <button class="btn btn-primary" onclick="fpUseAdminToken()" style="flex:2">Reset Password</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let _fpResetToken = null;
+
+function showForgot() {
+  _fpResetToken = null;
+  ['fp_username','fp_a1','fp_a2','fp_a3','fp_newpass','fp_confpass','fp_admintoken','fp_token_newpass','fp_token_confpass'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  ['fp_err1','fp_err2','fp_err3','fp_err_token'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  fpShowStep('step1');
+  document.getElementById('forgotModal').style.display = 'flex';
+}
+function closeForgot() { document.getElementById('forgotModal').style.display = 'none'; }
+function fpShowStep(step) {
+  ['fp_step1','fp_step2','fp_step3','fp_step_token'].forEach(id => {
+    document.getElementById(id).style.display = 'none';
+  });
+  document.getElementById('fp_' + step).style.display = 'block';
+}
+function fpBack() { fpShowStep('step1'); }
+function fpShowTokenStep(show) { fpShowStep(show ? 'step_token' : 'step1'); }
+
+function fpErr(step, msg) {
+  const el = document.getElementById('fp_err' + step);
+  el.textContent = msg; el.style.display = msg ? 'block' : 'none';
+}
+
+async function fpLoadQuestions() {
+  const u = document.getElementById('fp_username').value.trim();
+  if (!u) return fpErr('1', 'Please enter your username.');
+  try {
+    const r = await fetch(API + '/auth/forgot-password/questions?username=' + encodeURIComponent(u));
+    const d = await r.json();
+    if (!d.found) {
+      // No questions set — go straight to the admin-token path
+      fpShowStep('step_token');
+      document.getElementById('fp_err_token').textContent = d.message || 'No security questions set. Use an admin-issued token below.';
+      document.getElementById('fp_err_token').style.display = 'block';
+      return;
+    }
+    document.getElementById('fp_q1label').textContent = d.questions[0];
+    document.getElementById('fp_q2label').textContent = d.questions[1];
+    document.getElementById('fp_q3label').textContent = d.questions[2];
+    fpShowStep('step2');
+  } catch(e) { fpErr('1', 'Could not connect. Please try again.'); }
+}
+
+async function fpVerify() {
+  const u  = document.getElementById('fp_username').value.trim();
+  const a1 = document.getElementById('fp_a1').value.trim();
+  const a2 = document.getElementById('fp_a2').value.trim();
+  const a3 = document.getElementById('fp_a3').value.trim();
+  if (!a1 || !a2 || !a3) return fpErr('2', 'Please answer all three questions.');
+  try {
+    const r = await fetch(API + '/auth/forgot-password/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, a1, a2, a3 })
+    });
+    const d = await r.json();
+    if (!r.ok) return fpErr('2', d.error || 'Answers incorrect. Please try again.');
+    _fpResetToken = d.reset_token;
+    fpShowStep('step3');
+  } catch(e) { fpErr('2', 'Could not connect. Please try again.'); }
+}
+
+async function fpSetPassword() {
+  const np = document.getElementById('fp_newpass').value;
+  const cp = document.getElementById('fp_confpass').value;
+  if (!np || np.length < 8) return fpErr('3', 'Password must be at least 8 characters.');
+  if (np !== cp) return fpErr('3', 'Passwords do not match.');
+  try {
+    const r = await fetch(API + '/auth/forgot-password/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_token: _fpResetToken, new_password: np })
+    });
+    const d = await r.json();
+    if (!r.ok) return fpErr('3', d.error || 'Reset failed. Token may have expired.');
+    closeForgot();
+    // Show success in the login error area
+    const errDiv = document.getElementById('loginErr');
+    const errMsg = document.getElementById('loginErrMsg');
+    errDiv.style.background = 'rgba(22,163,74,.1)';
+    errDiv.style.borderColor = 'var(--g400)';
+    errDiv.style.color = 'var(--g600)';
+    errMsg.textContent = '✅ Password reset successfully. Please log in with your new password.';
+    errDiv.style.display = 'block';
+  } catch(e) { fpErr('3', 'Could not connect. Please try again.'); }
+}
+
+async function fpUseAdminToken() {
+  const token = document.getElementById('fp_admintoken').value.trim();
+  const np    = document.getElementById('fp_token_newpass').value;
+  const cp    = document.getElementById('fp_token_confpass').value;
+  if (!token) return fpErr('_token', 'Please paste the reset token from your admin.');
+  if (!np || np.length < 8) return fpErr('_token', 'Password must be at least 8 characters.');
+  if (np !== cp) return fpErr('_token', 'Passwords do not match.');
+  try {
+    const r = await fetch(API + '/auth/forgot-password/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_token: token, new_password: np })
+    });
+    const d = await r.json();
+    if (!r.ok) return fpErr('_token', d.error || 'Reset failed. Token may be invalid or expired.');
+    closeForgot();
+    const errDiv = document.getElementById('loginErr');
+    const errMsg = document.getElementById('loginErrMsg');
+    errDiv.style.background = 'rgba(22,163,74,.1)';
+    errDiv.style.borderColor = 'var(--g400)';
+    errDiv.style.color = 'var(--g600)';
+    errMsg.textContent = '✅ Password reset successfully. Please log in with your new password.';
+    errDiv.style.display = 'block';
+  } catch(e) { fpErr('_token', 'Could not connect. Please try again.'); }
+}
+</script>
+</body>
+</html>

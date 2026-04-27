@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Backup IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+  .backup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1rem; }
+  @media(max-width:768px) { .backup-grid { grid-template-columns: 1fr; } }
+  .backup-card { padding: 2rem; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .backup-icon { font-size: 3rem; margin-bottom: 1rem; color: var(--g500); }
+  .backup-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; color: var(--ink); }
+  .backup-desc { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; line-height: 1.5; }
+  .file-input-wrap { position: relative; width: 100%; margin-bottom: 1rem; }
+  .file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .file-label { display: block; padding: 0.75rem; border: 2px dashed var(--border); border-radius: var(--radius); color: var(--muted); font-size: 0.85rem; }
+  .file-input-wrap:hover .file-label { border-color: var(--g400); color: var(--ink); }
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+async function init() {
+  const me = requireAuth(['owner', 'admin']);
+  if (!me) return;
+  const pg = renderLayout('backup.html');
+
+  pg.innerHTML = `
+<div class="backup-grid">
+  <!-- EXPORT -->
+  <div class="card backup-card">
+    <div class="backup-icon">📤</div>
+    <div class="backup-title">Export Database</div>
+    <div class="backup-desc">
+      Download a complete backup of your system data (JSON format). 
+      Keep this file safe as it contains all your records, users, and configuration.
+      <br><strong>Available to Admins and System Owners.</strong>
+    </div>
+    <button class="btn btn-primary" onclick="exportBackup()" id="exportBtn" style="width:100%">
+      Download Backup File
+    </button>
+  </div>
+
+  <!-- IMPORT -->
+  <div class="card backup-card" id="importCard">
+    <div class="backup-icon">📥</div>
+    <div class="backup-title">Restore Database</div>
+    <div class="backup-desc">
+      Replace the current system data with a previously exported backup file.
+      <br><strong style="color:var(--red)">Warning: This will overwrite all current data!</strong>
+    </div>
+    
+    <div class="file-input-wrap">
+      <input type="file" class="file-input" id="backupFile" accept=".json" onchange="updateFileName(this)">
+      <div class="file-label" id="fileLabel">Click or drag backup file here (.json)</div>
+    </div>
+
+    <button class="btn btn-secondary" onclick="importBackup()" id="importBtn" style="width:100%; background:var(--surface); color:var(--ink); border:1px solid var(--border)">
+      Restore System Data
+    </button>
+    <div id="import_err" class="err" style="margin-top:1rem"></div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:1.5rem">
+  <div class="card-title">Security & Best Practices</div>
+  <ul style="padding-left:1.25rem; color:var(--muted); font-size:0.85rem; line-height:1.6">
+    <li>Regularly export backups and store them in a safe, offline location.</li>
+    <li>Restoring data is a permanent action and cannot be undone.</li>
+    <li>Only System Owners and Admins can perform database restorations.</li>
+    <li>Ensure the system is idle before performing a restore to prevent data loss.</li>
+  </ul>
+</div>
+`;
+
+  // Only owner and admins can import
+  if (me.role !== 'owner' && me.role !== 'admin') {
+    const importCard = document.getElementById('importCard');
+    importCard.style.opacity = '0.5';
+    importCard.style.pointerEvents = 'none';
+    const desc = importCard.querySelector('.backup-desc');
+    desc.innerHTML = '<strong style="color:var(--red)">Access Restricted: Only System Owners and Admins can restore data.</strong>';
+  } else {
+    const importCard = document.getElementById('importCard');
+    importCard.style.opacity = '1';
+    importCard.style.pointerEvents = 'auto';
+  }
+}
+
+function updateFileName(input) {
+  const label = document.getElementById('fileLabel');
+  if (input.files && input.files[0]) {
+    label.textContent = 'Selected: ' + input.files[0].name;
+    label.style.borderColor = 'var(--g500)';
+    label.style.color = 'var(--ink)';
+  } else {
+    label.textContent = 'Click or drag backup file here (.json)';
+    label.style.borderColor = 'var(--border)';
+  }
+}
+
+async function exportBackup() {
+  const btn = document.getElementById('exportBtn');
+  btn.disabled = true;
+  btn.textContent = 'Preparing download...';
+  
+  try {
+    // We use a standard link click for download
+    const link = document.createElement('a');
+    link.href = API + '/backup/export';
+    // Add token to URL for auth
+    link.href += '?token=' + Store.token;
+    link.download = ''; 
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('Download started');
+  } catch (e) {
+    showToast('Export failed', 'error');
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = 'Download Backup File';
+    }, 2000);
+  }
+}
+
+async function importBackup() {
+  const fileInput = document.getElementById('backupFile');
+  const err = document.getElementById('import_err');
+  const btn = document.getElementById('importBtn');
+  
+  if (!fileInput.files || !fileInput.files[0]) {
+    err.textContent = 'Please select a backup file first';
+    err.style.display = 'block';
+    return;
+  }
+
+  if (!confirm('CRITICAL: This will replace ALL current data with the data from the backup file. Are you absolutely sure?')) {
+    return;
+  }
+
+  err.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Restoring system...';
+
+  try {
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    
+    reader.onload = async (e) => {
+      try {
+        const response = await fetch(API + '/backup/import', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + Store.token,
+            'Content-Type': 'application/json'
+          },
+          body: e.target.result  // raw JSON string — NOT JSON.parse()
+        });
+
+        const res = await response.json();
+        if (!response.ok) throw res;
+
+        showToast('System restored successfully!');
+        alert('System data has been restored. You will now be signed out to refresh your session.');
+        Store.clear();
+        location.href = 'login.html';
+      } catch (err_inner) {
+        err.textContent = err_inner.error || 'Restore failed';
+        err.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Restore System Data';
+      }
+    };
+
+    reader.onerror = () => {
+      err.textContent = 'Failed to read file';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Restore System Data';
+    };
+
+    reader.readAsText(file);
+  } catch (e) {
+    err.textContent = e.error || 'Restore failed';
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Restore System Data';
+  }
+}
+
+init();
+</script>
+</body>
+</html>

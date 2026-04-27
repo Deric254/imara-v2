@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daily Entry IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+.tab-bar { display:flex; gap:.25rem; background:var(--g50); border-radius:var(--radius-sm);
+           padding:.25rem; margin-bottom:1.5rem; border:1px solid var(--border); }
+.tab { flex:1; padding:.5rem; text-align:center; border-radius:6px; font-size:.85rem;
+       font-weight:500; cursor:pointer; color:var(--muted); background:none; border:none;
+       font-family:var(--font); transition:all .15s; }
+.tab.active { background:var(--surface); color:var(--g700); box-shadow:var(--shadow); }
+.section { display:none; } .section.active { display:block; }
+.item-row { display:grid; grid-template-columns:1fr 1fr auto; gap:.75rem; align-items:end; margin-bottom:.75rem; }
+.add-item-btn { background:var(--g50); border:1px dashed var(--g300,#70cfa4); border-radius:var(--radius-sm);
+                width:100%; padding:.6rem; font-family:var(--font); font-size:.85rem; color:var(--g700);
+                cursor:pointer; transition:all .15s; margin-bottom:1rem; }
+.add-item-btn:hover { background:var(--g100); }
+.remove-btn { background:#fef2f2; border:1px solid #fecaca; border-radius:var(--radius-sm);
+              color:var(--red); font-size:1rem; width:34px; height:36px; cursor:pointer; flex-shrink:0; }
+.summary-box { background:var(--g50); border:1px solid var(--g100); border-radius:var(--radius-sm);
+               padding:.85rem 1rem; margin:1rem 0; font-size:.85rem; }
+.summary-row { display:flex; justify-content:space-between; padding:.2rem 0; }
+.summary-row strong { font-family:var(--font-mono); }
+
+/* Autocomplete styles */
+.suggestions-dropdown {
+  font-family: var(--font);
+  font-size: 0.85rem;
+}
+
+.suggestion-item {
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.15s ease;
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.suggestion-item:hover {
+  background-color: var(--g50);
+}
+
+.suggestion-item.selected {
+  background-color: var(--g500);
+  color: white;
+}
+
+.suggestion-item strong {
+  font-weight: 600;
+  color: var(--g700);
+}
+
+.suggestion-item.selected strong {
+  color: white;
+}
+
+.suggestion-empty {
+  padding: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .item-row { grid-template-columns: 1fr; gap: 0.5rem; border: 1px solid var(--border); padding: 1rem; border-radius: var(--radius-sm); position: relative; }
+  .remove-btn { position: absolute; top: 0.5rem; right: 0.5rem; }
+  #sale_items_container > div { grid-template-columns: 1fr 1fr !important; gap: .4rem !important; border: 1px solid var(--border); padding: .7rem; border-radius: var(--radius-sm); position: relative; margin-bottom: .75rem; }
+  #sale_items_container > div select:first-child { grid-column: 1 / -1; }
+  #sale_items_container > div .remove-btn { position: absolute; top: .4rem; right: .4rem; }
+}
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+const user = requireAuth();
+if (!user) throw '';
+const pg = renderLayout('daily.html');
+
+let suppliers=[], pieceTypes=[], productionStaff=[], cfg={};
+let _activeTab = 'purchases';
+let _prodRates = { wire_cost_per_kg: 0, operator_rate: 0, knuckler_rate: 0, sack_rate: 0 };
+
+// ── Global submission locks — ONE active submission at a time, period ────────
+// These are set TRUE the moment a submit starts and only cleared AFTER the form
+// is fully wiped AND the tab has reloaded. A fast user cannot trigger a second
+// submit because the lock check happens at the very top of each function.
+let _purchaseSubmitting = false;
+let _productionSubmitting = false;
+let _saleSubmitting = false;
+
+// ── Real-time warning cache & debounce ──────────────────────────────────────
+// Cache gauge stock so we don't hit the API on every keystroke
+let _gaugeStockCache = null;
+let _gaugeStockExpiry = 0;
+const GAUGE_CACHE_MS = 8000; // refresh every 8 seconds max
+
+async function getGaugeStockCached() {
+  if (_gaugeStockCache && Date.now() < _gaugeStockExpiry) return _gaugeStockCache;
+  try {
+    _gaugeStockCache = await api('GET', '/daily/gauge-stock');
+    _gaugeStockExpiry = Date.now() + GAUGE_CACHE_MS;
+  } catch(e) { _gaugeStockCache = _gaugeStockCache || []; }
+  return _gaugeStockCache || [];
+}
+
+// Cache available inventory for sales check
+let _invCache = null;
+let _invCacheExpiry = 0;
+const INV_CACHE_MS = 8000;
+
+async function getAvailableInventoryCached() {
+  if (_invCache && Date.now() < _invCacheExpiry) return _invCache;
+  try {
+    _invCache = await api('GET', '/daily/available-inventory');
+    _invCacheExpiry = Date.now() + INV_CACHE_MS;
+  } catch(e) { _invCache = _invCache || []; }
+  return _invCache || [];
+}
+
+// Invalidate caches after a successful save so next check is fresh
+function invalidateStockCaches() {
+  _gaugeStockCache = null; _gaugeStockExpiry = 0;
+  _invCache = null; _invCacheExpiry = 0;
+}
+
+// Generic debounce
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+function getBreakEvenPrice(piece) {
+  if (!piece) return 0;
+  const wire = (parseFloat(_prodRates.wire_cost_per_kg) || 0) * (parseFloat(piece.weight_kg) || 0);
+  const making = (parseFloat(_prodRates.operator_rate) || 0)
+    + (parseFloat(_prodRates.knuckler_rate) || 0)
+    + ((parseFloat(_prodRates.sack_rate) || 0) * 2);
+  const transport = parseFloat(getConfig('transport_to_market', 0)) || 0;
+  return wire + making + transport;
+}
+
+function setSalePriceExample(piece) {
+  const priceInput = document.getElementById('s_price');
+  if (!priceInput) return;
+  const be = getBreakEvenPrice(piece);
+  priceInput.placeholder = piece ? `e.g. ${fmt(be, 2)} per piece` : 'Enter price';
+  priceInput.title = piece ? `Suggested per-piece figure: KES ${fmt(be, 2)}` : '';
+}
+
+pg.innerHTML = `
+<div id="blockedAlert" class="alert alert-err" style="display:none">
+  <span class="alert-icon">⛔</span>
+  <div><strong>Blocked:</strong> Yesterday's data must be entered before today's entry.</div>
+</div>
+
+<div id="mainContent" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <div>
+      <div class="section-title">Daily Data Entry</div>
+      <div style="font-size:.8rem;color:var(--muted)" id="entryDateLabel"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem">
+      <label class="label" style="margin:0">Date:</label>
+      <input type="date" class="input" id="entryDate" style="width:auto" value="${today()}">
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab active" onclick="switchTab('purchases')">📦 Purchases</button>
+    <button class="tab" onclick="switchTab('production')">⚙ Production</button>
+    <button class="tab" onclick="switchTab('sales')">💰 Sales</button>
+  </div>
+
+  <!-- PURCHASES -->
+  <div class="section active" id="tab-purchases">
+    <div class="card">
+      <div class="card-title">Purchase Entry</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="label">Supplier *</label>
+          <select class="input" id="p_supplier"></select>
+        </div>
+        <div class="form-group">
+          <label class="label">Wire Gauge</label>
+          <select class="input" id="p_gauge"></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="label">Kgs Bought *</label>
+          <input class="input" type="number" id="p_kgs" min="0" step="0.01" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="label">Cost per Kg (KES) *</label>
+          <input class="input" type="number" id="p_cost_kg" min="0" step="0.01" placeholder="0.00">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="label">Transport Cost (KES)</label>
+          <input class="input" type="number" id="p_transport" min="0" step="1" placeholder="0">
+        </div>
+        <div class="form-group"></div>
+      </div>
+      <div class="summary-box" id="p_summary" style="display:none">
+        <div class="summary-row"><span>Total Cost:</span><strong id="p_total_cost">—</strong></div>
+        <div class="summary-row"><span>Landed Cost/kg:</span><strong id="p_landed">—</strong></div>
+      </div>
+      <div id="p_err" class="err"></div>
+      <button class="btn btn-primary" onclick="submitPurchase()">Save Purchase</button>
+    </div>
+    <div style="margin-top:1.5rem">
+      <div class="section-header" style="margin-bottom:.5rem">
+        <div class="section-title" style="font-size:.9rem">Today's Purchases</div>
+        <button class="btn btn-secondary btn-sm" onclick="exportDailyCSV('purchases')" id="pExportBtn" style="display:none">📥 Export CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Supplier</th><th>Gauge</th><th>Kgs</th><th>Cost/kg</th><th>Transport</th><th>Total</th><th>Landed/kg</th>
+          ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
+        </tr></thead>
+        <tbody id="p_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?8:7}"><div class="spinner"></div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRODUCTION -->
+  <div class="section" id="tab-production">
+    <div class="card">
+      <div class="card-title">Production Entry</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="label">Calculated Wire to Deduct (kg)</label>
+          <input class="input" type="number" id="pr_kgs" readonly style="background:var(--g50);cursor:not-allowed" placeholder="Calculated from pieces">
+          <div id="pr_wire_note" style="font-size:.75rem;color:var(--g600);margin-top:.25rem">Factor of production (Weight × Pieces)</div>
+        </div>
+        <div class="form-group">
+          <label class="label">Operator</label>
+          <select class="input" id="pr_operator"><option value="">— select —</option></select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="label">Wire Gauge <span style="color:var(--red)">*</span></label>
+          <select class="input" id="pr_gauge" onchange="calcWireNeeded()"></select>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:.2rem">Gauge of wire used in this run</div>
+        </div>
+        <div class="form-group">
+          <label class="label">Knuckler</label>
+          <select class="input" id="pr_knuckler"><option value="">— select —</option></select>
+        </div>
+      </div>
+      <div id="pr_material_status" style="font-size:.75rem;margin-top:.5rem;display:none"></div>
+      <hr class="divider">
+      <div class="card-title">Pieces Produced</div>
+      <div id="pr_items"></div>
+      <button class="add-item-btn" onclick="addPrItem()">+ Add Piece Type</button>
+      <div class="summary-box" id="pr_summary" style="display:none">
+        <div class="summary-row"><span>Total Pieces:</span><strong id="pr_total_pieces">—</strong></div>
+        <div class="summary-row"><span>Expected Kgs Needed:</span><strong id="pr_expected_kgs">—</strong></div>
+        <div class="summary-row"><span>Total Production Cost:</span><strong id="pr_overhead">—</strong></div>
+        <div style="font-size:.75rem;color:var(--muted);margin-top:.5rem">Includes wire, operator, knuckler and sack costs. Rent stays in reconciliation.</div>
+      </div>
+      <div id="pr_err" class="err"></div>
+      <button class="btn btn-primary" onclick="submitProduction()">Save Production</button>
+    </div>
+    <div style="margin-top:1.5rem">
+      <div class="section-header" style="margin-bottom:.75rem">
+        <div class="section-title" style="font-size:.9rem">Today's Production</div>
+        <button class="btn btn-secondary btn-sm" onclick="exportDailyCSV('production')" id="prExportBtn" style="display:none">📥 Export CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Kgs Used</th><th>Operator</th><th>Knuckler</th><th>Pieces</th><th>Total Cost</th>
+          ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
+        </tr></thead>
+        <tbody id="pr_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?6:5}"><div class="spinner"></div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- SALES -->
+  <div class="section" id="tab-sales">
+    <div class="card">
+      <div class="card-title">Sale Entry</div>
+
+      <!-- Buyer name — shared for all items in this sale -->
+      <div class="form-group" style="margin-bottom:1rem">
+        <label class="label">Buyer Name <span style="color:var(--red)">*</span></label>
+        <div class="autocomplete-container" style="position:relative">
+          <input class="input" type="text" id="s_buyer_name" placeholder="Type customer name…" autocomplete="off" oninput="onBuyerInput(this.value)">
+          <div id="s_buyer_name_suggestions" class="suggestions-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:200px;overflow-y:auto;z-index:100;box-shadow:var(--shadow)"></div>
+        </div>
+      </div>
+
+      <!-- Column headers for item rows -->
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 34px;gap:.5rem;align-items:end;margin-bottom:.35rem;padding:0 .1rem">
+        <div style="font-size:.76rem;font-weight:600;color:var(--muted)">Piece Type <span style="color:var(--red)">*</span></div>
+        <div style="font-size:.76rem;font-weight:600;color:var(--muted)">Gauge <span style="color:var(--red)">*</span></div>
+        <div style="font-size:.76rem;font-weight:600;color:var(--muted)">Qty <span style="color:var(--red)">*</span></div>
+        <div style="font-size:.76rem;font-weight:600;color:var(--muted)">Price (KES) <span style="color:var(--red)">*</span></div>
+        <div></div>
+      </div>
+      <div id="sale_items_container"></div>
+      <button class="add-item-btn" onclick="addSaleItemRow()" id="add_sale_row_btn">+ Add Another Item</button>
+
+      <!-- Grand total preview -->
+      <div class="summary-box" id="s_summary" style="display:none;margin-top:.75rem">
+        <div class="summary-row"><span>Total Revenue:</span><strong id="s_revenue" style="color:#166534">—</strong></div>
+        <div class="summary-row"><span>Total Kgs:</span><strong id="s_kgs">—</strong></div>
+        <div class="summary-row"><span>Total Meters:</span><strong id="s_meters">—</strong></div>
+      </div>
+
+      <div id="s_err" class="err"></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.85rem">
+        <button class="btn btn-primary" onclick="submitAllSales()" id="queue_submit_btn" style="background:#083d28">✅ Submit Sale</button>
+        <button class="btn btn-secondary" onclick="resetSaleForm()">✕ Clear Form</button>
+      </div>
+    </div>
+
+    <div style="margin-top:1.5rem">
+      <div class="section-header" style="margin-bottom:.75rem">
+        <div class="section-title" style="font-size:.9rem">Today's Sales</div>
+        <button class="btn btn-secondary btn-sm" onclick="exportDailyCSV('sales')" id="sExportBtn" style="display:none">📥 Export CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Piece</th><th>Qty</th><th>Price</th><th>Revenue</th><th>Kgs</th><th>Meters</th><th>Buyer</th><th>Gauge</th>
+          ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
+        </tr></thead>
+        <tbody id="s_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?9:8}"><div class="spinner"></div></td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+// Tab switching
+function switchTab(name) {
+  _activeTab = name;
+  pg.querySelectorAll('.tab,.section').forEach(e => e.classList.remove('active'));
+  pg.querySelector(`#tab-${name}`).classList.add('active');
+  const tabs = ['purchases','production','sales'];
+  pg.querySelectorAll('.tab').forEach((t,i) => { if (tabs[i]===name) t.classList.add('active'); });
+  loadTabData(name);
+}
+
+// Live purchase summary
+['p_kgs','p_cost_kg','p_transport'].forEach(id => {
+  document.getElementById(id)?.addEventListener('input', () => {
+    const kgs = parseFloat(document.getElementById('p_kgs').value)||0;
+    const cpk = parseFloat(document.getElementById('p_cost_kg').value)||0;
+    const tr  = parseFloat(document.getElementById('p_transport').value)||0;
+    if (kgs>0||cpk>0) {
+      const total  = kgs*cpk+tr;
+      const landed = kgs>0 ? total/kgs : 0;
+      document.getElementById('p_total_cost').textContent = fmtMoney(total);
+      document.getElementById('p_landed').textContent     = fmtMoney(landed);
+      document.getElementById('p_summary').style.display  = 'block';
+    }
+  });
+});
+
+// Sale price autofill with inventory integrity check
+function fillSalePrice() {
+  const sel = document.getElementById('s_type');
+  const pt  = pieceTypes.find(p=>p.id==sel.value);
+  const priceInput = document.getElementById('s_price');
+  setSalePriceExample(pt);
+  
+  if (pt) {
+    // Check inventory availability
+    checkInventoryAvailability(pt.id);
+    
+    priceInput.value = pt.default_price || '';
+    calcSale();
+  } else {
+    priceInput.value = '';
+  }
+}
+
+// Check inventory availability for piece type BY GAUGE (legacy helper, still used by calcSale)
+async function checkInventoryAvailability(pieceTypeId) {
+  const gauge_source   = '';   // rows handle their own availability display now
+  const qty            = 0;
+  const availabilityDiv = document.getElementById('s_availability');
+  if (!availabilityDiv) return;
+  try {
+    const availableInventory = await getAvailableInventoryCached();
+    const matchingItems = (availableInventory || []).filter(inv => inv.piece_type_id === pieceTypeId);
+
+    if (!matchingItems.length) {
+      availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ No production history for this piece type</span>`;
+      availabilityDiv.style.display = 'block';
+      return;
+    }
+
+    if (gauge_source) {
+      const item = matchingItems.find(inv => inv.gauge === gauge_source);
+      if (!item) {
+        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ No stock in gauge ${gauge_source}</span>`;
+        availabilityDiv.style.display = 'block';
+        return;
+      }
+      const avail = item.available;
+      if (avail <= 0) {
+        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ Out of Stock in gauge ${gauge_source} (Produced: ${item.produced}, Sold: ${item.sold})</span>`;
+      } else if (qty > 0 && qty > avail) {
+        availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient: only ${avail} available in gauge ${gauge_source}, you need ${qty}</span>`;
+      } else if (avail < 5) {
+        availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Low Stock: ${avail} available in gauge ${gauge_source}${qty>0?' — you need '+qty:''}</span>`;
+      } else {
+        availabilityDiv.innerHTML = `<span style="color:var(--g600)">✅ ${avail} available in gauge ${gauge_source}${qty>0?' — you need '+qty:''}</span>`;
+      }
+    } else {
+      const total = matchingItems.reduce((s, inv) => s + inv.available, 0);
+      if (total <= 0) {
+        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ Out of Stock — select a gauge to see details</span>`;
+      } else if (qty > 0 && qty > total) {
+        availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient total stock: ${total} available across all gauges, you need ${qty}</span>`;
+      } else {
+        const gaugeList = matchingItems.filter(inv=>inv.available>0).map(inv=>`Gauge ${inv.gauge}: ${inv.available}`).join(' | ');
+        availabilityDiv.innerHTML = `<span style="color:var(--g600)">📦 Total: ${total} available${qty>0?' (need '+qty+')':''} — ${gaugeList}</span>`;
+      }
+    }
+    availabilityDiv.style.display = 'block';
+  } catch(e) {
+    console.error('Inventory check error:', e);
+    availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Live stock preview unavailable. Final check happens on save.</span>`;
+    availabilityDiv.style.display = 'block';
+  }
+}
+
+// Debounced version used by qty input
+const _checkInvDebounced = debounce(function() {
+  const sel = document.getElementById('s_type');
+  const pt  = pieceTypes.find(p => p.id == sel?.value);
+  if (pt) checkInventoryAvailability(pt.id);
+}, 280);
+
+function calcSale() {
+  const sel = document.getElementById('s_type');
+  const pt  = pieceTypes.find(p=>p.id==sel.value);
+  const qty = parseInt(document.getElementById('s_qty').value)||0;
+  const priceInput = document.getElementById('s_price');
+  
+  // If no price is typed here, use the saved piece price silently.
+  let price = parseFloat(priceInput.value) || 0;
+  if (!price && pt && pt.default_price) {
+    price = pt.default_price;
+  }
+  
+  if (!pt||(!qty&&!price)) { 
+    document.getElementById('s_summary').style.display='none'; 
+    return; 
+  }
+  
+  const revenue = qty * price;
+  const kgsSold = qty * pt.weight_kg;
+  const metersSold = qty * pt.length_m;
+  
+  document.getElementById('s_revenue').textContent = fmtMoney(revenue);
+  document.getElementById('s_kgs').textContent     = fmt(kgsSold,2)+' kg';
+  document.getElementById('s_meters').textContent    = fmt(metersSold,1)+' m';
+  document.getElementById('s_summary').style.display = 'block';
+}
+// Row-level change handlers replace the old single-input listener
+
+// Production items
+let prItemCount=0;
+function addPrItem() {
+  prItemCount++;
+  const div = document.createElement('div');
+  div.className='item-row'; div.id=`prItem_${prItemCount}`;
+  div.innerHTML=`
+    <div class="form-group" style="margin:0">
+      <label class="label">Piece Type</label>
+      <select class="input pr-piece" onchange="calcWireNeeded()">${pieceTypes.map(p=>`<option value="${p.id}">${escHtml(p.name)}</option>`).join('')}</select>
+    </div>
+    <div class="form-group" style="margin:0">
+      <label class="label">Pieces Produced</label>
+      <input class="input pr-qty" type="number" min="0" step="1" placeholder="0" oninput="calcWireNeeded()">
+    </div>
+    <button class="remove-btn" onclick="document.getElementById('prItem_${prItemCount}').remove();calcWireNeeded()">✕</button>`;
+  document.getElementById('pr_items').appendChild(div);
+  // Wire quantity input to live overhead calculator
+  div.querySelector('.pr-qty').addEventListener('input', calcWireNeeded);
+  div.querySelector('.pr-piece').addEventListener('change', calcWireNeeded);
+  calcWireNeeded();
+}
+
+// Calculate wire needed based on pieces produced — uses cache for real-time warnings
+function calcWireNeeded() {
+  const itemEls = document.querySelectorAll('#pr_items .item-row');
+  let totalExpectedKgs = 0;
+
+  itemEls.forEach(el => {
+    const qty = parseInt(el.querySelector('.pr-qty').value) || 0;
+    const pieceId = el.querySelector('.pr-piece').value;
+    const pt = pieceTypes.find(p=>p.id==pieceId);
+    if (pt && qty > 0) {
+      totalExpectedKgs += qty * pt.weight_kg;
+    }
+  });
+
+  // Auto-fill wire used field with expected amount
+  const wireInput = document.getElementById('pr_kgs');
+  const wireNote  = document.getElementById('pr_wire_note');
+  if (totalExpectedKgs > 0) {
+    wireInput.value = totalExpectedKgs.toFixed(2);
+    wireNote.textContent = `Strictly deducting: ${totalExpectedKgs.toFixed(2)} kg (Piece Weight × Qty)`;
+  } else {
+    wireInput.value = '';
+    wireNote.textContent = 'Calculated from pieces produced';
+  }
+
+  // Trigger overhead calculation synchronously
+  calcOverhead();
+
+  // Show live gauge-specific availability — debounced, uses cache
+  _calcWireWarningDebounced(totalExpectedKgs);
+}
+
+const _calcWireWarningDebounced = debounce(async function(totalExpectedKgs) {
+  const gauge = document.getElementById('pr_gauge')?.value || '';
+  const statusDiv = document.getElementById('pr_material_status');
+  if (!statusDiv) return;
+  if (!gauge || totalExpectedKgs <= 0) {
+    statusDiv.style.display = 'none';
+    return;
+  }
+  try {
+    const gaugeStock = await getGaugeStockCached();
+    const gs = (gaugeStock || []).find(g => g.gauge === gauge);
+    const available = gs ? parseFloat(gs.kgs_stock) : 0;
+    if (available <= 0) {
+      statusDiv.innerHTML = `<span style="color:var(--red)">❌ No wire in stock for gauge ${gauge}. Buy wire first.</span>`;
+    } else if (totalExpectedKgs > available + 0.001) {
+      statusDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient gauge ${gauge} wire: ${available.toFixed(2)} kg available, ${totalExpectedKgs.toFixed(2)} kg needed</span>`;
+    } else {
+      statusDiv.innerHTML = `<span style="color:var(--g600)">✅ Gauge ${gauge}: ${available.toFixed(2)} kg available</span>`;
+    }
+    statusDiv.style.display = 'block';
+  } catch(e) { statusDiv.style.display = 'none'; }
+}, 280);
+
+// Check raw material availability for production
+async function checkRawMaterialAvailability(kgsNeeded) {
+  try {
+    const user = Store.user;
+    const endpoint = (user.role === 'knuckler' || user.role === 'operator') ? '/inventory/worker' : '/inventory';
+    const inv = await api('GET', endpoint);
+    const rawMaterial = inv.raw_material;
+    const availabilityDiv = document.getElementById('pr_material_status');
+    
+    if (rawMaterial.remaining_kgs < kgsNeeded) {
+      availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg available, but ${kgsNeeded.toFixed(1)} kg needed</span>`;
+      availabilityDiv.style.display = 'block';
+    } else if (rawMaterial.low_stock) {
+      availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Low raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg remaining</span>`;
+      availabilityDiv.style.display = 'block';
+    } else {
+      availabilityDiv.innerHTML = `<span style="color:var(--g600)">✅ Sufficient raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg available</span>`;
+      availabilityDiv.style.display = 'block';
+    }
+  } catch(e) {
+    console.error('Raw material check error:', e);
+  }
+}
+
+// Load reference data
+async function loadRefs() {
+  PageProgress.show(10, 'Loading form data…');
+  showPageLoader('Loading data…');
+  try {
+    await loadGlobalConfig();
+
+    const [costInputsResult, suppliersResult, pieceTypesResult, productionStaffResult] = await Promise.allSettled([
+      api('GET','/daily/production-cost-inputs'),
+      api('GET','/suppliers'),
+      api('GET','/piece-types'),
+      api('GET','/workers'),
+    ]);
+
+    _prodRates = costInputsResult.status === 'fulfilled' && costInputsResult.value
+      ? costInputsResult.value
+      : _prodRates;
+    suppliers = suppliersResult.status === 'fulfilled' ? (suppliersResult.value || []) : [];
+    pieceTypes = pieceTypesResult.status === 'fulfilled' ? (pieceTypesResult.value || []) : [];
+    productionStaff = productionStaffResult.status === 'fulfilled' ? (productionStaffResult.value || []) : [];
+
+    const supSel = document.getElementById('p_supplier');
+    supSel.innerHTML = suppliers.length
+      ? suppliers.map(s=>`<option value="${s.id}">${escHtml(s.name)}</option>`).join('')
+      : '<option value="">— no suppliers —</option>';
+
+    const gaugeSel = document.getElementById('p_gauge');
+    const gauges = (getConfig('wire_gauges') || '12,14,16').split(',');
+    gaugeSel.innerHTML = gauges.map(g=>`<option value="${g.trim()}">${g.trim()}</option>`).join('');
+    const prGaugeSel = document.getElementById('pr_gauge');
+    if (prGaugeSel) {
+      prGaugeSel.innerHTML = gauges.map(g=>`<option value="${g.trim()}">${g.trim()}</option>`).join('');
+      // Invalidate gauge cache when gauge changes so status reflects new gauge immediately
+      prGaugeSel.addEventListener('change', () => { _gaugeStockCache = null; _gaugeStockExpiry = 0; });
+    }
+
+    // Load customer names for autocomplete and seed the first sale row
+    loadCustomers();
+    // Seed the first item row now that pieceTypes is loaded
+    if (!document.querySelector('#sale_items_container > div')) {
+      _saleRowCount = 0;
+      addSaleItemRow();
+    }
+
+    [document.getElementById('pr_operator'),document.getElementById('pr_knuckler')].forEach(sel=>{
+      sel.innerHTML='<option value="">— select —</option>'+
+        productionStaff.map(w=>`<option value="${w.id}">${escHtml(w.full_name)}</option>`).join('');
+    });
+
+    // Populate default values from config — updateConfigField now sets .value (not just placeholder)
+    updateConfigField('p_cost_kg', 'cost_per_kg', '0.00');
+    updateConfigField('p_transport', 'transport_cost', '0');
+
+    // If kgs already entered, re-fire live calc so summary shows immediately
+    const kgsEl = document.getElementById('p_kgs');
+    if (kgsEl && parseFloat(kgsEl.value) > 0) {
+      kgsEl.dispatchEvent(new Event('input'));
+    }
+
+    calcOverhead();
+
+    if (document.getElementById('pr_items').children.length===0) addPrItem();
+    // Initialize wire calculation
+    calcWireNeeded();
+
+    if (
+      costInputsResult.status === 'rejected' ||
+      suppliersResult.status === 'rejected' ||
+      pieceTypesResult.status === 'rejected' ||
+      productionStaffResult.status === 'rejected'
+    ) {
+      console.error('loadRefs partial failure:', {
+        costInputs: costInputsResult.status,
+        suppliers: suppliersResult.status,
+        pieceTypes: pieceTypesResult.status,
+        workers: productionStaffResult.status,
+      });
+      showToast('Some form data could not be loaded. Available data is still usable.','error');
+      PageProgress.done();
+    }
+  } catch(e) {
+    console.error('loadRefs error:',e);
+    PageProgress.error();
+    showToast('Failed to load form data','error');
+  } finally {
+    hidePageLoader();
+    PageProgress.done();
+  }
+}
+
+// Date label
+function updateDateLabel() {
+  const d = document.getElementById('entryDate').value;
+  document.getElementById('entryDateLabel').textContent = 'Entering data for: '+d;
+}
+document.getElementById('entryDate')?.addEventListener('change',()=>{
+  updateDateLabel();
+  loadTabData(_activeTab);
+});
+
+async function loadTabData(tab) {
+  const d = document.getElementById('entryDate').value;
+  PageProgress.show(15, `Loading ${tab}…`);
+  const canDelete = user.role === 'owner' || user.role === 'admin';
+
+  if (tab==='purchases') {
+    const tb = document.getElementById('p_list');
+    const exportBtn = document.getElementById('pExportBtn');
+    exportBtn.style.display = 'none';
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?8:7).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    try {
+      const rows = await api('GET',`/daily/purchases?date=${d}`);
+      window._lastPurchases = rows;
+      if (!rows||!rows.length) {
+        tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text">No purchases yet for ${d}</div></td></tr>`;
+        return;
+      }
+      exportBtn.style.display = 'block';
+      tb.innerHTML=rows.map(r=>`<tr>
+        <td>${escHtml(r.supplier_name)}</td>
+        <td>${escHtml(r.gauge || '—')}</td>
+        <td class="mono">${fmt(r.kgs_bought,1)}</td>
+        <td class="mono">${fmt(r.cost_per_kg,2)}</td>
+        <td class="mono">${fmt(r.transport_cost,2)}</td>
+        <td class="mono">${fmt(r.total_cost,2)}</td>
+        <td class="mono">${fmt(r.landed_cost_per_kg,2)}</td>
+        ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('purchases',${r.id})">✕</button></td>`:''}
+      </tr>`).join('');
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load purchases</div></td></tr>`; PageProgress.error(); return; }
+  }
+
+  if (tab==='production') {
+    const tb = document.getElementById('pr_list');
+    const exportBtn = document.getElementById('prExportBtn');
+    exportBtn.style.display = 'none';
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?6:5).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    try {
+      const rows = await api('GET',`/daily/production?date=${d}`);
+      window._lastProduction = rows;
+      if (!rows||!rows.length) {
+        tb.innerHTML=`<tr><td colspan="${canDelete?6:5}" class="empty"><div class="empty-text">No production yet for ${d}</div></td></tr>`;
+        return;
+      }
+      exportBtn.style.display = 'block';
+      tb.innerHTML=rows.map(r=>{
+        const pieces=(r.items||[]).map(i=>`${escHtml(i.piece_name)}: ${fmt(i.pieces_produced)}`).join('<br>');
+        return `<tr>
+          <td class="mono">${fmt(r.kgs_used,1)} kg</td>
+          <td>${escHtml(r.operator_name||'—')}</td>
+          <td>${escHtml(r.knuckler_name||'—')}</td>
+          <td style="font-size:.8rem">${pieces||'—'}</td>
+          <td class="mono">${fmt(r.total_cost,2)}</td>
+          ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('production',${r.id})">✕</button></td>`:''}
+        </tr>`;
+      }).join('');
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?6:5}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load production</div></td></tr>`; PageProgress.error(); return; }
+  }
+
+  if (tab==='sales') {
+    const tb = document.getElementById('s_list');
+    const exportBtn = document.getElementById('sExportBtn');
+    exportBtn.style.display = 'none';
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?9:8).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    try {
+      const rows = await api('GET',`/daily/sales?date=${d}`);
+      window._lastSales = rows;
+      if (!rows||!rows.length) {
+        tb.innerHTML=`<tr><td colspan="${canDelete?9:8}" class="empty"><div class="empty-text">No sales yet for ${d}</div></td></tr>`;
+        return;
+      }
+      exportBtn.style.display = 'block';
+      tb.innerHTML=rows.map(r=>`<tr>
+        <td>${escHtml(r.piece_name)}</td>
+        <td class="mono">${fmt(r.quantity)}</td>
+        <td class="mono">${fmt(r.selling_price,2)}</td>
+        <td class="mono">${fmt(r.revenue,2)}</td>
+        <td class="mono">${fmt(r.kgs_sold,2)}</td>
+        <td class="mono">${fmt(r.meters_sold,1)}</td>
+        <td>${escHtml(r.buyer_name || '—')}</td>
+        <td>${escHtml(r.gauge_source || '—')}</td>
+        ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('sales',${r.id})">✕</button></td>`:''}
+      </tr>`).join('');
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?9:8}" class="empty"><div class="empty-text">Error loading data</div></td></tr>`; PageProgress.error(); return; }
+  }
+  PageProgress.done();
+}
+
+async function deleteRecord(type, id) {
+  const labels = { purchases: 'purchase', production: 'production record', sales: 'sale' };
+
+  // Build context-specific confirmation with implications
+  let confirmMsg = '';
+  if (type === 'sales') {
+    const row = (window._lastSales || []).find(r => r.id === id);
+    confirmMsg = `Delete this sale?\n\n`;
+    if (row) {
+      confirmMsg += `Product: ${row.piece_name || '—'}\n`;
+      confirmMsg += `Quantity: ${row.quantity} pieces\n`;
+      confirmMsg += `Revenue: KES ${parseFloat(row.revenue || 0).toLocaleString()}\n`;
+      confirmMsg += `Buyer: ${row.buyer_name || 'Walk-in'}\n`;
+      confirmMsg += `\n⚠️  Implications:\n`;
+      confirmMsg += `• The sold stock will be restored to inventory\n`;
+      confirmMsg += `• Its auto-generated invoice will be removed (if unpaid)\n`;
+      confirmMsg += `• If the invoice has payments already collected, deletion will be blocked\n`;
+    }
+    confirmMsg += `\nThis cannot be undone. Proceed?`;
+  } else if (type === 'production') {
+    const row = (window._lastProduction || []).find(r => r.id === id);
+    confirmMsg = `Delete this production record?\n\n`;
+    if (row) {
+      confirmMsg += `Date: ${row.entry_date || '—'}\n`;
+      confirmMsg += `Wire Used: ${row.kgs_used} kg\n`;
+      confirmMsg += `\n⚠️  Implications:\n`;
+      confirmMsg += `• All pieces produced in this batch will be removed from inventory\n`;
+      confirmMsg += `• Deletion will be blocked if any pieces from this batch have been sold\n`;
+    }
+    confirmMsg += `\nThis cannot be undone. Proceed?`;
+  } else if (type === 'purchases') {
+    const row = (window._lastPurchases || []).find(r => r.id === id);
+    confirmMsg = `Delete this purchase record?\n\n`;
+    if (row) {
+      confirmMsg += `Supplier: ${row.supplier_name || '—'}\n`;
+      confirmMsg += `Wire Bought: ${row.kgs_bought} kg\n`;
+      confirmMsg += `\n⚠️  Implications:\n`;
+      confirmMsg += `• This wire will be removed from raw material stock\n`;
+      confirmMsg += `• Deletion will be blocked if this wire has already been used in production\n`;
+    }
+    confirmMsg += `\nThis cannot be undone. Proceed?`;
+  } else {
+    confirmMsg = `Delete this ${labels[type]}? This cannot be undone.`;
+  }
+
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    const result = await api('DELETE', `/daily/${type}/${id}`);
+    showToast(result.message || 'Deleted successfully', 'success', 5000);
+    // Production delete may return cost warnings (accrued wages not reversed)
+    if (result.cost_warnings && result.cost_warnings.length) {
+      result.cost_warnings.forEach((w, i) =>
+        setTimeout(() => showToast('⚠️ Cost remains: ' + w, 'warn', 8000), (i+1)*1000)
+      );
+    }
+    loadTabData(_activeTab);
+  } catch(e) {
+    // Surface exact backend integrity message — tells user exactly what is blocking and what to do
+    const msg = e.error === 'INTEGRITY_VIOLATION'
+      ? (e.message || 'This record cannot be deleted — it is linked to other data.')
+      : (e.error || e.message || 'Delete failed');
+    showToast(msg, 'error', 8000);
+  }
+}
+
+function exportDailyCSV(type) {
+  const d = document.getElementById('entryDate').value;
+  let headers, rows, filename;
+
+  if (type === 'purchases') {
+    const data = window._lastPurchases;
+    if (!data || !data.length) return;
+    headers = ['Supplier', 'Kgs', 'Cost/kg', 'Transport', 'Total', 'Landed/kg', 'Entered By'];
+    rows = data.map(r => [r.supplier_name, r.kgs_bought, r.cost_per_kg, r.transport_cost, r.total_cost, r.landed_cost_per_kg, r.entered_by_name]);
+    filename = `purchases_${d}`;
+  } else if (type === 'production') {
+    const data = window._lastProduction;
+    if (!data || !data.length) return;
+    headers = ['Kgs Used', 'Operator', 'Knuckler', 'Pieces Produced', 'Total Cost', 'Entered By'];
+    rows = data.map(r => [
+      r.kgs_used, 
+      r.operator_name || '—', 
+      r.knuckler_name || '—', 
+      (r.items || []).map(i => `${i.piece_name}: ${i.pieces_produced}`).join('; '),
+      r.total_cost,
+      r.entered_by_name
+    ]);
+    filename = `production_${d}`;
+  } else {
+    const data = window._lastSales;
+    if (!data || !data.length) return;
+    headers = ['Piece', 'Qty', 'Price', 'Revenue', 'Kgs Sold', 'Meters Sold', 'Entered By'];
+    rows = data.map(r => [
+      r.piece_name, 
+      r.quantity, 
+      r.selling_price, 
+      r.revenue, 
+      r.kgs_sold, 
+      r.meters_sold,
+      r.entered_by_name
+    ]);
+    filename = `sales_${d}`;
+  }
+
+  downloadCSV(filename, headers, rows);
+}
+
+function calcOverhead() {
+  const rates = _prodRates;
+  if (!rates) return;
+  const itemEls = document.querySelectorAll('#pr_items .item-row');
+  let totalPieces = 0;
+  let totalSacks = 0;
+  let expectedKgs = 0;
+
+  itemEls.forEach(el => {
+    const qty = parseInt(el.querySelector('.pr-qty').value) || 0;
+    if (qty > 0) {
+      totalPieces += qty;
+      totalSacks += qty * 2;
+      const pieceId = el.querySelector('.pr-piece').value;
+      const pt = pieceTypes.find(p => p.id == pieceId);
+      if (pt) expectedKgs += qty * pt.weight_kg;
+    }
+  });
+
+  const kgsUsed = parseFloat(document.getElementById('pr_kgs').value) || 0;
+  const wireCost = rates.wire_cost_per_kg * kgsUsed;
+  const opCost = rates.operator_rate * totalPieces;
+  const knCost = rates.knuckler_rate * totalPieces;
+  const sackCost = rates.sack_rate * totalSacks;
+  const total = wireCost + opCost + knCost + sackCost;
+
+  document.getElementById('pr_total_pieces').textContent = totalPieces || '—';
+  document.getElementById('pr_expected_kgs').textContent = fmt(expectedKgs, 2) + ' kg';
+
+  const el = document.getElementById('pr_overhead');
+  if (el) {
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;font-size:.82rem">
+        <span style="color:var(--muted)">Wire landed cost (${fmtMoney(rates.wire_cost_per_kg)}/kg × ${fmt(kgsUsed,2)} kg)</span><span class="mono">${fmtMoney(wireCost)}</span>
+        <span style="color:var(--muted)">Operator (${fmtMoney(rates.operator_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(opCost)}</span>
+        <span style="color:var(--muted)">Knuckler (${fmtMoney(rates.knuckler_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(knCost)}</span>
+        <span style="color:var(--muted)">Sacks (${fmtMoney(rates.sack_rate)} × ${totalSacks} sacks)</span><span class="mono">${fmtMoney(sackCost)}</span>
+        <span style="font-weight:600;border-top:1px solid var(--border);padding-top:.2rem">Total production cost</span>
+        <span class="mono" style="font-weight:600;border-top:1px solid var(--border);padding-top:.2rem">${fmtMoney(total)}</span>
+      </div>`;
+    document.getElementById('pr_summary').style.display = 'block';
+  }
+}
+
+// Submit purchase
+async function submitPurchase() {
+  // LOCK: if already submitting, ignore all clicks — even from keyboard Enter spam
+  if (_purchaseSubmitting) return;
+  showErr('p_err','');
+
+  const d            = document.getElementById('entryDate').value;
+  const supplier_id  = parseInt(document.getElementById('p_supplier').value);
+  const kgs_bought   = parseFloat(document.getElementById('p_kgs').value);
+  const cost_per_kg  = parseFloat(document.getElementById('p_cost_kg').value);
+  const transport_cost = parseFloat(document.getElementById('p_transport').value)||0;
+  const gauge          = document.getElementById('p_gauge').value;
+
+  // Validate first — before locking, so user can correct errors freely
+  if (!supplier_id)                        return showErr('p_err','Select a supplier');
+  if (isNaN(kgs_bought)||kgs_bought <= 0)  return showErr('p_err','Enter valid Kgs (must be > 0)');
+  if (isNaN(cost_per_kg)||cost_per_kg < 0) return showErr('p_err','Enter valid cost per kg');
+
+  // Acquire lock and disable button simultaneously
+  _purchaseSubmitting = true;
+  const purchaseBtn = document.querySelector('button[onclick="submitPurchase()"]');
+  if (purchaseBtn) { purchaseBtn.disabled = true; purchaseBtn.textContent = '⏳ Saving…'; }
+
+  try {
+    await api('POST','/daily/purchases',{entry_date:d,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge});
+    _prodRates = await api('GET','/daily/production-cost-inputs');
+    invalidateStockCaches(); // fresh stock data for next entry
+
+    // Clear the form BEFORE re-enabling — user sees blank form, not the old values
+    document.getElementById('p_kgs').value = '';
+    document.getElementById('p_transport').value = '0';
+    updateConfigField('p_cost_kg', 'cost_per_kg', '0.00');
+    document.getElementById('p_summary').style.display = 'none';
+    showErr('p_err','');
+
+    // Reload list so user sees the entry just saved
+    await loadTabData('purchases');
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      new BroadcastChannel('daily_entry_updates').postMessage({ type: 'purchases', date: d });
+    }
+    // Push activity notification to bell
+    const kgsLabel = `${kgs_bought} kg @ KES ${parseFloat(cost_per_kg).toLocaleString()}/kg`;
+    api('POST', '/notifications', {
+      type: 'info', category: 'purchases',
+      title: `Wire Purchase Recorded — ${d}`,
+      message: `${kgsLabel} (Gauge ${gauge || 'unset'}) entered by ${window._currentUser?.full_name || 'staff'}.`,
+      roleTarget: 'owner',
+    }).catch(() => {});
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
+    showToast('✅ Purchase saved successfully');
+  } catch(e){
+    showErr('p_err',e.error||(e.errors&&e.errors[0]?.msg)||'Failed to save purchase. Please try again.');
+  } finally {
+    // Release lock and re-enable ONLY after form is clear and list has reloaded
+    _purchaseSubmitting = false;
+    if (purchaseBtn) { purchaseBtn.disabled = false; purchaseBtn.textContent = 'Save Purchase'; }
+  }
+}
+
+// Submit production with integrity checks
+async function submitProduction() {
+  // LOCK: block every re-entry — button, keyboard, any source — until fully done
+  if (_productionSubmitting) return;
+  showErr('pr_err','');
+
+  const d           = document.getElementById('entryDate').value;
+  const kgs_used    = parseFloat(document.getElementById('pr_kgs').value);
+  const pr_gauge    = document.getElementById('pr_gauge')?.value || '';
+  const operator_id = parseInt(document.getElementById('pr_operator').value)||null;
+  const knuckler_id = parseInt(document.getElementById('pr_knuckler').value)||null;
+
+  // Validate BEFORE acquiring lock so errors stay responsive
+  if (!operator_id) return showErr('pr_err','Select an operator — production cannot be saved without one');
+  if (!knuckler_id) return showErr('pr_err','Select a knuckler — production cannot be saved without one');
+  if (isNaN(kgs_used)||kgs_used<0) return showErr('pr_err','Enter valid kgs used');
+
+  const itemEls = document.querySelectorAll('#pr_items .item-row');
+  const items=[];
+  itemEls.forEach(row=>{
+    const ptId=parseInt(row.querySelector('.pr-piece').value);
+    const qty =parseInt(row.querySelector('.pr-qty').value)||0;
+    if (ptId) items.push({piece_type_id:ptId,pieces_produced:qty});
+  });
+  if (!items.length) return showErr('pr_err','Add at least one piece type');
+
+  // Acquire lock + disable button together
+  _productionSubmitting = true;
+  const prodBtn = document.querySelector('button[onclick="submitProduction()"]');
+  if (prodBtn) { prodBtn.disabled = true; prodBtn.textContent = '⏳ Checking stock…'; }
+
+  try {
+    // Always fetch live stock — never use cache before a write
+    const gaugeStock = await api('GET', '/daily/gauge-stock');
+    if (gaugeStock && pr_gauge) {
+      const gs = gaugeStock.find(g => g.gauge === pr_gauge);
+      const available = gs ? gs.kgs_stock : 0;
+      if (kgs_used > available + 0.001) {
+        showErr('pr_err', `Insufficient wire for gauge ${pr_gauge}. Available: ${available.toFixed(2)} kg, Requested: ${kgs_used.toFixed(2)} kg. Buy more wire of this gauge first.`);
+        return; // finally will re-enable
+      }
+    } else if (gaugeStock) {
+      const totalAvail = gaugeStock.reduce((s, g) => s + g.kgs_stock, 0);
+      if (kgs_used > totalAvail + 0.001) {
+        showErr('pr_err', `Insufficient raw material. Only ${totalAvail.toFixed(2)} kg available, but ${kgs_used.toFixed(2)} kg requested.`);
+        return;
+      }
+    }
+
+    if (prodBtn) prodBtn.textContent = '⏳ Saving…';
+    await api('POST','/daily/production',{entry_date:d,kgs_used,gauge:pr_gauge,operator_id,knuckler_id,items});
+
+    // Clear form BEFORE re-enabling — user sees a blank form, not the old entry
+    document.getElementById('pr_kgs').value='';
+    document.getElementById('pr_items').innerHTML='';
+    document.getElementById('pr_material_status').style.display='none';
+    showErr('pr_err','');
+    prItemCount=0; addPrItem();
+
+    invalidateStockCaches();
+    await loadTabData('production');
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      new BroadcastChannel('daily_entry_updates').postMessage({ type: 'production', date: d });
+    }
+    // Push activity notification to bell
+    const totalPieces = items.reduce((s, i) => s + (parseInt(i.pieces_produced) || 0), 0);
+    api('POST', '/notifications', {
+      type: 'info', category: 'production',
+      title: `Production Run Saved — ${d}`,
+      message: `${totalPieces} piece${totalPieces !== 1 ? 's' : ''} produced using ${kgs_used} kg wire (Gauge ${pr_gauge || 'unset'}).`,
+      roleTarget: 'owner',
+    }).catch(() => {});
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
+    showToast('✅ Production saved successfully');
+  } catch(e){
+    showErr('pr_err',e.error||(e.errors&&e.errors[0]?.msg)||'Failed to save production. Please try again.');
+  } finally {
+    // Lock released + button re-enabled only after form cleared and list reloaded
+    _productionSubmitting = false;
+    if (prodBtn) { prodBtn.disabled = false; prodBtn.textContent = 'Save Production'; }
+  }
+}
+
+// ── Sale Multi-Item Form ────────────────────────────────────────────────────
+// Replaces the old queue model. One buyer, multiple item rows, one submit.
+let _saleRowCount = 0;
+// _saleSubmitting declared at top of script
+
+function _makeGaugeOptions(selectedGauge) {
+  const gauges = (getConfig ? (getConfig('wire_gauges','12,14,16') || '12,14,16') : '12,14,16')
+    .split(',').map(g => g.trim()).filter(Boolean);
+  return `<option value="">— gauge —</option>` +
+    gauges.map(g => `<option value="${g}"${g === selectedGauge ? ' selected' : ''}>${g}</option>`).join('');
+}
+
+function _makePieceOptions(selectedId) {
+  return `<option value="">— piece type —</option>` +
+    pieceTypes.map(pt =>
+      `<option value="${pt.id}" data-price="${pt.default_price||''}" data-wt="${pt.weight_kg||0}" data-len="${pt.length_m||0}"${pt.id == selectedId ? ' selected' : ''}>${escHtml(pt.name)}</option>`
+    ).join('');
+}
+
+function addSaleItemRow(prefill) {
+  _saleRowCount++;
+  const rid = _saleRowCount;
+  const container = document.getElementById('sale_items_container');
+  const div = document.createElement('div');
+  div.id = `srow_${rid}`;
+  div.style.cssText = 'display:grid;grid-template-columns:2fr 1fr 1fr 1fr 34px;gap:.5rem;align-items:start;margin-bottom:.6rem;';
+
+  div.innerHTML = `
+    <div>
+      <select class="input" id="srow_pt_${rid}" onchange="onSaleRowPieceChange(${rid})" style="font-size:.84rem">
+        ${_makePieceOptions(prefill && prefill.piece_type_id)}
+      </select>
+      <div id="srow_avail_${rid}" style="font-size:.72rem;margin-top:.2rem;min-height:1rem;color:var(--g600)"></div>
+    </div>
+    <select class="input" id="srow_gauge_${rid}" onchange="onSaleRowChange(${rid})" style="font-size:.84rem">
+      ${_makeGaugeOptions(prefill && prefill.gauge_source)}
+    </select>
+    <input class="input" type="number" id="srow_qty_${rid}" min="1" step="1" placeholder="0"
+      value="${prefill ? prefill.quantity : ''}" oninput="onSaleRowChange(${rid})" style="font-size:.84rem;text-align:right">
+    <input class="input" type="number" id="srow_price_${rid}" min="0" step="0.01" placeholder="0.00"
+      value="${prefill ? prefill.selling_price : ''}" oninput="onSaleRowChange(${rid})" style="font-size:.84rem;text-align:right">
+    <button class="remove-btn" onclick="removeSaleItemRow(${rid})" title="Remove row" style="${_saleRowCount === 1 ? 'visibility:hidden' : ''}">✕</button>
+  `;
+
+  container.appendChild(div);
+
+  // If prefill had a piece, trigger the piece-change to pre-fill price
+  if (prefill && prefill.piece_type_id) {
+    onSaleRowPieceChange(rid, true);
+  }
+
+  _updateRemoveButtons();
+  calcSaleTotals();
+}
+
+function removeSaleItemRow(rid) {
+  const el = document.getElementById(`srow_${rid}`);
+  if (el) el.remove();
+  _updateRemoveButtons();
+  calcSaleTotals();
+}
+
+function _updateRemoveButtons() {
+  const rows = document.querySelectorAll('#sale_items_container > div[id^="srow_"]');
+  rows.forEach(row => {
+    const btn = row.querySelector('.remove-btn');
+    if (btn) btn.style.visibility = rows.length > 1 ? 'visible' : 'hidden';
+  });
+}
+
+function onSaleRowPieceChange(rid, skipPriceOverwrite) {
+  const sel = document.getElementById(`srow_pt_${rid}`);
+  if (!sel) return;
+  const opt = sel.options[sel.selectedIndex];
+  if (opt && opt.value && !skipPriceOverwrite) {
+    const priceEl = document.getElementById(`srow_price_${rid}`);
+    const defaultPrice = opt.dataset.price;
+    if (priceEl && defaultPrice) priceEl.value = parseFloat(defaultPrice).toFixed(2);
+  }
+  onSaleRowChange(rid);
+}
+
+async function onSaleRowChange(rid) {
+  calcSaleTotals();
+  // Availability hint
+  const sel = document.getElementById(`srow_pt_${rid}`);
+  const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
+  const qtyEl = document.getElementById(`srow_qty_${rid}`);
+  const availDiv = document.getElementById(`srow_avail_${rid}`);
+  if (!sel || !availDiv) return;
+  const ptId = parseInt(sel.value) || 0;
+  const gauge = gaugeEl ? gaugeEl.value.trim() : '';
+  const qty = parseInt(qtyEl ? qtyEl.value : 0) || 0;
+  if (!ptId || !gauge) { availDiv.textContent = ''; return; }
+  try {
+    const inv = await getAvailableInventoryCached();
+    // Guard: row may have been removed while awaiting
+    if (!document.getElementById(`srow_avail_${rid}`)) return;
+    const match = (inv || []).find(i => i.piece_type_id === ptId && i.gauge === gauge);
+    const avail = match ? match.available : 0;
+    if (avail <= 0) {
+      availDiv.innerHTML = `<span style="color:var(--red)">❌ Out of stock in gauge ${gauge}</span>`;
+    } else if (qty > avail) {
+      availDiv.innerHTML = `<span style="color:var(--red)">⚠ Only ${avail} available, need ${qty}</span>`;
+    } else if (avail < 5) {
+      availDiv.innerHTML = `<span style="color:#b45309">⚠ Low: ${avail} in stock${qty ? ' — need '+qty : ''}</span>`;
+    } else {
+      availDiv.innerHTML = `<span style="color:var(--g600)">✅ ${avail} in stock${qty ? ' — need '+qty : ''}</span>`;
+    }
+  } catch(e) { if (document.getElementById(`srow_avail_${rid}`)) availDiv.textContent = ''; }
+}
+
+function calcSaleTotals() {
+  const rows = document.querySelectorAll('#sale_items_container > div[id^="srow_"]');
+  let totalRev = 0, totalKgs = 0, totalMeters = 0, hasAny = false;
+  rows.forEach(row => {
+    const rid = row.id.slice(5);
+    const sel = document.getElementById(`srow_pt_${rid}`);
+    const qtyEl = document.getElementById(`srow_qty_${rid}`);
+    const priceEl = document.getElementById(`srow_price_${rid}`);
+    if (!sel || !qtyEl || !priceEl) return;
+    const opt = sel.options[sel.selectedIndex];
+    const qty = parseInt(qtyEl.value) || 0;
+    const price = parseFloat(priceEl.value) || 0;
+    if (!opt || !opt.value || !qty || !price) return;
+    hasAny = true;
+    totalRev += qty * price;
+    totalKgs += qty * (parseFloat(opt.dataset.wt) || 0);
+    totalMeters += qty * (parseFloat(opt.dataset.len) || 0);
+  });
+  const sumEl = document.getElementById('s_summary');
+  if (hasAny && sumEl) {
+    document.getElementById('s_revenue').textContent = fmtMoney(totalRev);
+    document.getElementById('s_kgs').textContent = fmt(totalKgs, 2) + ' kg';
+    document.getElementById('s_meters').textContent = fmt(totalMeters, 1) + ' m';
+    sumEl.style.display = 'block';
+  } else if (sumEl) {
+    sumEl.style.display = 'none';
+  }
+}
+
+function resetSaleForm() {
+  document.getElementById('sale_items_container').innerHTML = '';
+  document.getElementById('s_buyer_name').value = '';
+  document.getElementById('s_buyer_name_suggestions').style.display = 'none';
+  document.getElementById('s_summary').style.display = 'none';
+  showErr('s_err', '');
+  _saleRowCount = 0;
+  addSaleItemRow();
+}
+
+function _getSaleRows() {
+  const rows = document.querySelectorAll('#sale_items_container > div[id^="srow_"]');
+  const items = [];
+  rows.forEach(row => {
+    const rid = row.id.slice(5); // strip 'srow_'
+    const sel = document.getElementById(`srow_pt_${rid}`);
+    const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
+    const qtyEl = document.getElementById(`srow_qty_${rid}`);
+    const priceEl = document.getElementById(`srow_price_${rid}`);
+    if (!sel || !gaugeEl || !qtyEl || !priceEl) return;
+    const piece_type_id = parseInt(sel.value) || 0;
+    const opt = sel.options[sel.selectedIndex];
+    const pt = pieceTypes.find(p => p.id == piece_type_id);
+    const gauge_source = gaugeEl.value.trim();
+    const quantity = parseInt(qtyEl.value) || 0;
+    let selling_price = parseFloat(priceEl.value) || 0;
+    // Auto-fill default price only when user left price blank AND default exists
+    if (!selling_price && pt && pt.default_price) selling_price = parseFloat(pt.default_price) || 0;
+    // Always push every row — validation in submitAllSales will catch missing fields
+    items.push({ rid, piece_type_id, pt, gauge_source, quantity, selling_price });
+  });
+  return items;
+}
+
+// Main submit — validates all rows, checks live stock, writes each to DB
+async function submitAllSales() {
+  if (_saleSubmitting) return;
+  showErr('s_err', '');
+
+  const buyer_name = document.getElementById('s_buyer_name').value.trim();
+  if (!buyer_name) return showErr('s_err', 'Buyer name is required');
+
+  const rows = _getSaleRows();
+  if (!rows.length) return showErr('s_err', 'Add at least one item');
+
+  // Validate all rows first — highlight the specific problem row
+  for (const r of rows) {
+    const rowEl = document.getElementById(`srow_${r.rid}`);
+    const highlight = (fieldId) => {
+      const el = document.getElementById(`${fieldId}_${r.rid}`);
+      if (el) { el.style.borderColor = 'var(--red)'; setTimeout(() => { if (el) el.style.borderColor = ''; }, 3000); }
+    };
+    if (!r.piece_type_id) { highlight('srow_pt'); return showErr('s_err', 'Select a piece type for every row'); }
+    if (!r.gauge_source)  { highlight('srow_gauge'); return showErr('s_err', 'Select a wire gauge for every row'); }
+    if (!r.quantity || r.quantity < 1) { highlight('srow_qty'); return showErr('s_err', 'Enter a valid quantity (≥ 1) for every row'); }
+    if (!r.selling_price || r.selling_price <= 0) { highlight('srow_price'); return showErr('s_err', 'Enter a selling price for every row'); }
+  }
+
+  // Detect duplicate rows (same piece + gauge in multiple rows) — merge them for stock check
+  const demand = {}; // key = "ptId|gauge" → total qty demanded
+  for (const r of rows) {
+    const key = `${r.piece_type_id}|${r.gauge_source}`;
+    demand[key] = (demand[key] || 0) + r.quantity;
+  }
+
+  // Cross-row stock check — always invalidate first for a live read
+  invalidateStockCaches();
+  let liveInv;
+  try {
+    liveInv = await getAvailableInventoryCached();
+  } catch(e) {
+    return showErr('s_err', 'Could not verify stock levels. Please try again.');
+  }
+
+  for (const [key, totalQty] of Object.entries(demand)) {
+    const [ptId, gauge] = key.split('|');
+    const inv = liveInv.find(i => i.piece_type_id == ptId && i.gauge === gauge);
+    const avail = inv ? parseInt(inv.available) : 0;
+    const pt = pieceTypes.find(p => p.id == parseInt(ptId));
+    const ptName = pt ? pt.name : 'item';
+    if (avail <= 0) {
+      return showErr('s_err', `❌ Out of stock: ${ptName} gauge ${gauge}. Cannot save.`);
+    }
+    if (totalQty > avail) {
+      return showErr('s_err', `⚠ ${ptName} gauge ${gauge}: need ${totalQty}, only ${avail} available.`);
+    }
+  }
+
+  _saleSubmitting = true;
+  const submitBtn = document.getElementById('queue_submit_btn');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '⏳ Saving…'; }
+
+  const d = document.getElementById('entryDate').value;
+
+  try {
+    // Send ALL items in ONE request → ONE invoice, ONE receipt
+    await api('POST', '/daily/sales/batch', {
+      entry_date: d,
+      buyer_name,
+      items: rows.map(r => ({
+        piece_type_id: r.piece_type_id,
+        quantity:      r.quantity,
+        selling_price: r.selling_price,
+        gauge_source:  r.gauge_source,
+      })),
+    });
+
+    invalidateStockCaches();
+    await loadTabData('sales');
+
+    if (typeof BroadcastChannel !== 'undefined') {
+      new BroadcastChannel('daily_entry_updates').postMessage({ type: 'sales', date: d });
+    }
+
+    const totalRev = rows.reduce((s, r) => s + (r.quantity * r.selling_price), 0);
+    const itemSummary = rows.map(r => `${r.quantity}× ${r.pt ? r.pt.name : 'item'}`).join(', ');
+    api('POST', '/notifications', {
+      type: 'info', category: 'sales',
+      title: `Sale to ${buyer_name} — KES ${totalRev.toLocaleString()}`,
+      message: `${itemSummary}. All items saved — 1 invoice generated.`,
+      roleTarget: 'owner',
+    }).catch(() => {});
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
+
+    showToast(`✅ ${rows.length} item${rows.length > 1 ? 's' : ''} saved — 1 invoice generated`);
+    resetSaleForm();
+  } catch(e) {
+    const msg = e.error || (e.errors && e.errors[0]?.msg) || 'Save failed';
+    showErr('s_err', `Failed: ${msg}`);
+  } finally {
+    _saleSubmitting = false;
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '✅ Submit Sale'; }
+  }
+}
+
+// Keep submitSale as alias for Ctrl+Enter shortcut compatibility
+async function submitSale() { return submitAllSales(); }
+
+// Stub — no longer used but referenced by old gauge-source listener setup
+function fillSalePrice() {}
+function calcSale() { calcSaleTotals(); }
+function addSaleToQueue() { return addSaleItemRow(); }
+function clearSaleQueue() { resetSaleForm(); }
+
+// Customer Autocomplete — simple, clean, reliable
+let _customerCache = [];
+
+async function loadCustomers() {
+  try {
+    _customerCache = await api('GET', '/daily/customers/distinct') || [];
+  } catch(e) { _customerCache = []; }
+}
+
+function onBuyerInput(val) {
+  const q = val.trim().toLowerCase();
+  const dd = document.getElementById('s_buyer_name_suggestions');
+  if (!dd) return;
+  if (!q) { dd.style.display='none'; return; }
+  const matches = _customerCache.filter(n => n.toLowerCase().includes(q)).slice(0,8);
+  if (!matches.length) { dd.style.display='none'; return; }
+  dd.innerHTML = matches.map(n =>
+    `<div class="suggestion-item" onmousedown="selectBuyer('${escHtml(n)}')">${escHtml(n)}</div>`
+  ).join('');
+  dd.style.display = 'block';
+}
+
+function selectBuyer(name) {
+  const inp = document.getElementById('s_buyer_name');
+  if (inp) inp.value = name;
+  const dd = document.getElementById('s_buyer_name_suggestions');
+  if (dd) dd.style.display = 'none';
+}
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.autocomplete-container')) {
+    const dd = document.getElementById('s_buyer_name_suggestions');
+    if (dd) dd.style.display = 'none';
+  }
+});
+// Init
+async function checkStatus() {
+  try {
+    const s = await api('GET','/daily/status');
+    if (s.blocked) {
+      document.getElementById('blockedAlert').style.display='flex';
+    } else {
+      document.getElementById('mainContent').style.display='block';
+      await loadRefs();
+      updateDateLabel();
+      loadTabData('purchases');
+    }
+  } catch(e){
+    document.getElementById('mainContent').style.display='block';
+    await loadRefs();
+    updateDateLabel();
+    loadTabData('purchases');
+  }
+}
+
+checkStatus();
+</script>
+</body>
+</html>

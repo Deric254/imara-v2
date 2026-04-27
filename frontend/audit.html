@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Audit Log - IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+  const me = requireAuth(['owner', 'admin']);
+  if (!me) throw new Error('Unauthorized');
+
+  const pg = renderLayout('audit.html');
+
+  pg.innerHTML = `
+<div class="card" style="margin-bottom:1.25rem">
+  <div class="card-title">Filter Audit Log</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem">
+    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <label class="label" style="margin:0;white-space:nowrap">From</label>
+        <input type="date" class="input" id="fromDate" style="width:auto">
+      </div>
+      <div style="display:flex;align-items:center;gap:.5rem">
+        <label class="label" style="margin:0">To</label>
+        <input type="date" class="input" id="toDate" style="width:auto">
+      </div>
+      <button class="btn btn-primary" onclick="loadAudit()">Apply</button>
+      <button class="btn btn-secondary" onclick="preset(7)">Last 7d</button>
+      <button class="btn btn-secondary" onclick="preset(30)">Last 30d</button>
+    </div>
+    <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn" style="display:none">
+      Export to CSV
+    </button>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>User</th>
+        <th>Action</th>
+        <th>Table</th>
+        <th>Record</th>
+        <th>Details</th>
+      </tr>
+    </thead>
+    <tbody id="auditTable">
+      <tr class="loading-row"><td colspan="6"><div class="spinner"></div></td></tr>
+    </tbody>
+  </table>
+</div>
+`;
+
+  const actionColors = {
+    LOGIN: 'badge-green',
+    FAILED_LOGIN: 'badge-red',
+    LOGOUT: 'badge-gray',
+    PASSWORD_CHANGED: 'badge-blue',
+    RESET_PASSWORD: 'badge-amber',
+    CREATE_USER: 'badge-green',
+    DEACTIVATE_USER: 'badge-red',
+    ACTIVATE_USER: 'badge-green',
+    EDIT_USER: 'badge-blue',
+    UPDATE_PROFILE: 'badge-blue',
+    CREATE_PURCHASE: 'badge-green',
+    DELETE_PURCHASE: 'badge-red',
+    CREATE_PRODUCTION: 'badge-green',
+    DELETE_PRODUCTION: 'badge-red',
+    CREATE_SALE: 'badge-green',
+    DELETE_SALE: 'badge-red',
+    PRICE_OVERRIDE: 'badge-amber',
+    CONFIG_UPDATE: 'badge-blue',
+  };
+
+  const actionLabels = {
+    PRICE_OVERRIDE: 'CUSTOM_PRICE',
+  };
+
+  let auditData = [];
+
+  function preset(days) {
+    const to = new Date();
+    const from = new Date(Date.now() - days * 86400000);
+    document.getElementById('toDate').value = to.toISOString().split('T')[0];
+    document.getElementById('fromDate').value = from.toISOString().split('T')[0];
+    loadAudit();
+  }
+
+  function formatAuditTime(value) {
+    if (!value) return '-';
+    return String(value).replace('T', ' ').slice(0, 19);
+  }
+
+  function parseAuditJson(raw) {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function renderDetailGroup(label, raw) {
+    if (!raw) return '';
+
+    const parsed = parseAuditJson(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const pairs = Object.entries(parsed);
+      if (!pairs.length) return '';
+      return `
+        <div style="margin-bottom:.35rem">
+          <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase">${escHtml(label)}</div>
+          <div>${pairs.map(([k, val]) => `<span style="font-size:.75rem">${escHtml(k)}: <strong>${escHtml(String(val))}</strong></span>`).join(' ')}</div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="margin-bottom:.35rem">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase">${escHtml(label)}</div>
+        <div style="font-size:.75rem">${escHtml(String(raw))}</div>
+      </div>
+    `;
+  }
+
+  function formatAuditDetails(row) {
+    const oldBlock = renderDetailGroup('Old', row.old_values);
+    const newBlock = renderDetailGroup('New', row.new_values);
+    return oldBlock || newBlock || '<span style="color:var(--muted)">-</span>';
+  }
+
+  function flattenAuditDetails(row) {
+    const parts = [];
+    for (const [label, raw] of [['Old', row.old_values], ['New', row.new_values]]) {
+      if (!raw) continue;
+      const parsed = parseAuditJson(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const text = Object.entries(parsed).map(([k, val]) => `${k}: ${val}`).join('; ');
+        if (text) parts.push(`${label}: ${text}`);
+      } else {
+        parts.push(`${label}: ${raw}`);
+      }
+    }
+    return parts.join(' | ');
+  }
+
+  async function loadAudit() {
+    const from = document.getElementById('fromDate').value;
+    const to = document.getElementById('toDate').value;
+    const tableBody = document.getElementById('auditTable');
+    const exportBtn = document.getElementById('exportBtn');
+
+    tableBody.innerHTML = '<tr class="loading-row"><td colspan="6"><div class="spinner"></div></td></tr>';
+    exportBtn.style.display = 'none';
+
+    try {
+      let url = '/audit?limit=2000';
+      if (from) url += `&from=${from}`;
+      if (to) url += `&to=${to}`;
+
+      auditData = await api('GET', url);
+
+      if (!auditData || !auditData.length) {
+        tableBody.innerHTML = '<tr><td colspan="6" class="empty"><div class="empty-text">No audit records found</div></td></tr>';
+        return;
+      }
+
+      exportBtn.style.display = 'block';
+
+      tableBody.innerHTML = auditData.map(row => {
+        const badgeClass = actionColors[row.action] || 'badge-gray';
+        const user = row.full_name
+          ? `${escHtml(row.full_name)} <span class="mono" style="font-size:.75rem;color:var(--muted)">(${escHtml(row.username || '')})</span>`
+          : '<span style="color:var(--muted)">System</span>';
+
+        return `
+          <tr>
+            <td class="mono" style="font-size:.78rem;white-space:nowrap">${formatAuditTime(row.logged_at)}</td>
+            <td style="font-size:.82rem">${user}</td>
+            <td><span class="badge ${badgeClass}" style="font-size:.72rem">${escHtml(actionLabels[row.action] || row.action || '')}</span></td>
+            <td style="font-size:.78rem;color:var(--muted)">${escHtml(row.table_name || '')}</td>
+            <td class="mono" style="font-size:.78rem">${row.record_id || ''}</td>
+            <td style="font-size:.78rem">${formatAuditDetails(row)}</td>
+          </tr>
+        `;
+      }).join('');
+    } catch (e) {
+      tableBody.innerHTML = '<tr><td colspan="6" class="empty"><div class="empty-text">Failed to load audit log</div></td></tr>';
+      showToast('Failed to load audit log', 'error');
+    }
+  }
+
+  function exportCSV() {
+    if (!auditData || !auditData.length) return;
+
+    const headers = ['Time', 'User Full Name', 'Username', 'Action', 'Table', 'Record ID', 'Details'];
+    const rows = auditData.map(row => ([
+      formatAuditTime(row.logged_at),
+      row.full_name || 'System',
+      row.username || '',
+      actionLabels[row.action] || row.action || '',
+      row.table_name || '',
+      row.record_id || '',
+      flattenAuditDetails(row),
+    ]));
+
+    const from = document.getElementById('fromDate').value || 'start';
+    const to = document.getElementById('toDate').value || 'end';
+    downloadCSV(`audit_log_${from}_to_${to}`, headers, rows);
+  }
+
+  preset(7);
+</script>
+</body>
+</html>

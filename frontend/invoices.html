@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Invoices — IMARA LINKS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<link rel="stylesheet" href="shared.css">
+<style>
+.inv-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin-bottom:1.5rem}
+.inv-kpi{background:var(--surface);border-radius:var(--radius);padding:1rem 1.1rem;box-shadow:var(--shadow);border-top:3px solid var(--g300)}
+.inv-kpi.green{border-top-color:#22c55e}.inv-kpi.amber{border-top-color:#f59e0b}
+.inv-kpi.red{border-top-color:#ef4444}.inv-kpi.blue{border-top-color:#3b82f6}
+.inv-kpi-v{font-family:var(--font-mono);font-size:1.3rem;font-weight:700;margin-bottom:.2rem}
+.inv-kpi-l{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.filter-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1.25rem}
+.filt-btn{padding:.35rem .9rem;border-radius:99px;font-size:.8rem;font-weight:600;border:1.5px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;font-family:var(--font);transition:all .15s}
+.filt-btn:hover{border-color:var(--g400);color:var(--g700)}
+.filt-btn.active{background:var(--g900);border-color:var(--g900);color:#fff}
+.inv-list{display:flex;flex-direction:column;gap:.55rem}
+.inv-card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);padding:1rem 1.25rem;border-left:4px solid var(--g300);cursor:pointer;transition:box-shadow .15s,transform .15s}
+.inv-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1);transform:translateY(-1px)}
+.inv-card.paid{border-left-color:#22c55e}.inv-card.pending{border-left-color:#f59e0b}
+.inv-card.partial_payment{border-left-color:#f59e0b}.inv-card.cancelled{border-left-color:#e5e7eb;opacity:.6}
+.inv-row{display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap}
+.inv-num{font-family:var(--font-mono);font-size:.78rem;font-weight:600;color:var(--g600)}
+.inv-cust{font-weight:700;font-size:.95rem;color:var(--ink);margin:.15rem 0}
+.inv-meta{font-size:.76rem;color:var(--muted)}
+.inv-amt{font-family:var(--font-mono);font-weight:700;font-size:1.05rem}
+.sbadge{display:inline-block;padding:.18rem .6rem;border-radius:99px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.s-paid{background:#dcfce7;color:#166534}.s-pending{background:#fef3c7;color:#92400e}
+.s-partial_payment{background:#fef3c7;color:#92400e}.s-cancelled{background:#f1f5f9;color:#9ca3af}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.52);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem}
+.modal-box{background:var(--surface);border-radius:var(--radius);box-shadow:0 20px 60px rgba(0,0,0,.25);width:100%;max-width:660px;max-height:92vh;overflow-y:auto;display:flex;flex-direction:column}
+.modal-box.wide{max-width:880px}
+.modal-hd{padding:1.1rem 1.4rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.6rem}
+.modal-hd h2{flex:1;font-size:1rem;font-weight:700;margin:0}
+.modal-close{background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted);padding:.1rem .4rem;border-radius:6px;font-family:var(--font);line-height:1}
+.modal-close:hover{background:var(--g50)}
+.modal-body{padding:1.4rem;flex:1}
+.modal-ft{padding:.9rem 1.4rem;border-top:1px solid var(--border);display:flex;gap:.6rem;flex-wrap:wrap;justify-content:flex-end}
+.fg{margin-bottom:.9rem}.fg label{display:block;font-size:.8rem;font-weight:600;color:var(--g700);margin-bottom:.3rem}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem}
+@media(max-width:560px){.grid2,.grid3{grid-template-columns:1fr}}
+.items-tbl{width:100%;border-collapse:collapse;font-size:.84rem;margin:.5rem 0}
+.items-tbl th{background:var(--g900);color:#fff;padding:.5rem .65rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;text-align:left}
+.items-tbl th:last-child,.items-tbl td:last-child{text-align:right}
+.items-tbl td{padding:.5rem .65rem;border-bottom:1px solid var(--border)}
+.items-tbl .del{background:none;border:none;color:var(--red);cursor:pointer;font-size:1rem}
+.add-row{width:100%;padding:.45rem;background:var(--g50);border:1.5px dashed var(--g200);border-radius:var(--radius-sm);cursor:pointer;color:var(--g600);font-size:.84rem;font-family:var(--font);margin-top:.4rem;transition:all .15s}
+.add-row:hover{background:var(--g100)}
+.tots{margin-left:auto;width:250px;margin-top:.5rem}
+.tot-row{display:flex;justify-content:space-between;padding:.28rem 0;font-size:.86rem;border-bottom:1px solid var(--border)}
+.tot-row.grand{font-weight:700;font-size:1rem;border-top:2px solid var(--g900);border-bottom:2px solid var(--g900);padding:.4rem 0}
+.act-row{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.25rem}
+.act-btn{display:inline-flex;align-items:center;gap:.35rem;padding:.42rem .95rem;border-radius:var(--radius-sm);font-size:.82rem;font-weight:600;cursor:pointer;border:none;font-family:var(--font);transition:all .15s}
+.act-btn:hover{filter:brightness(.92);transform:translateY(-1px)}
+.act-print{background:#083d28;color:#fff}.act-dl{background:#1d4ed8;color:#fff}
+.act-share{background:#7c3aed;color:#fff}.act-pay{background:#d97706;color:#fff}
+.act-edit{background:var(--g50);color:var(--g700);border:1.5px solid var(--border)}
+.act-cancel{background:#dc2626;color:#fff}
+/* ── Print doc ── */
+.pdoc{background:#fff;max-width:760px;margin:0 auto;padding:2.4rem 2.8rem;border-radius:var(--radius);box-shadow:0 2px 12px rgba(0,0,0,.08);font-family:var(--font);color:#1a1a1a;position:relative}
+.pdoc-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2rem}
+.pdoc-brand{font-size:1.15rem;font-weight:700;color:#083d28;line-height:1.2;letter-spacing:.01em}
+.pdoc-slogan{font-size:.78rem;color:#137a4d;font-style:italic;margin-top:.2rem;font-weight:500;letter-spacing:.02em}
+.pdoc-title{font-size:2rem;font-weight:700;color:#083d28;letter-spacing:.08em;text-align:right}
+.pdoc-num{font-family:monospace;font-size:.85rem;color:#555;text-align:right;margin-top:.3rem}
+.pdoc-div{border:none;border-top:2px solid #e5e7eb;margin:1.5rem 0}
+.pdoc-parties{display:grid;grid-template-columns:1fr 1fr;gap:2rem;margin-bottom:1.5rem}
+.pp-lbl{font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;color:#1e9a62;font-weight:700;margin-bottom:.35rem}
+.pp-name{font-weight:700;font-size:.98rem;color:#111;margin-bottom:.2rem}
+.pp-det{font-size:.78rem;color:#555;line-height:1.65}
+.pdoc-dates{display:flex;gap:2.5rem;margin-bottom:1.75rem}
+.pdoc-dates label{font-size:.66rem;text-transform:uppercase;color:#6b7280;font-weight:600;display:block;margin-bottom:.12rem}
+.pdoc-dates span{font-family:monospace;font-size:.86rem;color:#111}
+.pdoc-tbl{width:100%;border-collapse:collapse;margin-bottom:1.5rem;font-size:.84rem}
+.pdoc-tbl th{background:#083d28;color:#fff;padding:.55rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;text-align:left}
+.pdoc-tbl th:nth-child(2){text-align:center}.pdoc-tbl th:last-child,.pdoc-tbl td:last-child{text-align:right}
+.pdoc-tbl td{padding:.58rem .75rem;border-bottom:1px solid #e5e7eb}
+.pdoc-tbl tr:nth-child(even) td{background:#f9fafb}
+.pdoc-tots{margin-left:auto;width:255px}
+.dt{display:flex;justify-content:space-between;padding:.28rem 0;font-size:.85rem;border-bottom:1px solid #e5e7eb}
+.dt.grand{font-weight:700;font-size:1rem;color:#083d28;border-top:2px solid #083d28;border-bottom:2px solid #083d28;padding:.42rem 0}
+.dt.paid-row{color:#166534;font-weight:600}.dt.bal-row{color:#dc2626;font-weight:700}
+.pdoc-footer{margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:1.25rem;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:1rem}
+.pdoc-thanks{font-size:.85rem;color:#1e9a62;font-weight:600;font-style:italic}
+.pdoc-notes{font-size:.78rem;color:#555;max-width:360px;line-height:1.6}
+.pdoc-watermark{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-35deg);font-size:5rem;font-weight:900;letter-spacing:.1em;pointer-events:none;text-transform:uppercase;white-space:nowrap;z-index:0;color:rgba(34,197,94,.07)}
+.dsbadge{display:inline-block;padding:.22rem .75rem;border-radius:99px;font-size:.7rem;font-weight:700;text-transform:uppercase;margin-top:.4rem}
+.dsb-paid{background:#dcfce7;color:#166534}.dsb-pending{background:#fef3c7;color:#92400e}
+.dsb-partial_payment{background:#fef3c7;color:#92400e}.dsb-cancelled{background:#f1f5f9;color:#9ca3af}
+.pay-banner{background:#fef3c7;border:1.5px solid #f59e0b;border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:1.25rem;font-size:.85rem;color:#92400e;line-height:1.5}
+@media print{
+  body>*{display:none!important}
+  #printFrame{display:block!important;position:fixed;inset:0;background:#fff;z-index:99999;overflow:auto;padding:0;margin:0}
+  #printFrame .pdoc{margin:0 auto!important;max-width:100%!important;box-shadow:none!important;border-radius:0!important;padding:1.8cm 2cm!important}
+  @page{size:A4;margin:1.2cm 1.5cm}
+}
+#printFrame{display:none}
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+requireAuth(['owner','admin']);
+const pg = renderLayout('invoices.html');
+const cur  = () => getConfig('currency','KES');
+const fmtM = (n,d=2) => Number(n||0).toLocaleString('en-KE',{minimumFractionDigits:d,maximumFractionDigits:d});
+
+let _list=[], _pieceTypes=[], _bizCfg={}, _filterStatus='', _editId=null, _itemSeq=0;
+// Submission locks — prevents any double-submit regardless of click speed
+let _paymentSubmitting = false;
+let _invoiceSaving = false;
+
+// Logo preload — pre-crops logo into a perfect circle for clean PDF embedding.
+// _logoBase64 = original image (used by on-screen preview)
+// _logoCircleBase64 = circle-cropped PNG (used in all PDF generation)
+let _logoBase64 = null;
+let _logoCircleBase64 = null;
+(function preloadLogo() {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = function() {
+    try {
+      const sz = Math.min(img.naturalWidth, img.naturalHeight);
+      // Full image for on-screen use
+      const cFull = document.createElement('canvas');
+      cFull.width = img.naturalWidth; cFull.height = img.naturalHeight;
+      cFull.getContext('2d').drawImage(img, 0, 0);
+      _logoBase64 = cFull.toDataURL('image/png');
+
+      // Circle-cropped version for PDFs
+      const cCirc = document.createElement('canvas');
+      cCirc.width = sz; cCirc.height = sz;
+      const ctx = cCirc.getContext('2d');
+      ctx.beginPath();
+      ctx.arc(sz / 2, sz / 2, sz / 2, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      // Centre the image inside the square canvas
+      const ox = (sz - img.naturalWidth)  / 2;
+      const oy = (sz - img.naturalHeight) / 2;
+      ctx.drawImage(img, ox, oy, img.naturalWidth, img.naturalHeight);
+      _logoCircleBase64 = cCirc.toDataURL('image/png');
+    } catch(e) { _logoBase64 = null; _logoCircleBase64 = null; }
+  };
+  img.onerror = function() { _logoBase64 = null; _logoCircleBase64 = null; };
+  img.src = 'logo.png?' + Date.now();
+})();
+
+async function init() {
+  pg.innerHTML = `
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem">
+  <h1 style="font-size:1.3rem;font-weight:700;color:var(--ink)">&#x1F9FE; Invoices</h1>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+    <button class="btn btn-secondary btn-sm" onclick="openStatement()">&#x1F4CA; Statement</button>
+    <button class="btn btn-primary" onclick="openCreate()">+ New Invoice</button>
+  </div>
+</div>
+<div class="inv-kpis" id="kpiStrip"></div>
+<div class="filter-row">
+  <button class="filt-btn active" id="fb_all"     onclick="setFilter('',this)">All</button>
+  <button class="filt-btn"        id="fb_pending" onclick="setFilter('partial_payment',this)">Pending Payment</button>
+  <button class="filt-btn"        id="fb_paid"    onclick="setFilter('paid',this)">Paid</button>
+  <button class="filt-btn"        id="fb_cancel"  onclick="setFilter('cancelled',this)">Cancelled</button>
+  <input type="text" class="input" id="invSearch" placeholder="&#x1F50D; Search customer, invoice #, amount&hellip;"
+    oninput="onSearch(this.value)"
+    style="margin-left:auto;max-width:280px;padding:.35rem .7rem;font-size:.82rem">
+</div>
+<div class="inv-list" id="invList"></div>`;
+
+  try {
+    [_pieceTypes, _bizCfg] = await Promise.all([api('GET','/piece-types'), api('GET','/config')]);
+  } catch(e){ console.error(e); }
+  await loadAll();
+}
+
+async function loadAll() {
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const yearStart = `${new Date().getFullYear()}-01-01`;
+    // Load current year invoices fast; a "Load All" button lets user expand
+    const [list, stats] = await Promise.all([
+      api('GET',`/invoices?from=2000-01-01&to=2099-12-31`),
+      api('GET',`/invoices/summary/stats?from=${yearStart}&to=${todayStr}`),
+    ]);
+    _list = list || [];
+    renderKpis(stats);
+    renderList();
+  } catch(e) {
+    document.getElementById('invList').innerHTML =
+      `<div class="card" style="color:var(--red);padding:1.5rem">Failed to load invoices. ${e.error||''}</div>`;
+  }
+}
+
+function renderKpis(s) {
+  const t = s && s.totals ? s.totals : {};
+  document.getElementById('kpiStrip').innerHTML = `
+    <div class="inv-kpi blue"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_billed)}</div><div class="inv-kpi-l">Total Invoiced (${t.total_invoices||0})</div></div>
+    <div class="inv-kpi green"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_collected)}</div><div class="inv-kpi-l">Collected &mdash; ${t.paid_count||0} Paid</div></div>
+    <div class="inv-kpi ${(t.total_outstanding||0)>0?'amber':''}"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_outstanding)}</div><div class="inv-kpi-l">Outstanding &mdash; ${t.partial_payment_count||0} Pending</div></div>`;
+}
+
+function isPending(inv) {
+  return (inv.status !== 'paid' && inv.status !== 'cancelled'
+     && (inv.total_amount||0) > (inv.amount_paid||0));
+}
+
+function renderList(listOverride) {
+  const el = document.getElementById('invList');
+  let list = listOverride !== undefined ? listOverride : _list;
+  if (_filterStatus === 'partial_payment') list = list.filter(i => i.status === 'partial_payment');
+  else if (_filterStatus === 'paid') list = list.filter(i => i.status === 'paid');
+  else if (_filterStatus === 'cancelled') list = list.filter(i => i.status === 'cancelled');
+  if (!list.length) {
+    el.innerHTML = `<div class="card" style="text-align:center;padding:2.5rem;color:var(--muted)">No invoices found.</div>`;
+    return;
+  }
+  el.innerHTML = list.map(inv => invCard(inv)).join('');
+}
+
+function invCard(inv) {
+  const bal  = parseFloat(((inv.total_amount||0) - (inv.amount_paid||0)).toFixed(2));
+  const _dRaw = inv.status === 'paid' ? 'paid' : inv.status === 'partial_payment' ? 'partial_payment' : inv.status;
+  const disp = {paid:'paid',partial_payment:'partial_payment',cancelled:'cancelled',pending:'pending',overdue:'overdue',draft:'draft'}[_dRaw] || 'partial_payment';
+  const bc   = {paid:'s-paid',partial_payment:'s-partial_payment',cancelled:'s-cancelled'}[disp] || 's-partial_payment';
+  const bl   = {paid:'Paid',partial_payment:'Pending Payment',cancelled:'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp] || 'Pending';
+  const auto = inv.sale_id
+    ? `<span style="font-size:.66rem;background:#dbeafe;color:#1e40af;padding:.1rem .38rem;border-radius:3px;margin-left:.35rem;font-weight:600">AUTO</span>` : '';
+  return `<div class="inv-card ${disp}" onclick="viewInvoice(${inv.id})">
+    <div class="inv-row">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+          <span class="inv-num">${escHtml(inv.invoice_number)}</span>${auto}
+          <span class="sbadge ${bc}">${bl}</span>
+        </div>
+        <div class="inv-cust">${escHtml(inv.customer_name)}</div>
+        <div class="inv-meta">${inv.invoice_date}${inv.due_date?' &middot; Due '+inv.due_date:''}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div class="inv-amt">${cur()} ${fmtM(inv.total_amount)}</div>
+        ${bal>0.01?`<div style="font-size:.76rem;color:#d97706;font-weight:600">Bal: ${cur()} ${fmtM(bal)}</div>`:''}
+        ${inv.status==='paid'?`<div style="font-size:.76rem;color:#16a34a;font-weight:600">&#x2713; Fully Paid</div>`:''}
+      </div>
+    </div>
+    ${inv.status!=='cancelled'?`<div style="margin-top:.5rem;border-top:1px solid var(--border);padding-top:.5rem;display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+      <button onclick="event.stopPropagation();downloadInvPDF(${inv.id})" style="font-size:.74rem;padding:.28rem .7rem;background:#1d4ed8;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:var(--font);font-weight:600">&#x2B07; Invoice</button>
+    </div>`:``}
+  </div>`;
+}
+
+function setFilter(s, btn) {
+  _filterStatus = s;
+  document.querySelectorAll('.filt-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const srch = document.getElementById('invSearch');
+  if (srch) srch.value = '';
+  renderList();
+}
+
+let _srchTimer = null;
+function onSearch(val) {
+  if (_srchTimer) clearTimeout(_srchTimer);
+  _srchTimer = setTimeout(async () => {
+    const q = val.trim();
+    if (!q) { renderList(); return; }
+    try {
+      const res = await api('GET',`/invoices/search?q=${encodeURIComponent(q)}`);
+      renderList(res || []);
+    } catch(e) { renderList([]); }
+  }, 280);
+}
+
+/* ── VIEW INVOICE ── */
+let _viewingInvoice = false;
+async function viewInvoice(id) {
+  if (_viewingInvoice) return;
+  _viewingInvoice = true;
+  try {
+    PageProgress.show(25, 'Loading invoice…');
+    const inv = await api('GET',`/invoices/${id}`);
+    PageProgress.show(80, 'Rendering…');
+    const bal     = parseFloat(((inv.total_amount||0)-(inv.amount_paid||0)).toFixed(2));
+    const bizName = _bizCfg.business_name   || (inv.config && inv.config.business_name)   || 'IMARA LINKS';
+    const slogan  = _bizCfg.business_slogan  || (inv.config && inv.config.business_slogan) || 'Built Strong by IMARA';
+    const isPaid  = inv.status === 'paid';
+    const canPay  = !isPaid && inv.status !== 'cancelled' && (inv.total_amount||0)>0;
+    const canEdit = !isPaid && inv.status !== 'cancelled';
+    const _dispRaw = isPaid ? 'paid' : isPending(inv) ? 'pending' : inv.status;
+    const _dispLabelMap = {paid:'paid',partial_payment:'partial_payment',cancelled:'cancelled',pending:'pending',overdue:'overdue',draft:'draft'};
+    const disp = _dispLabelMap[_dispRaw] || 'pending';
+
+    const itemRows = (inv.items||[]).map(it => `
+      <tr>
+        <td>${escHtml(it.description)}${it.gauge?` <span style="font-size:.74rem;color:#6b7280">(Gauge ${escHtml(it.gauge)})</span>`:''}</td>
+        <td style="text-align:center">${it.quantity}</td>
+        <td style="text-align:right">${cur()} ${fmtM(it.unit_price)}</td>
+        <td style="text-align:right;font-weight:600">${cur()} ${fmtM(it.line_total)}</td>
+      </tr>`).join('');
+
+    const footerMsg = `Welcome again &mdash; ${escHtml(slogan)}`;
+
+    const docHtml = `
+      <div class="pdoc" id="printDoc">
+        ${isPaid?`<div class="pdoc-watermark">PAID</div>`:''}
+        <div class="pdoc-hdr">
+          <div>
+            <img src="logo.png" style="height:68px;width:auto;object-fit:contain;display:block;margin-bottom:.5rem;" onerror="this.style.display='none'" alt="${escHtml(bizName)}">
+            <div class="pdoc-brand">${escHtml(bizName)}</div>
+            <div class="pdoc-slogan">✦ ${escHtml(slogan)} ✦</div>
+          </div>
+          <div>
+            <div class="pdoc-title">INVOICE</div>
+            <div class="pdoc-num">${escHtml(inv.invoice_number)}</div>
+            <div><span class="dsbadge dsb-${disp}">${{paid:'PAID',pending:'PENDING PAYMENT',partial_payment:'PARTIAL PAYMENT',cancelled:'CANCELLED',overdue:'OVERDUE',draft:'DRAFT'}[disp]||'PENDING PAYMENT'}</span></div>
+          </div>
+        </div>
+        <hr class="pdoc-div">
+        <div class="pdoc-parties">
+          <div>
+            <div class="pp-lbl">From</div>
+            <div class="pp-name">${escHtml(bizName)}</div>
+            <div class="pp-det">${escHtml(slogan)}</div>
+          </div>
+          <div>
+            <div class="pp-lbl">Bill To</div>
+            <div class="pp-name">${escHtml(inv.customer_name)}</div>
+            <div class="pp-det">
+              ${inv.customer_phone?escHtml(inv.customer_phone)+'<br>':''}
+              ${inv.customer_email?escHtml(inv.customer_email)+'<br>':''}
+              ${inv.customer_address?escHtml(inv.customer_address):''}
+            </div>
+          </div>
+        </div>
+        <div class="pdoc-dates">
+          <div><label>Invoice Date</label><span>${inv.invoice_date}</span></div>
+          ${inv.due_date?`<div><label>Due Date</label><span>${inv.due_date}</span></div>`:''}
+          <div><label>Currency</label><span>${cur()}</span></div>
+        </div>
+        <table class="pdoc-tbl">
+          <thead><tr>
+            <th style="width:50%">Description</th>
+            <th style="text-align:center;width:10%">Qty</th>
+            <th style="text-align:right;width:20%">Unit Price</th>
+            <th style="text-align:right;width:20%">Total</th>
+          </tr></thead>
+          <tbody>${itemRows}</tbody>
+        </table>
+        <div style="display:flex;justify-content:flex-end">
+          <div class="pdoc-tots">
+            <div class="dt"><span>Subtotal</span><span>${cur()} ${fmtM(inv.subtotal)}</span></div>
+            ${(inv.discount_amount||0)>0?`<div class="dt"><span>Discount (${inv.discount_pct}%)</span><span style="color:#dc2626">&minus;${cur()} ${fmtM(inv.discount_amount)}</span></div>`:''}
+            ${(inv.tax_amount||0)>0?`<div class="dt"><span>Tax (${inv.tax_pct}%)</span><span>${cur()} ${fmtM(inv.tax_amount)}</span></div>`:''}
+            <div class="dt grand"><span>Total Due</span><span>${cur()} ${fmtM(inv.total_amount)}</span></div>
+            ${(inv.amount_paid||0)>0?`<div class="dt paid-row"><span>Amount Received</span><span>${cur()} ${fmtM(inv.amount_paid)}</span></div>`:''}
+            ${bal>0.01?`<div class="dt bal-row"><span>Balance Due</span><span>${cur()} ${fmtM(bal)}</span></div>`:''}
+          </div>
+        </div>
+        <div style="margin-top:1.4rem;padding:.85rem 1rem;background:#f0fdf4;border-radius:8px;border-left:3px solid #1e9a62;font-size:.82rem;color:#555"><strong>Generated:</strong> ${inv.invoice_date} at ${new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})}</div>
+        <div class="pdoc-footer">
+          <div class="pdoc-notes">${footerMsg}</div>
+          <div class="pdoc-thanks">&mdash; ${escHtml(bizName)}</div>
+        </div>
+      </div>`;
+
+    window._printHtml  = docHtml;
+    window._curInvId   = id;
+    window._curInvData = inv;
+
+    PageProgress.done();
+    openModal('viewModal',`
+      <div class="modal-hd">
+        <h2>Invoice ${escHtml(inv.invoice_number)}</h2>
+        <button class="modal-close" onclick="closeModal('viewModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="act-row">
+          <button class="act-btn act-dl"     onclick="downloadInvPDF(${id})">&#x2B07; Download Invoice</button>
+          <button class="act-btn act-print"  onclick="printInv()">&#x1F5A8; Print Invoice</button>
+          ${(inv.amount_paid||0)>0&&inv.status!=='cancelled'
+            ? `<button class="act-btn" style="background:#083d28;color:#fff" onclick="generateReceiptPDF(${id})">&#x1F5A8; Print Receipt</button>
+               <button class="act-btn" style="background:#065f46;color:#fff" onclick="downloadReceiptPDF(${id})">&#x2B07; Download Receipt</button>`
+            : ''}
+          <button class="act-btn act-share"  onclick="shareInv(${id})">&#x2197; Share</button>
+          ${canPay?`<button class="act-btn act-pay" onclick="receivePayment(${id},${inv.total_amount},${bal})">&#x1F4B5; Receive Payment</button>`:''}
+        </div>
+        ${docHtml}
+      </div>`,'wide');
+  } catch(e) {
+    PageProgress.error();
+    showToast(e.error||'Failed to load invoice — please try again','error');
+  } finally {
+    _viewingInvoice = false;
+  }
+}
+
+function printInv() {
+  if (!window._printHtml) return;
+  let f = document.getElementById('printFrame');
+  if (!f){ f=document.createElement('div'); f.id='printFrame'; document.body.appendChild(f); }
+  f.innerHTML = window._printHtml; f.style.display='block';
+  setTimeout(()=>{ window.print(); setTimeout(()=>{ f.style.display='none'; f.innerHTML=''; },600); },220);
+}
+
+// ── PDF helpers using jsPDF (A6 / receipt-card size) ──────────────────────────
+function _pdfInvoice(inv, bizName, slogan) {
+  const { jsPDF } = window.jspdf;
+  // A6 size: 105mm × 148mm — compact, not a full A4 page
+  const doc = new jsPDF({ unit: 'mm', format: 'a6', orientation: 'portrait' });
+  const W = 105, margin = 8;
+  let y = margin;
+  const c = cur();
+  const bal = parseFloat(((inv.total_amount||0)-(inv.amount_paid||0)).toFixed(2));
+  const isPaid = inv.status === 'paid';
+
+  // Header bar — logo + biz name left, INVOICE + number right
+  doc.setFillColor(8, 61, 40);
+  doc.rect(0, 0, W, 22, 'F');
+  let _invLogoDrawn = false;
+  if (_logoCircleBase64) {
+    try {
+      // Logo is pre-cropped to a circle in canvas — draw as square, it IS a circle
+      const ls = 14, lx = margin, ly = 4;
+      doc.addImage(_logoCircleBase64, 'PNG', lx, ly, ls, ls);
+      _invLogoDrawn = true;
+      doc.setTextColor(255,255,255);
+      doc.setFontSize(9); doc.setFont('helvetica','bold');
+      doc.text(bizName.toUpperCase(), margin + 16, 9);
+      doc.setFontSize(5.5); doc.setFont('helvetica','italic');
+      doc.setTextColor(180,230,200);
+      doc.text(slogan, margin + 16, 14);
+    } catch(e) { _invLogoDrawn = false; }
+  }
+  if (!_invLogoDrawn) {
+    doc.setTextColor(255,255,255);
+    doc.setFontSize(9); doc.setFont('helvetica','bold');
+    doc.text(bizName.toUpperCase(), margin, 8);
+    doc.setFontSize(5.5); doc.setFont('helvetica','italic');
+    doc.setTextColor(180,230,200);
+    doc.text(slogan, margin, 13);
+  }
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(9); doc.setFont('helvetica','bold');
+  doc.text('INVOICE', W - margin, 8, {align:'right'});
+  doc.setFontSize(6); doc.setFont('helvetica','normal');
+  doc.setTextColor(180,230,200);
+  doc.text(inv.invoice_number, W - margin, 13, {align:'right'});
+
+  y = 26;
+  doc.setTextColor(0,0,0);
+
+  // Status badge
+  const statusLabel = isPaid ? 'PAID' : inv.status === 'partial_payment' ? 'PARTIAL' : 'PENDING';
+  const statusColor = isPaid ? [22,101,52] : [146,64,14];
+  doc.setFillColor(...statusColor);
+  doc.roundedRect(margin, y, 22, 5, 1, 1, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(5.5); doc.setFont('helvetica','bold');
+  doc.text(statusLabel, margin + 11, y + 3.4, {align:'center'});
+
+  // Date info
+  doc.setTextColor(80,80,80);
+  doc.setFontSize(6); doc.setFont('helvetica','normal');
+  doc.text(`Date: ${inv.invoice_date}`, W - margin, y + 1.5, {align:'right'});
+  if (inv.due_date) doc.text(`Due: ${inv.due_date}`, W - margin, y + 5.5, {align:'right'});
+
+  y += 10;
+
+  // Bill To
+  doc.setFillColor(240,253,244);
+  doc.rect(margin, y, W - margin*2, 14, 'F');
+  doc.setTextColor(30,154,98);
+  doc.setFontSize(5.5); doc.setFont('helvetica','bold');
+  doc.text('BILL TO', margin + 2, y + 3.5);
+  doc.setTextColor(10,10,10);
+  doc.setFontSize(7); doc.setFont('helvetica','bold');
+  doc.text(inv.customer_name || '', margin + 2, y + 7.5);
+  doc.setFontSize(5.8); doc.setFont('helvetica','normal');
+  doc.setTextColor(80,80,80);
+  const contact = [inv.customer_phone, inv.customer_email].filter(Boolean).join('  ');
+  if (contact) doc.text(contact, margin + 2, y + 11);
+
+  y += 17;
+
+  // Items table header
+  doc.setFillColor(8,61,40);
+  doc.rect(margin, y, W - margin*2, 5.5, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(5.5); doc.setFont('helvetica','bold');
+  const colDesc = margin + 1, colQty = margin + 43, colPrice = margin + 58, colTotal = W - margin - 1;
+  doc.text('DESCRIPTION', colDesc, y + 3.8);
+  doc.text('QTY', colQty, y + 3.8, {align:'center'});
+  doc.text('UNIT', colPrice, y + 3.8, {align:'right'});
+  doc.text('TOTAL', colTotal, y + 3.8, {align:'right'});
+  y += 6.5;
+
+  // Items rows
+  doc.setTextColor(20,20,20);
+  (inv.items||[]).forEach((it, i) => {
+    if (i % 2 === 0) { doc.setFillColor(249,250,251); doc.rect(margin, y-0.5, W-margin*2, 5.5, 'F'); }
+    doc.setFontSize(5.8); doc.setFont('helvetica','normal');
+    const desc = it.description + (it.gauge ? ` (G${it.gauge})` : '');
+    doc.text(desc.substring(0,28), colDesc, y + 3.2);
+    doc.text(String(it.quantity), colQty, y + 3.2, {align:'center'});
+    doc.text(`${c} ${fmtM(it.unit_price)}`, colPrice, y + 3.2, {align:'right'});
+    doc.setFont('helvetica','bold');
+    doc.text(`${c} ${fmtM(it.line_total)}`, colTotal, y + 3.2, {align:'right'});
+    doc.setFont('helvetica','normal');
+    y += 5.5;
+  });
+
+  y += 2;
+
+  // Totals block
+  const totX = margin + 38;
+  const drawTotRow = (label, val, bold, color) => {
+    doc.setDrawColor(220,220,220);
+    doc.line(totX, y, W-margin, y);
+    if (color) doc.setTextColor(...color); else doc.setTextColor(40,40,40);
+    doc.setFontSize(6.2);
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.text(label, totX + 1, y + 3.8);
+    doc.text(val, W-margin, y + 3.8, {align:'right'});
+    y += 5.5;
+  };
+
+  if ((inv.discount_amount||0)>0) drawTotRow(`Discount (${inv.discount_pct}%)`, `-${c} ${fmtM(inv.discount_amount)}`, false, [180,0,0]);
+  if ((inv.tax_amount||0)>0) drawTotRow(`Tax (${inv.tax_pct}%)`, `${c} ${fmtM(inv.tax_amount)}`, false, null);
+
+  // Grand total bar
+  doc.setFillColor(8,61,40);
+  doc.rect(totX, y, W-margin-totX, 7, 'F');
+  doc.setTextColor(255,255,255);
+  doc.setFontSize(7); doc.setFont('helvetica','bold');
+  doc.text('TOTAL DUE', totX + 2, y + 4.8);
+  doc.text(`${c} ${fmtM(inv.total_amount)}`, W-margin-1, y + 4.8, {align:'right'});
+  y += 9;
+
+  if ((inv.amount_paid||0)>0) drawTotRow('Amount Received', `${c} ${fmtM(inv.amount_paid)}`, false, [22,101,52]);
+  if (bal > 0.01) drawTotRow('Balance Due', `${c} ${fmtM(bal)}`, true, [180,0,0]);
+
+  y += 4;
+
+  // Footer
+  doc.setDrawColor(200,200,200);
+  doc.line(margin, y, W-margin, y);
+  y += 4;
+  doc.setTextColor(30,154,98);
+  doc.setFontSize(6); doc.setFont('helvetica','italic');
+  doc.text(`Welcome again \u2014 ${slogan}`, W/2, y, {align:'center'});
+  doc.setTextColor(160,160,160);
+  doc.setFontSize(5.5); doc.setFont('helvetica','normal');
+  doc.text(`Generated: ${new Date().toLocaleString('en-KE')}`, W/2, y+4, {align:'center'});
+
+  return doc;
+}
+
+async function downloadInvPDF(id) {
+  try {
+    showToast('Generating PDF…');
+    const inv = await api('GET',`/invoices/${id}`);
+    const bizName = _bizCfg.business_name || 'IMARA LINKS';
+    const slogan  = _bizCfg.business_slogan || 'Built Strong by IMARA';
+    const doc = _pdfInvoice(inv, bizName, slogan);
+    doc.save(`Invoice-${inv.invoice_number}.pdf`);
+    showToast('Invoice PDF downloaded ✓');
+  } catch(e){ showToast(e.error||'PDF generation failed','error'); }
+}
+
+// ── Build professional A4 receipt doc (shared by print & download) ──────────────
+function _buildReceiptDoc(inv) {
+  const { jsPDF } = window.jspdf;
+  const bizName   = (_bizCfg && _bizCfg.business_name)   || 'IMARA LINKS';
+  const slogan    = (_bizCfg && _bizCfg.business_slogan)  || 'Built Strong by IMARA';
+  const amtPaid   = parseFloat(inv.amount_paid)  || 0;
+  const totalAmt  = parseFloat(inv.total_amount) || 0;
+  const balance   = parseFloat((totalAmt - amtPaid).toFixed(2));
+  const isFullPaid = inv.status === 'paid' || balance <= 0;
+  const isZeroPay  = amtPaid === 0;
+
+  // A4 portrait
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+  const W = 210, H = 297;
+  const ml = 20, mr = 20, cw = W - ml - mr;  // content width = 170mm
+  let y = 0;
+
+  // ── Header band — deep navy with gold accent (visually distinct from invoice) ─
+  // Navy base
+  doc.setFillColor(8, 61, 40);
+  doc.rect(0, 0, W, 45, 'F');
+  // Accent stripe at bottom of header
+  doc.setFillColor(30, 154, 98);
+  doc.rect(0, 43, W, 3, 'F');
+
+  // Logo (left) — use preloaded base64, fall back to business name text
+  const rcptNum = 'RCT-' + inv.invoice_number;
+  let logoDrawn = false;
+  if (_logoCircleBase64) {
+    try {
+      // Logo is pre-cropped to a circle in canvas — draw as square, it IS a circle
+      const lx = ml, ly = 8, ls = 28;
+      doc.addImage(_logoCircleBase64, 'PNG', lx, ly, ls, ls);
+      logoDrawn = true;
+      // Business name & slogan to the right of logo
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(13); doc.setFont('helvetica', 'bold');
+      doc.text(bizName.toUpperCase(), ml + 33, 19);
+      doc.setFontSize(7.5); doc.setFont('helvetica', 'italic');
+      doc.setTextColor(180, 230, 200);
+      doc.text(slogan, ml + 33, 27);
+    } catch(e) { logoDrawn = false; }
+  }
+  if (!logoDrawn) {
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
+    doc.text(bizName.toUpperCase(), ml, 17);
+    doc.setFontSize(7.5); doc.setFont('helvetica', 'italic');
+    doc.setTextColor(30, 154, 98);  // gold
+    doc.text(slogan, ml, 24);
+  }
+
+  // "RECEIPT" title (right) — white, matching invoice style
+  doc.setFontSize(22); doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('RECEIPT', W - mr, 18, { align: 'right' });
+  doc.setFontSize(8); doc.setFont('helvetica', 'normal');
+  doc.setTextColor(134, 214, 176);  // lighter gold
+  doc.text(rcptNum, W - mr, 26, { align: 'right' });
+
+  y = 56;  // extra space because header is 45mm tall + gold stripe
+
+  // ── Payment status badge ─────────────────────────────────────────────────────
+  let badgeBg, badgeTxt, badgeLabel;
+  if (isFullPaid) {
+    badgeBg = [220, 252, 231]; badgeTxt = [22, 101, 52]; badgeLabel = 'PAID IN FULL';
+  } else if (isZeroPay) {
+    badgeBg = [239, 246, 255]; badgeTxt = [29, 78, 216]; badgeLabel = 'PROFORMA — ZERO PAYMENT';
+  } else {
+    badgeBg = [255, 247, 237]; badgeTxt = [180, 83, 9]; badgeLabel = 'PARTIAL PAYMENT';
+  }
+  doc.setFillColor(...badgeBg);
+  doc.roundedRect(ml, y, cw, 10, 2, 2, 'F');
+  doc.setTextColor(...badgeTxt);
+  doc.setFontSize(11); doc.setFont('helvetica', 'bold');
+  doc.text(badgeLabel, W / 2, y + 6.8, { align: 'center' });
+  y += 18;
+
+  // ── Two-column meta: Bill To (left) | Receipt Details (right) ────────────────
+  const colW = (cw - 8) / 2;
+
+  // Left column — Bill To
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(ml, y, colW, 36, 2, 2, 'F');
+  doc.setDrawColor(15, 23, 58); doc.setLineWidth(0.4);
+  doc.line(ml, y + 8, ml + colW, y + 8);
+  doc.setFillColor(8, 61, 40);
+  doc.roundedRect(ml, y, colW, 8, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+  doc.text('BILLED TO', ml + colW / 2, y + 5.2, { align: 'center' });
+  doc.setTextColor(20, 20, 20); doc.setFontSize(9); doc.setFont('helvetica', 'bold');
+  doc.text(inv.customer_name || '', ml + 4, y + 15);
+  doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(80, 80, 80);
+  if (inv.customer_phone) doc.text(inv.customer_phone, ml + 4, y + 22);
+  if (inv.customer_email) doc.text(inv.customer_email, ml + 4, y + 28.5);
+  if (inv.customer_address) doc.text(inv.customer_address.substring(0, 28), ml + 4, y + 34.5);
+
+  // Right column — Receipt details
+  const rx = ml + colW + 8;
+  doc.setFillColor(248, 250, 252);
+  doc.roundedRect(rx, y, colW, 36, 2, 2, 'F');
+  doc.setFillColor(8, 61, 40);
+  doc.roundedRect(rx, y, colW, 8, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+  doc.text('RECEIPT DETAILS', rx + colW / 2, y + 5.2, { align: 'center' });
+
+  const detRows = [
+    ['Receipt No.', rcptNum],
+    ['Invoice No.', inv.invoice_number],
+    ['Date Issued', new Date().toLocaleDateString('en-KE', { day:'2-digit', month:'short', year:'numeric' })],
+    ['Invoice Date', inv.invoice_date],
+  ];
+  detRows.forEach((r, i) => {
+    const ry2 = y + 14 + i * 6.5;
+    doc.setFontSize(7); doc.setFont('helvetica', 'normal'); doc.setTextColor(120, 120, 120);
+    doc.text(r[0], rx + 4, ry2);
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(20, 20, 20);
+    doc.text(r[1], rx + colW - 4, ry2, { align: 'right' });
+  });
+  y += 44;
+
+  // ── Items table ──────────────────────────────────────────────────────────────
+  // Header — navy
+  doc.setFillColor(8, 61, 40);
+  doc.rect(ml, y, cw, 8, 'F');
+  // Gold left accent bar on table header
+  doc.setFillColor(30, 154, 98);
+  doc.rect(ml, y, 3, 8, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(7.5); doc.setFont('helvetica', 'bold');
+  const c1 = ml + 6, c2 = ml + 95, c3 = ml + 120, c4 = ml + 145, c5 = ml + cw - 1;
+  doc.text('DESCRIPTION',   c1, y + 5.2);
+  doc.text('QTY',           c2, y + 5.2, { align: 'center' });
+  doc.text('UNIT PRICE',    c3 + 10, y + 5.2, { align: 'right' });
+  doc.text('TOTAL',         c5, y + 5.2, { align: 'right' });
+  y += 9;
+
+  // Rows
+  const items = inv.items || [];
+  items.forEach((it, i) => {
+    if (i % 2 === 0) { doc.setFillColor(247, 248, 252); doc.rect(ml, y, cw, 8, 'F'); }
+    const desc = (it.description + (it.gauge ? ` (G${it.gauge})` : '')).substring(0, 38);
+    doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 30, 30);
+    doc.text(desc, c1, y + 5.2);
+    doc.text(String(it.quantity), c2, y + 5.2, { align: 'center' });
+    doc.setTextColor(80, 80, 80);
+    doc.text(`${cur()} ${fmtM(it.unit_price)}`, c3 + 10, y + 5.2, { align: 'right' });
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(10, 10, 10);
+    doc.text(`${cur()} ${fmtM(it.line_total)}`, c5, y + 5.2, { align: 'right' });
+    y += 8;
+  });
+
+  // Bottom border of table — gold
+  doc.setDrawColor(30, 154, 98); doc.setLineWidth(0.8);
+  doc.line(ml, y, ml + cw, y);
+  y += 8;
+
+  // ── Totals block (right-aligned) ─────────────────────────────────────────────
+  const tw = 90, tx = ml + cw - tw;
+  const totRow = (label, val, bold, clr) => {
+    doc.setDrawColor(220, 220, 220); doc.setLineWidth(0.2);
+    doc.line(tx, y, ml + cw, y);
+    doc.setFontSize(8.5); doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    doc.setTextColor(...(clr || [50, 50, 50]));
+    doc.text(label, tx + 2, y + 5);
+    doc.text(val, ml + cw, y + 5, { align: 'right' });
+    y += 6.5;
+  };
+
+  if ((inv.discount_amount || 0) > 0)
+    totRow(`Discount (${inv.discount_pct}%)`, `-${cur()} ${fmtM(inv.discount_amount)}`, false, [180, 0, 0]);
+  if ((inv.tax_amount || 0) > 0)
+    totRow(`Tax (${inv.tax_pct}%)`, `${cur()} ${fmtM(inv.tax_amount)}`, false, null);
+
+  // Grand total bar — navy
+  y += 1;
+  doc.setFillColor(8, 61, 40);
+  doc.roundedRect(tx, y, tw, 10, 1.5, 1.5, 'F');
+  // Gold accent on left edge of total bar
+  doc.setFillColor(30, 154, 98);
+  doc.roundedRect(tx, y, 3, 10, 1, 1, 'F');
+  doc.setTextColor(255, 255, 255); doc.setFontSize(9); doc.setFont('helvetica', 'bold');
+  doc.text('INVOICE TOTAL', tx + 6, y + 6.8);
+  doc.text(`${cur()} ${fmtM(inv.total_amount)}`, ml + cw - 3, y + 6.8, { align: 'right' });
+  y += 14;
+
+  if ((inv.amount_paid || 0) > 0) {
+    doc.setFillColor(220, 252, 231);
+    doc.roundedRect(tx, y, tw, 10, 1.5, 1.5, 'F');
+    doc.setTextColor(22, 101, 52); doc.setFontSize(9); doc.setFont('helvetica', 'bold');
+    doc.text('AMOUNT RECEIVED', tx + 4, y + 6.8);
+    doc.text(`${cur()} ${fmtM(amtPaid)}`, ml + cw - 3, y + 6.8, { align: 'right' });
+    y += 14;
+  }
+
+  if (balance > 0.01) {
+    doc.setFillColor(254, 243, 199);
+    doc.roundedRect(tx, y, tw, 10, 1.5, 1.5, 'F');
+    doc.setTextColor(146, 64, 14); doc.setFontSize(9); doc.setFont('helvetica', 'bold');
+    doc.text('BALANCE OUTSTANDING', tx + 4, y + 6.8);
+    doc.text(`${cur()} ${fmtM(balance)}`, ml + cw - 3, y + 6.8, { align: 'right' });
+    y += 14;
+  }
+
+  y += 6;
+
+  // ── Notes / disclaimer — navy-tinted box ─────────────────────────────────────
+  doc.setFillColor(235, 238, 250);
+  doc.roundedRect(ml, y, cw, 14, 2, 2, 'F');
+  doc.setFillColor(8, 61, 40);
+  doc.roundedRect(ml, y, 3, 14, 1, 1, 'F');
+  doc.setTextColor(15, 23, 58); doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+  doc.text('OFFICIAL RECEIPT', ml + 6, y + 5.5);
+  doc.setFont('helvetica', 'normal'); doc.setTextColor(60, 60, 80);
+  doc.text('This document is an official receipt issued by ' + bizName + '. Not editable.', ml + 6, y + 10);
+  doc.setTextColor(160, 160, 160); doc.setFontSize(6.5);
+  doc.text('Generated: ' + new Date().toLocaleString('en-KE'), ml + cw, y + 10, { align: 'right' });
+  y += 20;
+
+  // ── Footer — gold rule + navy text ───────────────────────────────────────────
+  doc.setDrawColor(30, 154, 98); doc.setLineWidth(0.8);
+  doc.line(ml, y, ml + cw, y); y += 5;
+  doc.setTextColor(15, 23, 58); doc.setFontSize(8); doc.setFont('helvetica', 'bold');
+  doc.text('Thank You — ' + slogan, W / 2, y, { align: 'center' });
+  doc.setTextColor(160, 160, 160); doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+  doc.text(bizName, W / 2, y + 5, { align: 'center' });
+
+  return doc;
+}
+
+// ── Print Receipt (opens print dialog) ──────────────────────────────────────
+async function generateReceiptPDF(id) {
+  try {
+    showToast('Preparing receipt…');
+    const inv = await api('GET', `/invoices/${id}`);
+    if (inv.status === 'cancelled') { showToast('Cannot generate receipt for a cancelled invoice', 'error'); return; }
+    const doc = _buildReceiptDoc(inv);
+    const pdfBlob = doc.output('blob');
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    let pf = document.getElementById('receiptPrintFrame');
+    if (!pf) {
+      pf = document.createElement('iframe');
+      pf.id = 'receiptPrintFrame';
+      pf.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;visibility:hidden';
+      document.body.appendChild(pf);
+    }
+    pf.onload = function() {
+      setTimeout(function() {
+        try { pf.contentWindow.focus(); pf.contentWindow.print(); }
+        catch(ex) { window.open(blobUrl, '_blank'); }
+        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 30000);
+      }, 350);
+    };
+    pf.src = blobUrl;
+    showToast('Receipt ready — print dialog opening…');
+  } catch(e) { console.error(e); showToast('Receipt print failed', 'error'); }
+}
+
+// ── Download Receipt as PDF ──────────────────────────────────────────────────
+async function downloadReceiptPDF(id) {
+  try {
+    showToast('Generating receipt PDF…');
+    const inv = await api('GET', `/invoices/${id}`);
+    if (inv.status === 'cancelled') { showToast('Cannot generate receipt for a cancelled invoice', 'error'); return; }
+    const doc = _buildReceiptDoc(inv);
+    doc.save(`Receipt-${inv.invoice_number}.pdf`);
+    showToast('Receipt downloaded ✓');
+  } catch(e) { console.error(e); showToast('Receipt download failed', 'error'); }
+}
+
+async function shareInv(id) {
+  try {
+    const inv     = await api('GET',`/invoices/${id}`);
+    const slogan  = _bizCfg.business_slogan || 'Built Strong by IMARA';
+    const bizName = _bizCfg.business_name   || 'IMARA LINKS';
+    const isPaid  = inv.status === 'paid';
+    const text = `Invoice ${inv.invoice_number}\nCustomer: ${inv.customer_name}\nAmount: ${cur()} ${fmtM(inv.total_amount)}\nDate: ${inv.invoice_date}${inv.due_date?'\nDue: '+inv.due_date:''}\nStatus: ${isPaid?'PAID':'PENDING PAYMENT'}\n\nWelcome again — ${slogan}`;
+    if (navigator.share) { await navigator.share({title:`Invoice ${inv.invoice_number}`,text}); }
+    else if (navigator.clipboard) { await navigator.clipboard.writeText(text); showToast('Invoice details copied to clipboard'); }
+  } catch(e){ if(e.name!=='AbortError') showToast('Share failed','error'); }
+}
+
+async function cancelInv(id) {
+  const inv = window._curInvData;
+  const paidAmt = parseFloat(inv?.amount_paid || 0);
+  const hasPayments = paidAmt > 0;
+
+  // Build a clear, honest confirmation message
+  let confirmMsg = `Cancel invoice ${inv?.invoice_number || ''}?\n\n`;
+  confirmMsg += `Customer: ${inv?.customer_name || ''}\n`;
+  confirmMsg += `Total: KES ${parseFloat(inv?.total_amount || 0).toLocaleString()}\n`;
+  if (hasPayments) {
+    confirmMsg += `\n⚠️  WARNING: KES ${paidAmt.toLocaleString()} has already been collected.\n`;
+    confirmMsg += `The payment history will be kept for audit purposes.\n`;
+    confirmMsg += `You will need to issue a refund or credit note separately.\n`;
+  }
+  confirmMsg += `\nThe invoice record will remain visible as "Cancelled" for your records.\nThis cannot be undone.\n\nProceed?`;
+
+  if (!confirm(confirmMsg)) return;
+
+  // Prompt for reason — null means user pressed ESC (abort the cancellation)
+  const reason = prompt('Optional: Enter a reason for cancellation (or press Cancel to abort):', '');
+  if (reason === null) return; // user pressed ESC/Cancel on the prompt — do nothing
+
+  try {
+    const result = await api('PATCH', `/invoices/${id}/cancel`, { reason: reason.trim() });
+    // Show full server message — it includes payment and sale-link warnings
+    showToast(result.message || 'Invoice cancelled', 'success', 6000);
+    // Push bell notification
+    const invNum = result?.invoice?.invoice_number || id;
+    const customer = result?.invoice?.customer_name || 'Customer';
+    api('POST', '/notifications', {
+      type: 'warn', category: 'sales',
+      title: `⚠ Invoice Cancelled — ${invNum}`,
+      message: `${customer}'s invoice was cancelled${reason ? ': ' + reason : ''}.`,
+      roleTarget: 'owner',
+    }).catch(() => {});
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
+    // If server returned additional warnings, surface them one by one
+    if (result.warnings && result.warnings.length) {
+      result.warnings.forEach((w, i) => setTimeout(() => showToast('⚠️ ' + w, 'warn', 8000), (i+1)*1200));
+    }
+    closeModal('viewModal');
+    await loadAll();
+  } catch(e) {
+    showToast(e.error || e.message || 'Failed to cancel invoice', 'error');
+  }
+}
+
+async function deleteInv(id) {
+  const inv = window._curInvData;
+  // Safety: verify the cached data matches the id being deleted
+  if (!inv || parseInt(inv.id) !== parseInt(id)) {
+    showToast('Invoice data mismatch — please close and reopen the invoice before deleting.', 'error', 6000);
+    return;
+  }
+  const paidAmt = parseFloat(inv.amount_paid || 0);
+
+  if (paidAmt > 0) {
+    alert(`Cannot delete invoice ${inv.invoice_number}.\n\nKES ${paidAmt.toLocaleString()} has already been collected against this invoice.\n\nTo close it, use "Cancel Invoice" instead — this keeps the full audit trail and payment history intact.`);
+    return;
+  }
+  if (inv.sale_id) {
+    alert(`Cannot delete invoice ${inv.invoice_number}.\n\nThis invoice was auto-generated from a Daily sale. To remove it, delete the sale from the Daily page — that will remove the invoice automatically.`);
+    return;
+  }
+
+  const confirmMsg = `Permanently delete invoice ${inv.invoice_number}?\n\nCustomer: ${inv.customer_name}\nTotal: KES ${parseFloat(inv.total_amount || 0).toLocaleString()}\n\nThis removes the invoice and all its line items permanently. This cannot be undone.\n\nProceed?`;
+  if (!confirm(confirmMsg)) return;
+
+  try {
+    const result = await api('DELETE', `/invoices/${id}`);
+    showToast(result.message || 'Invoice deleted');
+    closeModal('viewModal');
+    await loadAll();
+  } catch(e) {
+    // Surface exact backend message — includes guidance on what to do instead
+    const msg = e.error === 'INTEGRITY_VIOLATION'
+      ? (e.message || 'Cannot delete this invoice.')
+      : (e.error || e.message || 'Failed to delete invoice');
+    showToast(msg, 'error', 8000);
+  }
+}
+
+async function loadAndEdit(id) {
+  try { const inv = await api('GET',`/invoices/${id}`); openEdit(inv); }
+  catch(e){ showToast(e.error||'Failed to load','error'); }
+}
+
+/* ── RECEIVE PAYMENT ── */
+async function receivePayment(id, total, balance) {
+  // Show the payment modal IMMEDIATELY — no silent waiting
+  openModal('payModal',`
+    <div class="modal-hd">
+      <h2>&#x1F4B5; Receive Payment</h2>
+      <button class="modal-close" onclick="closeModal('payModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="payHistoryArea" style="margin-bottom:.75rem">
+        <div style="display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:var(--muted);padding:.4rem 0">
+          <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
+          Loading payment history…
+        </div>
+      </div>
+      <div class="pay-banner" id="payBanner" style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:6px;padding:.75rem .9rem;margin-bottom:.9rem;font-size:.83rem;color:#92400e">
+        ✏ Edit the amount to record a <strong>partial payment</strong> — the invoice will stay open with the remaining balance tracked.
+      </div>
+      <div class="grid2">
+        <div class="fg"><label>Invoice Total</label>
+          <input class="input" value="${cur()} ${fmtM(total)}" readonly style="background:var(--g50);color:var(--muted);cursor:not-allowed"></div>
+        <div class="fg"><label>Balance Due</label>
+          <input class="input" value="${cur()} ${fmtM(balance)}" readonly style="background:var(--g50);font-weight:700;color:#d97706;cursor:not-allowed"></div>
+      </div>
+      <div class="fg">
+        <label>Amount Received Now <span style="color:var(--red)">*</span></label>
+        <input class="input" type="number" id="pay_amt" value="${fmtM(balance,2)}" min="0.01" max="${fmtM(balance,2)}" step="0.01"
+          style="font-size:1.1rem;font-weight:700" oninput="livePayHint(${balance})">
+      </div>
+      <div class="grid2">
+        <div class="fg"><label>Payment Method <span style="color:var(--red)">*</span></label>
+          <select class="input" id="pay_method">
+            <option value="cash">Cash</option>
+            <option value="mpesa">M-Pesa</option>
+            <option value="bank">Bank Transfer</option>
+            <option value="cheque">Cheque</option>
+          </select></div>
+        <div class="fg"><label>Payment Date <span style="color:var(--red)">*</span></label>
+          <input class="input" type="date" id="pay_date" value="${new Date().toISOString().split('T')[0]}"></div>
+      </div>
+      <div class="fg"><label>Reference / Notes</label>
+        <input class="input" id="pay_notes" placeholder="M-Pesa code, receipt #, etc."></div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-secondary" onclick="closeModal('payModal')">Cancel</button>
+      <button class="btn btn-primary" style="background:#d97706" onclick="confirmPayment(${id})">&#x1F4B5; Confirm Payment Received</button>
+    </div>`);
+
+  livePayHint(balance);
+
+  // Load payment history in the background — modal is already open and usable
+  try {
+    const ph = await api('GET', `/invoices/${id}/payments`);
+    const payHistory = ph.payments || [];
+    const histEl = document.getElementById('payHistoryArea');
+    if (!histEl) return; // modal was closed
+    if (payHistory.length > 0) {
+      histEl.innerHTML = `<div style="margin-bottom:.75rem;padding:.6rem .9rem;background:#f0fdf4;border-radius:6px;font-size:.78rem">
+        <strong style="color:#166534">Previous payments (${payHistory.length}):</strong>
+        ${payHistory.map(p=>`<div style="color:#444;margin-top:.2rem">• ${p.payment_date} — KES ${parseFloat(p.amount).toLocaleString()} (${p.payment_method})</div>`).join('')}
+       </div>`;
+    } else {
+      histEl.innerHTML = ''; // no history, remove the placeholder cleanly
+    }
+  } catch(e) {
+    const histEl = document.getElementById('payHistoryArea');
+    if (histEl) histEl.innerHTML = ''; // fail silently — history is non-critical
+  }
+}
+
+function livePayHint(balance) {
+  const amt    = parseFloat(document.getElementById('pay_amt')?.value) || 0;
+  const banner = document.getElementById('payBanner');
+  if (!banner) return;
+  const rem = Math.max(0, balance - amt);
+  if (amt <= 0) {
+    banner.style.cssText = 'background:#fef9c3;color:#92400e;padding:.6rem .9rem;border-radius:6px;font-size:.82rem';
+    banner.textContent = '⚠ Enter an amount.';
+  } else if (amt >= balance) {
+    banner.style.cssText = 'background:#dcfce7;color:#166534;padding:.6rem .9rem;border-radius:6px;font-size:.82rem';
+    banner.innerHTML = '✓ Full balance — invoice will be marked <strong>Paid</strong>.';
+  } else {
+    banner.style.cssText = 'background:#fff7ed;color:#92400e;padding:.6rem .9rem;border-radius:6px;font-size:.82rem';
+    banner.innerHTML = `Partial payment — remaining balance: <strong>${cur()} ${fmtM(rem)}</strong>. Invoice stays open.`;
+  }
+}
+
+async function confirmPayment(id) {
+  if (_paymentSubmitting) return;
+  const amt    = parseFloat(document.getElementById('pay_amt')?.value);
+  const method = document.getElementById('pay_method')?.value||'cash';
+  const date   = document.getElementById('pay_date')?.value;
+  const notes  = document.getElementById('pay_notes')?.value?.trim()||'';
+  if (!amt||amt<=0) { showToast('Enter amount received','error'); return; }
+  if (!date)        { showToast('Payment date is required','error'); return; }
+
+  _paymentSubmitting = true;
+  const btn = document.querySelector('#payModal .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Recording payment…'; }
+
+  try {
+    const result = await api('POST',`/invoices/${id}/cash`,{amount_paid:amt,payment_method:method,payment_date:date,notes});
+    const newStatus = result?.invoice?.status;
+    const isFullyPaid = newStatus === 'paid';
+    const msg = isFullyPaid
+      ? 'Full payment received — invoice marked <strong>Paid ✓</strong>'
+      : `Partial payment recorded — balance updated`;
+
+    closeModal('payModal');
+    showToast(msg); // immediate feedback — don't make user wait for list reload
+
+    // Push to notification bell
+    const invNum = result?.invoice?.invoice_number || id;
+    const customer = result?.invoice?.customer_name || 'Customer';
+    api('POST', '/notifications', {
+      type: isFullyPaid ? 'info' : 'warn',
+      category: 'sales',
+      title: isFullyPaid ? `💰 Payment Received — ${invNum}` : `💳 Partial Payment — ${invNum}`,
+      message: `${customer} paid KES ${amt.toLocaleString()} via ${method || 'cash'}. ${isFullyPaid ? 'Invoice fully settled.' : 'Balance still outstanding.'}`,
+      roleTarget: 'owner',
+    }).catch(() => {});
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
+
+    // Reload list in background — user already has their confirmation
+    loadAll().catch(()=>{});
+
+    // Refresh the invoice view modal in-place so user sees updated status/buttons without closing
+    setTimeout(() => viewInvoice(id), 350);
+  } catch(e){
+    showToast(e.error||'Failed to record payment — please try again','error');
+  } finally {
+    _paymentSubmitting = false;
+    if (btn) { btn.disabled = false; btn.innerHTML = '💵 Confirm Payment Received'; }
+  }
+}
+
+/* ── CREATE / EDIT ── */
+function openCreate(){ _editId=null; showForm(null); }
+function openEdit(inv){ _editId=inv.id; showForm(inv); }
+
+function showForm(inv) {
+  const today = new Date().toISOString().split('T')[0];
+  const due   = new Date(Date.now()+14*86400000).toISOString().split('T')[0];
+  _itemSeq = 0;
+  openModal('formModal',`
+    <div class="modal-hd">
+      <h2>${inv?`Edit &mdash; ${inv.invoice_number}`:'New Invoice'}</h2>
+      <button class="modal-close" onclick="closeModal('formModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="grid2">
+        <div class="fg"><label>Customer Name <span style="color:var(--red)">*</span></label>
+          <input class="input" id="fc_name" value="${escHtml(inv?.customer_name||'')}" placeholder="Customer / Company name"></div>
+        <div class="fg"><label>Phone</label>
+          <input class="input" id="fc_phone" value="${escHtml(inv?.customer_phone||'')}" placeholder="+254&hellip;"></div>
+      </div>
+      <div class="grid2">
+        <div class="fg"><label>Email</label>
+          <input class="input" id="fc_email" value="${escHtml(inv?.customer_email||'')}" placeholder="email@example.com"></div>
+        <div class="fg"><label>Address</label>
+          <input class="input" id="fc_addr" value="${escHtml(inv?.customer_address||'')}" placeholder="Town / street"></div>
+      </div>
+      <div class="grid2">
+        <div class="fg"><label>Invoice Date <span style="color:var(--red)">*</span></label>
+          <input class="input" type="date" id="fc_date" value="${inv?.invoice_date||today}"></div>
+        <div class="fg"><label>Due Date</label>
+          <input class="input" type="date" id="fc_due" value="${inv?.due_date||due}"></div>
+      </div>
+      <div class="grid2">
+        <div class="fg"><label>Discount %</label>
+          <input class="input" type="number" id="fc_disc" value="${inv?.discount_pct||0}" min="0" max="100" oninput="recalc()"></div>
+        <div class="fg"><label>Tax %</label>
+          <input class="input" type="number" id="fc_tax" value="${inv?.tax_pct||0}" min="0" oninput="recalc()"></div>
+      </div>
+      <div style="font-weight:600;font-size:.86rem;color:var(--g700);margin:.5rem 0 .35rem">Line Items</div>
+      <table class="items-tbl">
+        <thead><tr>
+          <th>Description</th><th>Gauge</th>
+          <th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th>
+          <th style="text-align:right">Total</th><th></th>
+        </tr></thead>
+        <tbody id="itemsBody"></tbody>
+      </table>
+      <button class="add-row" onclick="addItem()">+ Add Line Item</button>
+      <div class="tots" id="totsBlock"></div>
+      <div style="margin:.75rem 0;padding:.85rem 1rem;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0">
+        <div style="font-weight:700;font-size:.82rem;color:#166534;margin-bottom:.5rem">💰 Payment at Reception</div>
+        <div class="grid2">
+          <div class="fg">
+            <label>Amount Received <span style="color:var(--muted);font-size:.72rem">(reduce for partial)</span></label>
+            <input class="input" type="number" id="fc_amount_paid"
+              value="${inv ? parseFloat(inv.amount_paid||0).toFixed(2) : 0}" min="0" step="0.01"
+              style="font-weight:700;color:#166534" oninput="this.dataset.touched='1';updatePayStatus()">
+          </div>
+          <div class="fg">
+            <label>Payment Method</label>
+            <select class="input" id="fc_pay_method">
+              <option value="cash">Cash</option>
+              <option value="mpesa">M-Pesa</option>
+              <option value="bank">Bank Transfer</option>
+              <option value="cheque">Cheque</option>
+            </select>
+          </div>
+        </div>
+        <div id="fc_pay_status" style="font-size:.78rem;margin-top:.3rem"></div>
+      </div>
+      <div class="fg" style="margin-top:.9rem"><label>Notes</label>
+        <textarea class="input" id="fc_notes" rows="2" placeholder="Payment terms, delivery notes…">${escHtml(inv?.notes||'')}</textarea></div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn btn-secondary" onclick="closeModal('formModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveInvoice()">💾 Save Invoice</button>
+    </div>`);
+  if (inv?.items?.length){ inv.items.forEach(it=>addItem(it)); } else { addItem(); addItem(); }
+  recalc();
+}
+
+function addItem(it) {
+  _itemSeq++;
+  const id    = _itemSeq;
+  const gauges = (getConfig('wire_gauges','12,14,16')).split(',').map(g=>g.trim());
+  const gOpts  = `<option value="">—</option>`+gauges.map(g=>`<option value="${g}"${it&&it.gauge===g?' selected':''}>${g}</option>`).join('');
+  const ptOpts = `<option value="">— piece type —</option>`+(_pieceTypes||[]).map(pt=>
+    `<option value="${pt.id}" data-price="${pt.default_price}" data-name="${escHtml(pt.name)}"${it&&it.piece_type_id===pt.id?' selected':''}>${escHtml(pt.name)}</option>`
+  ).join('');
+  const tr = document.createElement('tr');
+  tr.id = `irow_${id}`;
+  tr.innerHTML = `
+    <td>
+      <select class="input" id="it_pt_${id}" onchange="ptPick(${id})" style="font-size:.8rem;margin-bottom:.25rem;width:100%">${ptOpts}</select>
+      <input class="input" id="it_desc_${id}" value="${escHtml(it&&it.description||'')}" placeholder="Description" oninput="recalc()" style="font-size:.82rem">
+    </td>
+    <td><select class="input" id="it_gauge_${id}" style="width:80px;font-size:.8rem">${gOpts}</select></td>
+    <td><input class="input" type="number" id="it_qty_${id}" value="${it&&it.quantity||1}" min="1" step="1" oninput="recalc()" style="width:70px;text-align:right;font-size:.82rem"></td>
+    <td><input class="input" type="number" id="it_price_${id}" value="${it&&it.unit_price||0}" min="0" step="0.01" oninput="recalc()" style="width:100px;text-align:right;font-size:.82rem"></td>
+    <td id="it_tot_${id}" style="font-family:var(--font-mono);font-weight:600;text-align:right;font-size:.84rem;white-space:nowrap">0.00</td>
+    <td><button class="del" onclick="document.getElementById('irow_${id}').remove();recalc()">&#x2715;</button></td>`;
+  document.getElementById('itemsBody').appendChild(tr);
+  recalc();
+}
+
+function ptPick(id) {
+  const sel = document.getElementById(`it_pt_${id}`);
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt||!opt.value) return;
+  const desc  = document.getElementById(`it_desc_${id}`);
+  const price = document.getElementById(`it_price_${id}`);
+  if (!desc.value)                     desc.value  = opt.dataset.name||opt.text;
+  if (!price.value||price.value==='0') price.value = opt.dataset.price||0;
+  recalc();
+}
+
+function recalc() {
+  let sub = 0;
+  document.querySelectorAll('#itemsBody tr').forEach(r => {
+    const id  = r.id.replace('irow_','');
+    const qty = parseFloat(document.getElementById(`it_qty_${id}`)?.value)||0;
+    const pr  = parseFloat(document.getElementById(`it_price_${id}`)?.value)||0;
+    const tot = parseFloat((qty*pr).toFixed(2));
+    const el  = document.getElementById(`it_tot_${id}`);
+    if (el) el.textContent = `${cur()} ${fmtM(tot)}`;
+    sub += tot;
+  });
+  const disc  = parseFloat(document.getElementById('fc_disc')?.value)||0;
+  const tax   = parseFloat(document.getElementById('fc_tax')?.value)||0;
+  const discA = parseFloat((sub*disc/100).toFixed(2));
+  const after = sub - discA;
+  const taxA  = parseFloat((after*tax/100).toFixed(2));
+  const total = after + taxA;
+  const bl = document.getElementById('totsBlock');
+  if (bl) bl.innerHTML = `
+    <div class="tot-row"><span>Subtotal</span><span>${cur()} ${fmtM(sub)}</span></div>
+    ${disc>0?`<div class="tot-row"><span>Discount (${disc}%)</span><span style="color:var(--red)">&minus;${cur()} ${fmtM(discA)}</span></div>`:''}
+    ${tax>0?`<div class="tot-row"><span>Tax (${tax}%)</span><span>${cur()} ${fmtM(taxA)}</span></div>`:''}
+    <div class="tot-row grand"><span>Total</span><span>${cur()} ${fmtM(total)}</span></div>`;
+  // Auto-fill full amount for new invoices; leave edits alone
+  const amtEl = document.getElementById('fc_amount_paid');
+  if (amtEl && !_editId && !amtEl.dataset.touched) amtEl.value = total > 0 ? total.toFixed(2) : '0';
+  updatePayStatus();
+}
+
+function updatePayStatus() {
+  const amtEl  = document.getElementById('fc_amount_paid');
+  const statEl = document.getElementById('fc_pay_status');
+  if (!amtEl || !statEl) return;
+  const paid  = parseFloat(amtEl.value) || 0;
+  const grand = document.querySelector('#totsBlock .grand span:last-child');
+  const total = grand ? parseFloat(grand.textContent.replace(/[^0-9.]/g,'')) || 0 : 0;
+  const bal   = Math.max(0, total - paid);
+  if (paid <= 0)          statEl.innerHTML = `<span style="color:#d97706">⚠ No payment — invoice stays as Pending Payment</span>`;
+  else if (paid >= total && total > 0) statEl.innerHTML = `<span style="color:#166534">✓ Full payment — invoice will be marked <strong>Paid</strong></span>`;
+  else                    statEl.innerHTML = `<span style="color:#d97706">⚠ Partial — balance of <strong>${cur()} ${fmtM(bal)}</strong> stays outstanding</span>`;
+}
+
+function collectItems() {
+  const items = [];
+  for (const r of document.querySelectorAll('#itemsBody tr')) {
+    const id    = r.id.replace('irow_','');
+    const desc  = document.getElementById(`it_desc_${id}`)?.value?.trim();
+    const gauge = document.getElementById(`it_gauge_${id}`)?.value?.trim()||'';
+    const qty   = parseInt(document.getElementById(`it_qty_${id}`)?.value)||0;
+    const price = parseFloat(document.getElementById(`it_price_${id}`)?.value)||0;
+    const ptId  = parseInt(document.getElementById(`it_pt_${id}`)?.value)||null;
+    if (!desc){ showToast(`Item ${items.length+1}: description required`,'error'); return null; }
+    if (qty<1){ showToast(`Item ${items.length+1}: quantity must be at least 1`,'error'); return null; }
+    items.push({piece_type_id:ptId,description:desc,gauge,quantity:qty,unit_price:price,line_total:qty*price});
+  }
+  return items;
+}
+
+async function saveInvoice() {
+  if (_invoiceSaving) return;
+  const items = collectItems();
+  if (!items||!items.length){ showToast('Add at least one line item','error'); return; }
+  const name = document.getElementById('fc_name')?.value?.trim();
+  if (!name){ showToast('Customer name is required','error'); return; }
+  const payload = {
+    customer_name:    name,
+    customer_phone:   document.getElementById('fc_phone')?.value?.trim()||'',
+    customer_email:   document.getElementById('fc_email')?.value?.trim()||'',
+    customer_address: document.getElementById('fc_addr')?.value?.trim()||'',
+    invoice_date:     document.getElementById('fc_date')?.value,
+    due_date:         document.getElementById('fc_due')?.value||'',
+    discount_pct:     parseFloat(document.getElementById('fc_disc')?.value)||0,
+    tax_pct:          parseFloat(document.getElementById('fc_tax')?.value)||0,
+    notes:            document.getElementById('fc_notes')?.value?.trim()||'',
+    amount_paid:      parseFloat(document.getElementById('fc_amount_paid')?.value)||0,
+    items,
+  };
+
+  _invoiceSaving = true;
+  const saveBtn = document.querySelector('#formModal .btn-primary');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = _editId ? '⏳ Updating…' : '⏳ Creating invoice…'; }
+
+  try {
+    if (_editId){ await api('PUT',`/invoices/${_editId}`,payload); }
+    else { await api('POST','/invoices',payload); }
+    closeModal('formModal');
+    await loadAll();
+    showToast(_editId ? 'Invoice updated ✓' : 'Invoice created — number auto-generated ✓');
+  } catch(e){
+    showToast(e.error||'Failed to save invoice','error');
+  } finally {
+    _invoiceSaving = false;
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '💾 Save Invoice'; }
+  }
+}
+
+/* ── STATEMENT ── */
+async function openStatement() {
+  const y=new Date().getFullYear(), from=`${y}-01-01`, to=new Date().toISOString().split('T')[0];
+  openModal('stmtModal',`
+    <div class="modal-hd">
+      <h2>&#x1F4CA; Sales Statement</h2>
+      <button class="modal-close" onclick="closeModal('stmtModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+        <input type="date" class="input" id="stmt_from" value="${from}" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+        <span style="color:var(--muted);font-size:.8rem">to</span>
+        <input type="date" class="input" id="stmt_to" value="${to}" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+        <button class="btn btn-secondary btn-sm" onclick="loadStatement()">Load</button>
+        <button class="btn btn-secondary btn-sm" onclick="printStatement()" style="margin-left:auto">&#x1F5A8; Print</button>
+      </div>
+      <div id="stmtContent"><div style="text-align:center;padding:2rem;color:var(--muted)">Click Load to generate&hellip;</div></div>
+    </div>`,'wide');
+  await loadStatement();
+}
+
+async function loadStatement() {
+  const from=document.getElementById('stmt_from')?.value||'2000-01-01';
+  const to=document.getElementById('stmt_to')?.value||'2099-12-31';
+  const el=document.getElementById('stmtContent');
+  if (!el) return;
+  el.innerHTML=`<div style="text-align:center;padding:2rem"><div class="spinner"></div></div>`;
+  try {
+    const [list,stats]=await Promise.all([
+      api('GET',`/invoices?from=${from}&to=${to}`),
+      api('GET',`/invoices/summary/stats?from=${from}&to=${to}`),
+    ]);
+    const t=stats.totals, bizName=_bizCfg.business_name||'IMARA LINKS', slogan=_bizCfg.business_slogan||'Built Strong by IMARA';
+    el.innerHTML=`
+      <div id="stmtPrint">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem">
+          <div style="display:flex;align-items:flex-start;gap:.9rem">
+            <img src="logo.png" alt="${escHtml(bizName)}" style="width:68px;height:68px;object-fit:contain;display:block" onerror="this.style.display='none'">
+            <div>
+              <div style="font-size:1.2rem;font-weight:700;color:var(--g900)">${escHtml(bizName)}</div>
+              <div style="font-size:.76rem;color:var(--g600);font-style:italic">${escHtml(slogan)}</div>
+              <div style="font-size:.8rem;color:var(--muted);margin-top:.15rem">Sales Statement &middot; ${from} to ${to}</div>
+            </div>
+          </div>
+          <div style="font-size:.78rem;color:var(--muted)">Generated: ${new Date().toLocaleDateString('en-KE',{day:'numeric',month:'short',year:'numeric'})} at ${new Date().toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin-bottom:1.25rem">
+          <div class="inv-kpi blue"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_billed)}</div><div class="inv-kpi-l">Total Invoiced</div></div>
+          <div class="inv-kpi green"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_collected)}</div><div class="inv-kpi-l">Collected</div></div>
+          <div class="inv-kpi ${t.total_outstanding>0?'amber':''}"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_outstanding)}</div><div class="inv-kpi-l">Outstanding</div></div>
+          <div class="inv-kpi"><div class="inv-kpi-v">${t.total_invoices}</div><div class="inv-kpi-l">Total Invoices</div></div>
+        </div>
+        <div class="table-wrap">
+          <table><thead><tr>
+            <th>Invoice #</th><th>Date</th><th>Customer</th>
+            <th style="text-align:right">Total</th><th style="text-align:right">Received</th>
+            <th style="text-align:right">Balance</th><th>Status</th>
+          </tr></thead>
+          <tbody>${list.map(inv=>{
+            const bal=parseFloat(((inv.total_amount||0)-(inv.amount_paid||0)).toFixed(2));
+            const _sdRaw=inv.status==='paid'?'paid':inv.status==='partial_payment'?'partial_payment':inv.status;
+            const disp={paid:'paid',partial_payment:'partial_payment',cancelled:'cancelled',pending:'pending',overdue:'overdue',draft:'draft'}[_sdRaw]||'partial_payment';
+            const bc={paid:'s-paid',partial_payment:'s-partial_payment',cancelled:'s-cancelled',pending:'s-partial_payment',overdue:'s-partial_payment',draft:'s-partial_payment'}[disp]||'s-partial_payment';
+            const bl2={paid:'Paid',partial_payment:'Pending Payment',cancelled:'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp]||'Pending';
+            return `<tr>
+              <td style="font-family:var(--font-mono);font-size:.8rem">${escHtml(inv.invoice_number)}</td>
+              <td>${inv.invoice_date}</td><td>${escHtml(inv.customer_name)}</td>
+              <td style="font-family:var(--font-mono);text-align:right">${cur()} ${fmtM(inv.total_amount)}</td>
+              <td style="font-family:var(--font-mono);text-align:right;color:#166534">${inv.amount_paid>0?cur()+' '+fmtM(inv.amount_paid):'&mdash;'}</td>
+              <td style="font-family:var(--font-mono);text-align:right;${bal>0?'color:var(--red);font-weight:600':''}">${bal>0.01?cur()+' '+fmtM(bal):'&mdash;'}</td>
+              <td><span class="sbadge ${bc}">${bl2}</span></td>
+            </tr>`;
+          }).join('')}</tbody>
+          <tfoot><tr style="background:var(--g50);font-weight:700">
+            <td colspan="3" style="padding:.6rem .75rem">TOTALS</td>
+            <td style="font-family:var(--font-mono);text-align:right;padding:.6rem .75rem">${cur()} ${fmtM(t.total_billed)}</td>
+            <td style="font-family:var(--font-mono);text-align:right;padding:.6rem .75rem;color:#166534">${cur()} ${fmtM(t.total_collected)}</td>
+            <td style="font-family:var(--font-mono);text-align:right;padding:.6rem .75rem;color:var(--red)">${cur()} ${fmtM(t.total_outstanding)}</td>
+            <td></td>
+          </tr></tfoot>
+          </table>
+        </div>
+      </div>`;
+  } catch(e){ el.innerHTML=`<div style="color:var(--red);padding:1rem">Failed. ${e.error||''}</div>`; }
+}
+
+function printStatement() {
+  const area=document.getElementById('stmtPrint');
+  if (!area) return;
+  let f=document.getElementById('printFrame');
+  if (!f){ f=document.createElement('div'); f.id='printFrame'; document.body.appendChild(f); }
+  f.innerHTML=`<div style="font-family:sans-serif;padding:2cm">${area.innerHTML}</div>`;
+  f.style.display='block';
+  setTimeout(()=>{ window.print(); setTimeout(()=>{ f.style.display='none'; f.innerHTML=''; },600); },220);
+}
+
+/* ── MODAL HELPERS ── */
+function openModal(id, content, size) {
+  let ov=document.getElementById(id);
+  if (!ov){ ov=document.createElement('div'); ov.id=id; ov.className='modal-overlay';
+    ov.addEventListener('click',e=>{ if(e.target===ov) closeModal(id); }); document.body.appendChild(ov); }
+  ov.innerHTML=`<div class="modal-box${size==='wide'?' wide':''}">${content}</div>`;
+  ov.style.display='flex'; document.body.style.overflow='hidden';
+}
+function closeModal(id) {
+  const ov=document.getElementById(id);
+  if (ov){ ov.style.display='none'; ov.innerHTML=''; }
+  document.body.style.overflow='';
+}
+
+init();
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+// Press 1 × 3 consecutively → Print invoice
+// Press 2 × 3 consecutively → Print receipt
+// Only active when the invoice view modal is open
+(function() {
+  let _seq = '', _seqTimer = null;
+
+  document.addEventListener('keydown', function(e) {
+    // Only fire if view modal is open and no input/textarea is focused
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const modal = document.getElementById('viewModal');
+    if (!modal || modal.style.display === 'none') { _seq = ''; return; }
+
+    if (e.key === '1' || e.key === '2') {
+      _seq += e.key;
+      clearTimeout(_seqTimer);
+      _seqTimer = setTimeout(() => { _seq = ''; }, 800);
+
+      if (_seq === '111') {
+        _seq = '';
+        printInv();
+      } else if (_seq === '222') {
+        _seq = '';
+        if (window._curInvId) generateReceiptPDF(window._curInvId);
+      }
+    } else {
+      _seq = '';
+    }
+  });
+})();
+
+</script>
+<div id="printFrame" style="display:none"></div>
+</body>
+</html>

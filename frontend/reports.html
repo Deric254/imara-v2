@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reports IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+.report-tab { background:none; border:none; padding:.5rem 1rem; font-family:var(--font); font-size:.88rem;
+              font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent;
+              margin-bottom:-2px; transition:all .15s; }
+.report-tab:hover { color:var(--g700); }
+.report-tab.active { color:var(--g700); border-bottom-color:var(--g500); }
+
+/* KPI Color Variations */
+.kpi.rev { border-left: 4px solid var(--g500); }
+.kpi.prof { border-left: 4px solid #10b981; }
+.kpi.buy { border-left: 4px solid #3b82f6; }
+.kpi.prod { border-left: 4px solid #f59e0b; }
+.kpi.best { border-left: 4px solid #8b5cf6; }
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+async function init() {
+  const me = requireAuth(['owner','admin']);
+  if (!me) return;
+  const pg = renderLayout('reports.html');
+
+  // Load global config for consistency
+  await loadGlobalConfig();
+
+  pg.innerHTML = `
+<div class="card" style="margin-bottom:1.25rem">
+  <div class="card-title">Filter Period</div>
+  <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:.5rem">
+      <label class="label" style="margin:0;white-space:nowrap">From</label>
+      <input type="date" class="input" id="fromDate" style="width:auto">
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem">
+      <label class="label" style="margin:0">To</label>
+      <input type="date" class="input" id="toDate" style="width:auto">
+    </div>
+    <button class="btn btn-primary" onclick="loadAll()">Apply</button>
+    <button class="btn btn-secondary" onclick="preset(7)">Last 7d</button>
+    <button class="btn btn-secondary" onclick="preset(30)">Last 30d</button>
+    <button class="btn btn-secondary" onclick="preset(90)">Last 90d</button>
+    <button class="btn btn-primary" onclick="generatePDF()" id="pdfBtn" style="margin-left:auto;background:var(--red);border-color:var(--red)">📄 Export PDF Report</button>
+  </div>
+</div>
+
+<div class="kpi-grid" id="summaryKpis" style="margin-bottom:1.25rem"></div>
+
+<!-- Performance Insights & Comparative Analytics -->
+<div id="insightsContainer" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.25rem;margin-bottom:1.25rem">
+  <div class="card">
+    <div class="card-title">Sales Distribution by Product</div>
+    <div style="height:250px;display:flex;justify-content:center;width:100%;overflow:hidden">
+      <canvas id="productChart"></canvas>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Quick Performance Insights</div>
+    <div id="quickInsights" style="display:grid;gap:.75rem;padding:.5rem 0">
+      <div style="color:var(--muted);text-align:center;padding:2rem">Apply filters to see insights</div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:1.25rem">
+  <div class="card-title">Revenue Production Trend <span id="trendLabel" style="font-weight:400;text-transform:none;font-size:.8rem"></span></div>
+  <canvas id="trendChart" height="70"></canvas>
+</div>
+
+<div style="display:flex;gap:.5rem;margin-bottom:1rem;border-bottom:2px solid var(--border)">
+  <button class="report-tab active" onclick="showTab('purchases',this)">📦 Purchases</button>
+  <button class="report-tab" onclick="showTab('production',this)">⚙ Production</button>
+  <button class="report-tab" onclick="showTab('sales',this)">💰 Sales</button>
+  <button class="report-tab" onclick="showTab('gauge',this)">📊 Gauge KPI</button>
+</div>
+
+<div id="tab-purchases">
+  <div class="section-header" style="margin-bottom:.75rem">
+    <div class="section-title" style="font-size:.9rem">Purchases</div>
+    <button class="btn btn-secondary btn-sm" onclick="exportExcel('purchases')">📥 Export Excel</button>
+  </div>
+  <div class="table-wrap">
+    <table><thead><tr><th>Date</th><th>Supplier</th><th>Gauge</th><th>Kgs</th><th>Cost/kg</th><th>Transport</th><th>Total Cost</th><th>Landed/kg</th><th>By</th>
+      ${me.role==='owner'?'<th></th>':''}
+    </tr></thead>
+    <tbody id="pTable"></tbody></table>
+  </div>
+</div>
+
+<div id="tab-production" style="display:none">
+  <div class="section-header" style="margin-bottom:.75rem">
+    <div class="section-title" style="font-size:.9rem">Production</div>
+    <button class="btn btn-secondary btn-sm" onclick="exportExcel('production')">📥 Export Excel</button>
+  </div>
+  <div class="table-wrap">
+    <table><thead><tr><th>Date</th><th>Kgs Used</th><th>Total Pieces</th><th>Operator</th><th>Knuckler</th><th>Overhead Total</th><th>Cost/Piece</th><th>By</th>
+      ${me.role==='owner'?'<th></th>':''}
+    </tr></thead>
+    <tbody id="prTable"></tbody></table>
+  </div>
+</div>
+
+<div id="tab-sales" style="display:none">
+  <div class="section-header" style="margin-bottom:.75rem">
+    <div class="section-title" style="font-size:.9rem">Sales</div>
+    <button class="btn btn-secondary btn-sm" onclick="exportExcel('sales')">📥 Export Excel</button>
+  </div>
+  <div class="table-wrap">
+    <table><thead><tr><th>Date</th><th>Piece</th><th>Gauge</th><th>Qty</th><th>Price</th><th>Revenue</th><th>Kgs</th><th>Meters</th><th>Price Source</th><th>By</th>
+      ${me.role==='owner'?'<th></th>':''}
+    </tr></thead>
+    <tbody id="sTable"></tbody></table>
+  </div>
+</div>
+
+<div id="tab-gauge" style="display:none">
+  <div class="section-header" style="margin-bottom:1rem">
+    <div class="section-title" style="font-size:.9rem">Wire Gauge — Full Lifecycle KPI</div>
+    <button class="btn-export" onclick="exportExcel('gauge-analysis')">📥 Export Excel</button>
+  </div>
+  <div id="gaugeKpiGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.75rem;margin-bottom:1.25rem"></div>
+  <div id="gaugeBestBanner" style="display:none"></div>
+  <div id="gaugeCards"></div>
+</div>
+`;
+}
+
+let _purchases=[], _production=[], _sales=[], _dashboard=null, _trendChart=null, _productChart=null;
+
+function showTab(name, btn) {
+  ['purchases','production','sales','gauge'].forEach(n => {
+    document.getElementById(`tab-${n}`).style.display = n===name?'block':'none';
+  });
+  document.querySelectorAll('.report-tab').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (name === 'gauge') loadGaugeKpi();
+}
+
+function preset(days) {
+  const to   = new Date();
+  const from = new Date(Date.now() - days * 86400000);
+  document.getElementById('toDate').value   = to.toISOString().split('T')[0];
+  document.getElementById('fromDate').value = from.toISOString().split('T')[0];
+  loadAll();
+}
+
+async function loadAll() {
+  const me = Store.user;
+  const from = document.getElementById('fromDate').value;
+  const to   = document.getElementById('toDate').value;
+  if (!from || !to) return;
+  PageProgress.show(10, 'Loading report data…');
+
+  // Show skeletons in all table bodies while loading
+  const delCol = me.role === 'owner';
+  const skelRow = (cols) => `<tr class="skel-row">${Array(cols).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(4);
+  document.getElementById('pTable').innerHTML  = skelRow(delCol ? 10 : 9);
+  document.getElementById('prTable').innerHTML = skelRow(delCol ? 9 : 8);
+  document.getElementById('sTable').innerHTML  = skelRow(delCol ? 11 : 10);
+  document.getElementById('summaryKpis').innerHTML = Array(5).fill(
+    '<div class="kpi"><div class="skel-cell" style="height:12px;width:60%;margin-bottom:.75rem"></div><div class="skel-cell" style="height:28px;width:80%"></div></div>'
+  ).join('');
+
+  try {
+    const [purRes, prodRes, salRes, dashRes] = await Promise.allSettled([
+      api('GET', `/daily/purchases?from=${from}&to=${to}`),
+      api('GET', `/daily/production?from=${from}&to=${to}`),
+      api('GET', `/daily/sales?from=${from}&to=${to}`),
+      api('GET', `/dashboard?from=${from}&to=${to}`),
+    ]);
+
+    if (purRes.status  === 'rejected') showToast('Purchases data failed to load', 'error');
+    if (prodRes.status === 'rejected') showToast('Production data failed to load', 'error');
+    if (salRes.status  === 'rejected') showToast('Sales data failed to load', 'error');
+    if (dashRes.status === 'rejected') showToast('Dashboard KPIs failed to load', 'error');
+
+    _purchases  = purRes.status  === 'fulfilled' ? (purRes.value  || []) : [];
+    _production = prodRes.status === 'fulfilled' ? (prodRes.value || []) : [];
+    _sales      = salRes.status  === 'fulfilled' ? (salRes.value  || []) : [];
+    _dashboard  = dashRes.status === 'fulfilled' ? (dashRes.value || null) : null;
+    const dash  = _dashboard;
+
+    const totalRev    = _sales.reduce((s,r)      => s + (parseFloat(r.revenue)||0), 0);
+    const totalKgs    = _purchases.reduce((s,r)  => s + (parseFloat(r.kgs_bought)||0), 0);
+    const directCosts = parseFloat(dash?.kpis?.direct_costs_sold ?? 0);
+    const rentCost    = parseFloat(dash?.kpis?.rent_cost ?? 0);
+    const profit      = parseFloat(dash?.kpis?.net_profit ?? (totalRev - directCosts - rentCost));
+    const prodKgs     = _production.reduce((s,r) => s + (parseFloat(r.kgs_used)||0), 0);
+
+    const productSales = {};
+    _sales.forEach(s => { productSales[s.piece_name] = (productSales[s.piece_name] || 0) + parseFloat(s.revenue||0); });
+    const sortedProducts = Object.entries(productSales).sort((a,b) => b[1] - a[1]);
+    const topProduct = sortedProducts[0] || ['None', 0];
+
+    const expectedUsed = _production.reduce((s, r) => {
+      return s + (r.items || []).reduce((si, i) => si + (i.pieces_produced * (i.weight_kg || 0)), 0);
+    }, 0);
+    const efficiency = prodKgs > 0 ? (expectedUsed / prodKgs * 100).toFixed(1) : 0;
+
+    document.getElementById('summaryKpis').innerHTML = `
+      <div class="kpi rev"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Revenue</div><span>💰</span></div>
+        <div class="kpi-value mono">${fmt(totalRev)}</div><div class="kpi-sub">KES total income</div></div>
+      <div class="kpi ${profit<0?'danger':'prof'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Net Profit</div><span>📈</span></div>
+        <div class="kpi-value mono">${fmt(profit)}</div><div class="kpi-sub">sold items only, plus rent</div></div>
+      <div class="kpi buy"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Material Flow</div><span>📦</span></div>
+        <div class="kpi-value mono">${fmt(totalKgs,1)}</div><div class="kpi-sub">kg raw wire bought</div></div>
+      <div class="kpi ${parseFloat(efficiency)<90?'warning':'prod'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Utilization</div><span>⚙</span></div>
+        <div class="kpi-value mono">${efficiency}%</div><div class="kpi-sub">material efficiency</div></div>
+      <div class="kpi best"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Best Seller</div><span>💎</span></div>
+        <div class="kpi-value" style="font-size:1rem">${escHtml(topProduct[0])}</div><div class="kpi-sub">${fmt(topProduct[1])} KES generated</div></div>`;
+
+    const trends = dash?.trends || [];
+    document.getElementById('trendLabel').textContent = `(${from} → ${to})`;
+    if (_trendChart) _trendChart.destroy();
+    if (trends.length) {
+      _trendChart = new Chart(document.getElementById('trendChart'), {
+        type:'bar', data:{
+          labels: trends.map(t=>t.date.slice(5)),
+          datasets:[
+            {label:'Revenue (KES)',data:trends.map(t=>t.revenue),backgroundColor:'rgba(30,154,98,.7)',borderRadius:3,yAxisID:'y'},
+            {label:'Kgs Produced',data:trends.map(t=>t.kgs_produced),type:'line',borderColor:'#d97706',borderWidth:2,pointRadius:2,fill:false,tension:0.4,yAxisID:'y2'},
+          ]
+        },
+        options:{responsive:true,maintainAspectRatio:true,
+          plugins:{legend:{position:'top',labels:{font:{size:11}}}},
+          scales:{
+            x:{grid:{display:false},ticks:{font:{size:10},color:'#5a7a68',maxRotation:45,maxTicksLimit:20}},
+            y:{position:'left',grid:{color:'#dde9e3'},ticks:{font:{size:11},color:'#5a7a68',callback:v=>v>=1000?(v/1000).toFixed(0)+'k':v}},
+            y2:{position:'right',grid:{display:false},ticks:{font:{size:11},color:'#d97706'}},
+          }}
+      });
+    }
+
+    if (_productChart) _productChart.destroy();
+    const productColors=['#1e9a62','#3b82f6','#8b5cf6','#f59e0b','#ef4444','#06b6d4','#ec4899','#10b981'];
+    if (sortedProducts.length) {
+      _productChart = new Chart(document.getElementById('productChart'), {
+        type:'doughnut',
+        data:{labels:sortedProducts.map(p=>p[0]),datasets:[{data:sortedProducts.map(p=>p[1]),backgroundColor:productColors,borderWidth:2,borderColor:'#fff'}]},
+        options:{responsive:true,maintainAspectRatio:false,
+          plugins:{
+            legend:{position:'right',labels:{boxWidth:12,font:{size:11},generateLabels:(chart)=>{
+              const d=chart.data;
+              return d.labels.map((label,i)=>{
+                const val=d.datasets[0].data[i], tot=d.datasets[0].data.reduce((a,b)=>a+b,0);
+                return{text:`${label} (${tot>0?((val/tot)*100).toFixed(1):0}%)`,fillStyle:d.datasets[0].backgroundColor[i%productColors.length],strokeStyle:'#fff',lineWidth:2,hidden:isNaN(val)||chart.getDatasetMeta(0).data[i].hidden,index:i};
+              });
+            }}},
+            tooltip:{callbacks:{label:(item)=>{const tot=item.dataset.data.reduce((a,b)=>a+b,0);return ` ${item.label}: KES ${fmt(item.raw)} (${((item.raw/tot)*100).toFixed(1)}%)`;}}},
+          },cutout:'65%'}
+      });
+    }
+
+    const insights=[];
+    if (totalRev>0 && trends.length) {
+      insights.push({icon:'📈',label:'Revenue Analysis',text:`Average daily revenue is <strong>${fmt(totalRev/trends.length)} KES</strong>.`});
+      insights.push({icon:'💎',label:'Top Product',text:`<strong>${escHtml(topProduct[0])}</strong> accounts for <strong>${(topProduct[1]/totalRev*100).toFixed(1)}%</strong> of total sales.`});
+    }
+    if (efficiency>0){const col=parseFloat(efficiency)>=95?'var(--g600)':parseFloat(efficiency)>=90?'var(--amber)':'var(--red)';insights.push({icon:'⚡',label:'Material Efficiency',text:`Utilization is <strong style="color:${col}">${efficiency}%</strong>. ${parseFloat(efficiency)<90?'High wastage detected!':'Wastage within limits.'}`});}
+    const staffCount=Object.keys(_sales.reduce((acc,s)=>({...acc,[s.entered_by_name]:1}),{})).length;
+    if(staffCount)insights.push({icon:'👥',label:'Staff Activity',text:`<strong>${staffCount} staff member${staffCount!==1?'s':''}</strong> were active in this period.`});
+    document.getElementById('quickInsights').innerHTML=insights.length
+      ?insights.map(i=>`<div style="display:flex;align-items:flex-start;gap:.75rem;padding:.5rem;background:var(--g50);border-radius:var(--radius-sm)"><span style="font-size:1.25rem">${i.icon}</span><div><div style="font-size:.78rem;font-weight:600;color:var(--muted);text-transform:uppercase">${i.label}</div><div style="font-size:.88rem;color:var(--ink)">${i.text}</div></div></div>`).join('')
+      :'<div style="color:var(--muted);text-align:center;padding:2rem">Apply a date range to see insights</div>';
+
+    document.getElementById('pTable').innerHTML = _purchases.length
+      ? _purchases.map(r=>`<tr>
+          <td class="mono">${r.entry_date}</td><td>${escHtml(r.supplier_name)}</td>
+          <td>${r.gauge?`<span class="gauge-badge">${escHtml(r.gauge)}</span>`:'—'}</td>
+          <td class="mono">${fmt(r.kgs_bought,1)}</td><td class="mono">${fmt(r.cost_per_kg,2)}</td>
+          <td class="mono">${fmt(r.transport_cost,2)}</td><td class="mono">${fmt(r.total_cost,2)}</td>
+          <td class="mono">${fmt(r.landed_cost_per_kg,2)}</td><td style="font-size:.78rem">${escHtml(r.entered_by_name)}</td>
+          ${delCol?`<td><button class="btn btn-danger btn-sm" onclick="del('purchases',${r.id})">✕</button></td>`:''}</tr>`).join('')
+      : `<tr><td colspan="${delCol?10:9}" class="empty"><div class="empty-text">No purchases in this period</div></td></tr>`;
+
+    document.getElementById('prTable').innerHTML = _production.length
+      ? _production.map(r=>`<tr>
+          <td class="mono">${r.entry_date}</td><td class="mono">${fmt(r.kgs_used,1)}</td>
+          <td class="mono">${fmt((r.items||[]).reduce((s,i)=>s+(parseInt(i.pieces_produced)||0),0))}<br><span style="font-size:.72rem;color:var(--muted)">${(r.items||[]).map(i=>escHtml(i.piece_name)+': '+fmt(i.pieces_produced)).join(', ')}</span></td>
+          <td style="font-size:.82rem">${escHtml(r.operator_name||'—')}</td><td style="font-size:.82rem">${escHtml(r.knuckler_name||'—')}</td>
+          <td class="mono">${fmt(r.total_overhead,2)}</td>
+          <td class="mono">${(()=>{const tp=(r.items||[]).reduce((s,i)=>s+(parseInt(i.pieces_produced)||0),0);return tp>0?fmt(r.total_overhead/tp,2):'—';})()}</td>
+          <td style="font-size:.78rem">${escHtml(r.entered_by_name)}</td>
+          ${delCol?`<td><button class="btn btn-danger btn-sm" onclick="del('production',${r.id})">✕</button></td>`:''}</tr>`).join('')
+      : `<tr><td colspan="${delCol?9:8}" class="empty"><div class="empty-text">No production in this period</div></td></tr>`;
+
+    document.getElementById('sTable').innerHTML = _sales.length
+      ? _sales.map(r=>`<tr>
+          <td class="mono">${r.entry_date}</td><td>${escHtml(r.piece_name)}</td>
+          <td>${r.gauge_source?`<span class="gauge-badge">${escHtml(r.gauge_source)}</span>`:'—'}</td>
+          <td class="mono">${fmt(r.quantity)}</td><td class="mono">${fmt(r.selling_price,2)}</td>
+          <td class="mono">${fmt(r.revenue,2)}</td><td class="mono">${fmt(r.kgs_sold,2)}</td>
+          <td class="mono">${fmt(r.meters_sold,1)}</td>
+          <td>${r.price_overridden?'<span class="badge badge-amber">Custom</span>':'<span class="badge badge-green">Configured</span>'}</td>
+          <td style="font-size:.78rem">${escHtml(r.entered_by_name)}</td>
+          ${delCol?`<td><button class="btn btn-danger btn-sm" onclick="del('sales',${r.id})">✕</button></td>`:''}</tr>`).join('')
+      : `<tr><td colspan="${delCol?11:10}" class="empty"><div class="empty-text">No sales in this period</div></td></tr>`;
+
+    PageProgress.done();
+  } catch(e) {
+    console.error('Reports load error:', e);
+    PageProgress.error();
+    showToast('Failed to load report data — check connection and retry', 'error');
+    ['pTable','prTable','sTable'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el)el.innerHTML=`<tr><td colspan="10" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load. Please retry.</div></td></tr>`;
+    });
+  }
+}
+
+async function del(type, id) {
+  const labels = { purchases: 'purchase', production: 'production record', sales: 'sale' };
+  const label  = labels[type] || type;
+  let msg = `Delete this ${label}?
+
+`;
+  if (type === 'sales') {
+    const row = (_sales || []).find(r => r.id === id);
+    if (row) {
+      msg += `Product: ${row.piece_name || '—'}
+Quantity: ${row.quantity} | Revenue: KES ${parseFloat(row.revenue||0).toLocaleString()}
+`;
+      msg += `
+⚠️ Implications:
+• Stock restored to inventory
+• Auto-generated invoice removed (if unpaid)
+• Blocked if invoice already has payments collected
+`;
+    }
+  } else if (type === 'production') {
+    const row = (_production || []).find(r => r.id === id);
+    if (row) {
+      msg += `Wire Used: ${row.kgs_used} kg
+`;
+      msg += `
+⚠️ Implications:
+• All pieces from this batch removed from inventory
+• Blocked if any pieces already sold
+`;
+    }
+  } else if (type === 'purchases') {
+    const row = (_purchases || []).find(r => r.id === id);
+    if (row) {
+      msg += `Supplier: ${row.supplier_name || '—'} | Kgs: ${row.kgs_bought}
+`;
+      msg += `
+⚠️ Implications:
+• Wire removed from raw material stock
+• Blocked if wire already used in production
+`;
+    }
+  }
+  msg += `
+This cannot be undone. Proceed?`;
+  if (!confirm(msg)) return;
+  try {
+    const result = await api('DELETE', `/daily/${type}/${id}`);
+    showToast(result.message || 'Deleted successfully', 'success', 5000);
+    if (result.cost_warnings && result.cost_warnings.length) {
+      result.cost_warnings.forEach((w, i) =>
+        setTimeout(() => showToast('⚠️ Cost remains: ' + w, 'warn', 8000), (i+1)*1000)
+      );
+    }
+    loadAll();
+  } catch(e) {
+    const errMsg = e.error === 'INTEGRITY_VIOLATION'
+      ? (e.message || 'Cannot delete — linked data exists.')
+      : (e.error || e.message || 'Delete failed');
+    showToast(errMsg, 'error', 8000);
+  }
+}
+
+async function generatePDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF('p', 'mm', 'a4');
+  const from = document.getElementById('fromDate').value;
+  const to = document.getElementById('toDate').value;
+  
+  const pdfBtn = document.getElementById('pdfBtn');
+  const oldText = pdfBtn.textContent;
+  pdfBtn.disabled = true;
+  pdfBtn.textContent = '⏳ Generating...';
+
+  try {
+    const bizName = getConfig('business_name', 'IMARA LINKS');
+    const bizSlogan = getConfig('business_slogan', '');
+
+    // Fetch reconciliation data for the period
+    let recon = null;
+    try {
+      recon = await api('GET', `/reconciliation/summary?from=${from}&to=${to}`);
+    } catch (e) {
+      console.warn('Reconciliation data fetch failed:', e);
+    }
+
+    // 1. Branding & Header (Circular Logo)
+    let y = 15;
+    try {
+      const logoDataUrl = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => reject('Logo load timeout'), 5000);
+        img.onload = () => {
+          clearTimeout(timer);
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          const size = 400;
+          canvas.width = size; canvas.height = size;
+          ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI * 2); ctx.closePath(); ctx.clip();
+          const aspect = img.width / img.height;
+          let drawW, drawH, drawX, drawY;
+          if (aspect > 1) { drawH = size; drawW = size * aspect; drawX = -(drawW - size) / 2; drawY = 0; }
+          else { drawW = size; drawH = size / aspect; drawX = 0; drawY = -(drawH - size) / 2; }
+          ctx.drawImage(img, drawX, drawY, drawW, drawH);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => { clearTimeout(timer); reject('Load failed'); };
+        img.src = 'logo.png?' + Date.now();
+      });
+      doc.addImage(logoDataUrl, 'PNG', 15, y, 30, 30);
+      doc.setDrawColor(30, 154, 98); doc.setLineWidth(0.5); doc.circle(15 + 15, y + 15, 15, 'S');
+    } catch (e) { console.warn('Logo error, skipping branding:', e); }
+
+    doc.setFontSize(26); doc.setTextColor(30, 154, 98); doc.setFont('helvetica', 'bold');
+    doc.text(bizName.toUpperCase(), 50, y + 10);
+    doc.setFontSize(12); doc.setFont('helvetica', 'italic'); doc.setTextColor(80);
+    doc.text(bizSlogan, 50, y + 17);
+    doc.setFontSize(10); doc.setFont('helvetica', 'normal'); doc.setTextColor(120);
+    doc.text('Comprehensive Business Performance Report', 50, y + 23);
+    y += 40;
+
+    doc.setDrawColor(30, 154, 98); doc.setLineWidth(1); doc.line(15, y, 195, y);
+    y += 12;
+
+    // 2. Report Info
+    doc.setFontSize(16); doc.setTextColor(0); doc.setFont('helvetica', 'bold');
+    doc.text('Operational & Financial Summary', 15, y);
+    doc.setFontSize(10); doc.setFont('helvetica', 'normal'); doc.setTextColor(100);
+    doc.text(`Period: ${from} to ${to}`, 15, y + 7);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 15, y + 12);
+    y += 22;
+
+    // 3. Financial Summary (Executive Summary)
+    const totalRev  = _sales.reduce((s,r) => s + (parseFloat(r.revenue)||0), 0);
+    const directCosts = parseFloat(_dashboard?.kpis?.direct_costs_sold ?? 0);
+    // Rent cost removed from profit calculation
+    const profit = parseFloat(_dashboard?.kpis?.net_profit ?? (totalRev - directCosts));
+    
+    // Calculate top product for PDF
+    const productSales = {};
+    _sales.forEach(s => { productSales[s.piece_name] = (productSales[s.piece_name] || 0) + parseFloat(s.revenue); });
+    const sortedProducts = Object.entries(productSales).sort((a,b) => b[1] - a[1]);
+    const topProduct = sortedProducts[0] || ['None', 0];
+
+    doc.setFontSize(12); doc.setTextColor(30, 154, 98); doc.setFont('helvetica', 'bold');
+    doc.text('Executive Summary', 15, y);
+    doc.autoTable({
+      startY: y + 5,
+      head: [['Category', 'Value', 'Context']],
+      body: [
+        ['Total Revenue', `KES ${fmt(totalRev)}`, 'Gross sales for the period'],
+        ['Sold Item Direct Costs', `KES ${fmt(directCosts)}`, `Wire + conversion + market transport for ${fmt(_dashboard?.kpis?.total_pieces_sold ?? 0)} sold pieces`],
+        ['Net Profit', `KES ${fmt(profit)}`, 'Revenue minus sold-item direct costs (excluding rent)'],
+        ['Best Performing Item', topProduct[0], `${fmt(topProduct[1])} KES revenue generated`],
+      ],
+      theme: 'grid',
+      headStyles: { fillColor: [30, 154, 98] },
+      margin: { left: 15, right: 15 }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+
+    // 4. Reconciliation Details
+    if (recon) {
+      doc.setFontSize(12); doc.setTextColor(30, 154, 98); doc.setFont('helvetica', 'bold');
+      doc.text('Financial Reconciliation', 15, y);
+      const r = recon;
+      doc.autoTable({
+        startY: y + 5,
+        head: [['Liability Type', 'Accrued (KES)', 'Paid (KES)', 'Balance Due (KES)']],
+        body: [
+          ['Operator Wages', fmt(r.wages?.total_accrued || 0), fmt(r.wages?.total_paid || 0), fmt(r.wages?.balance || 0)],
+          ['Knuckler Wages', 'Included in total', 'Included in total', '—'],
+          ['Supplier Payments', fmt(r.suppliers?.total_billed || 0), fmt(r.suppliers?.total_paid || 0), fmt(r.suppliers?.balance || 0)],
+          ['Sack Costs', fmt(r.sack?.accrued || 0), fmt(r.sack?.paid || 0), fmt(r.sack?.balance || 0)],
+          ['Rent', fmt(r.rent?.total_accrued || 0), fmt(r.rent?.total_paid || 0), fmt(r.rent?.balance || 0)],
+        ],
+        theme: 'striped',
+        headStyles: { fillColor: [70, 70, 70] },
+        margin: { left: 15, right: 15 }
+      });
+      y = doc.lastAutoTable.finalY + 15;
+    }
+
+    // 5. User Activity Summary
+    const userStats = {};
+    const count = (u) => { if (u) userStats[u] = (userStats[u] || 0) + 1; };
+    _purchases.forEach(r => count(r.entered_by_name));
+    _production.forEach(r => count(r.entered_by_name));
+    _sales.forEach(r => count(r.entered_by_name));
+
+    doc.setFontSize(12); doc.setTextColor(30, 154, 98); doc.setFont('helvetica', 'bold');
+    doc.text('User Activity Summary', 15, y);
+    doc.autoTable({
+      startY: y + 5,
+      head: [['Staff Name', 'Transactions Recorded']],
+      body: Object.entries(userStats).sort((a,b) => b[1] - a[1]),
+      theme: 'grid',
+      headStyles: { fillColor: [100, 100, 100] },
+      margin: { left: 15, right: 15 }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+
+    // Check for page break before chart
+    if (y > 220) { doc.addPage(); y = 20; }
+
+    // 6. Performance Charts
+    if (_trendChart || _productChart) {
+      doc.setFontSize(12); doc.setTextColor(30, 154, 98); doc.setFont('helvetica', 'bold');
+      doc.text('Visual Performance Analytics', 15, y);
+      
+      // Trend Chart
+      if (_trendChart) {
+        const trendImg = document.getElementById('trendChart').toDataURL('image/png', 1.0);
+        doc.addImage(trendImg, 'PNG', 15, y + 5, 110, 60);
+      }
+
+      // Product Chart with Manual Legend
+      if (_productChart) {
+        const productImg = document.getElementById('productChart').toDataURL('image/png', 1.0);
+        doc.addImage(productImg, 'PNG', 130, y + 5, 60, 60);
+        
+        // Add a small legend for the doughnut chart since standard export might clip it
+        doc.setFontSize(8); doc.setFont('helvetica', 'normal'); doc.setTextColor(80);
+        const data = _productChart.data;
+        const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+        
+        let legendY = y + 70;
+        if (legendY > 270) { doc.addPage(); legendY = 20; }
+        
+        doc.text('Product Sales Breakdown:', 130, y + 70);
+        data.labels.forEach((label, i) => {
+          const val = data.datasets[0].data[i];
+          const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
+          const color = data.datasets[0].backgroundColor[i % data.datasets[0].backgroundColor.length];
+          
+          const rowY = y + 75 + (i * 5);
+          if (rowY > 285) return; // Prevent overflow
+          
+          // Draw color box
+          const rgb = hexToRgb(color);
+          if (rgb) doc.setFillColor(rgb.r, rgb.g, rgb.b);
+          doc.rect(130, rowY - 3, 3, 3, 'F');
+          
+          // Draw text
+          doc.text(`${label}: ${pct}% (KES ${fmt(val)})`, 135, rowY);
+        });
+      }
+      
+      y += 85;
+    }
+
+    // Helper to convert hex to RGB for jsPDF
+    function hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      return result ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16)
+      } : null;
+    }
+
+    // Detailed tables on new pages
+    doc.addPage(); y = 20;
+    doc.setFontSize(14); doc.setTextColor(30, 154, 98); doc.text('Detailed Transaction Logs', 15, y);
+    y += 10;
+
+    const tableStyles = { headStyles: { fillColor: [120, 120, 120] }, styles: { fontSize: 8 }, margin: { left: 15, right: 15 } };
+
+    if (_purchases.length) {
+      doc.setFontSize(12); doc.text('Purchases', 15, y);
+      doc.autoTable({ startY: y + 5, head: [['Date', 'Supplier', 'Kgs', 'Total (KES)', 'By']],
+        body: _purchases.map(r => [r.entry_date, r.supplier_name, fmt(r.kgs_bought, 1), fmt(r.total_cost, 2), r.entered_by_name]), ...tableStyles });
+      y = doc.lastAutoTable.finalY + 12;
+    }
+
+    if (y > 250) { doc.addPage(); y = 20; }
+    if (_production.length) {
+      doc.setFontSize(12); doc.text('Production', 15, y);
+      doc.autoTable({ startY: y + 5, head: [['Date', 'Kgs Used', 'Pieces', 'Overhead', 'By']],
+        body: _production.map(r => [r.entry_date, fmt(r.kgs_used, 1), (r.items||[]).reduce((s,i)=>s+(parseInt(i.pieces_produced)||0),0), fmt(r.total_overhead, 2), r.entered_by_name]), ...tableStyles });
+      y = doc.lastAutoTable.finalY + 12;
+    }
+
+    if (y > 250) { doc.addPage(); y = 20; }
+    if (_sales.length) {
+      doc.setFontSize(12); doc.text('Sales', 15, y);
+      doc.autoTable({ startY: y + 5, head: [['Date', 'Item', 'Qty', 'Revenue', 'By']],
+        body: _sales.map(r => [r.entry_date, r.piece_name, r.quantity, fmt(r.revenue, 2), r.entered_by_name]), ...tableStyles });
+    }
+
+    // 7. Footer
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8); doc.setTextColor(150);
+      doc.text(`Page ${i} of ${pageCount} | ${bizName} Performance Record | Verified Accurate`, 105, 285, { align: 'center' });
+    }
+
+    doc.save(`${bizName.replace(/\s+/g, '_')}_Report_${from}_to_${to}.pdf`);
+    showToast('Comprehensive PDF Report generated');
+  } catch (e) {
+    console.error('PDF Error:', e);
+    showToast('Failed to generate PDF: ' + (e.message || 'Check logs'), 'error');
+  } finally {
+    pdfBtn.disabled = false;
+    pdfBtn.textContent = oldText;
+  }
+}
+
+// ── Server-side Excel export (UTF-8 CSV Excel-compatible) ────────────────────
+function exportExcel(type) {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const filename = `imara_${type}_${from}_to_${to}.csv`;
+  apiDownload(`/export/${type}?from=${from}&to=${to}`, filename);
+}
+
+// ── Load Gauge KPI tab ────────────────────────────────────────────────────────
+let _gaugeData = null;
+
+async function loadGaugeKpi() {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const kpiEl  = document.getElementById('gaugeKpiGrid');
+  const banEl  = document.getElementById('gaugeBestBanner');
+  const carEl  = document.getElementById('gaugeCards');
+  if (!kpiEl) return;
+  kpiEl.innerHTML = '<div style="color:var(--muted);font-size:.85rem">Loading gauge analytics…</div>';
+  PageProgress.show(20, 'Loading gauge analytics…');
+  try {
+    _gaugeData = await api('GET', `/daily/gauge-kpi?from=${from}&to=${to}`);
+    if (!_gaugeData) return;
+    const gauges = _gaugeData.gauges || [];
+    const best   = _gaugeData.best_gauge;
+
+    // Summary KPIs
+    const totalRev  = gauges.reduce((s,g)=>s+g.revenue,0);
+    const totalPcs  = gauges.reduce((s,g)=>s+g.pieces_sold,0);
+    const totalKgs  = gauges.reduce((s,g)=>s+g.kgs_bought,0);
+    kpiEl.innerHTML = `
+      <div class="kpi best"><div class="kpi-label">Best Gauge</div>
+        <div class="kpi-value" style="font-size:1.6rem;font-family:var(--font-mono);color:var(--g600)">${best ? '# ' + best : '—'}</div>
+        <div class="kpi-sub">by revenue</div></div>
+      <div class="kpi rev"><div class="kpi-label">Total Revenue</div>
+        <div class="kpi-value mono">KES ${fmt(totalRev,2)}</div>
+        <div class="kpi-sub">across all gauges</div></div>
+      <div class="kpi prod"><div class="kpi-label">Total Pieces Sold</div>
+        <div class="kpi-value mono">${fmt(totalPcs)}</div>
+        <div class="kpi-sub">all gauges</div></div>
+      <div class="kpi buy"><div class="kpi-label">Wire Purchased</div>
+        <div class="kpi-value mono">${fmt(totalKgs,1)} kg</div>
+        <div class="kpi-sub">raw stock</div></div>`;
+
+    // Best gauge banner
+    if (best && banEl) {
+      const bg = gauges.find(g=>g.gauge===best);
+      banEl.style.display='flex';
+      banEl.innerHTML = `
+        <div>
+          <div style="font-size:.75rem;color:var(--g200);text-transform:uppercase;letter-spacing:.06em">🏆 Best Performing Gauge</div>
+          <div style="font-size:2rem;font-weight:700;font-family:var(--font-mono);color:#fbbf24">GAUGE ${best}</div>
+        </div>
+        <div style="display:flex;gap:2rem;flex-wrap:wrap">
+          <div><div style="font-size:.72rem;color:var(--g200)">REVENUE</div><div style="font-family:var(--font-mono);color:#fff;font-size:1.1rem">KES ${fmt(bg?.revenue,2)}</div></div>
+          <div><div style="font-size:.72rem;color:var(--g200)">PIECES SOLD</div><div style="font-family:var(--font-mono);color:#fff;font-size:1.1rem">${fmt(bg?.pieces_sold)}</div></div>
+          <div><div style="font-size:.72rem;color:var(--g200)">AVG PRICE</div><div style="font-family:var(--font-mono);color:#fff;font-size:1.1rem">KES ${fmt(bg?.avg_price,2)}</div></div>
+          <div><div style="font-size:.72rem;color:var(--g200)">KGS BOUGHT</div><div style="font-family:var(--font-mono);color:#fff;font-size:1.1rem">${fmt(bg?.kgs_bought,1)} kg</div></div>
+        </div>`;
+    }
+
+    // Per-gauge cards
+    if (!gauges.length) {
+      carEl.innerHTML = '<div class="card" style="text-align:center;padding:2rem;color:var(--muted)">No gauge data in this period. Tag purchases and production runs with a gauge to see lifecycle tracking.</div>';
+      return;
+    }
+
+    const maxRev = Math.max(...gauges.map(g=>g.revenue), 1);
+    carEl.innerHTML = gauges.map(g => {
+      const isBest = g.gauge === best;
+      const revPct = ((g.revenue / maxRev) * 100).toFixed(1);
+      const integrity_ok = g.kgs_used <= g.kgs_bought; // ACID integrity check
+      return `<div class="card" style="margin-bottom:.75rem;border-left:3px solid ${isBest?'#fbbf24':'var(--g400)'}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem">
+          <div style="display:flex;align-items:center;gap:.6rem">
+            <span class="gauge-badge ${isBest?'best':''}" style="font-size:1rem;padding:.3rem .75rem">GAUGE ${escHtml(g.gauge)}</span>
+            ${isBest?'<span class="badge" style="background:#fef9c3;color:#92400e;font-size:.7rem">🏆 BEST</span>':''}
+            ${!integrity_ok?'<span class="badge" style="background:#fee2e2;color:#991b1b;font-size:.7rem">⚠ CHECK STOCK</span>':''}
+          </div>
+          <div style="text-align:right">
+            <div style="font-family:var(--font-mono);font-weight:700;font-size:1.1rem;color:var(--g800)">KES ${fmt(g.revenue,2)}</div>
+            <div style="font-size:.72rem;color:var(--muted)">revenue</div>
+          </div>
+        </div>
+        <!-- Revenue bar -->
+        <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:1rem;overflow:hidden">
+          <div style="height:100%;width:${revPct}%;background:${isBest?'#f59e0b':'var(--g500)'};border-radius:3px;transition:width .5s"></div>
+        </div>
+        <!-- Stats grid -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.5rem;font-size:.8rem">
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Purchased</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.kgs_bought,1)} kg</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Used in Prod</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.kgs_used,1)} kg</div>
+          </div>
+          <div style="background:${g.kgs_remaining<0?'#fee2e2':'var(--g50)'};padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Stock (kg)</div>
+            <div style="font-family:var(--font-mono);font-weight:600;color:${g.kgs_remaining<0?'var(--red)':'inherit'}">${fmt(g.kgs_remaining,1)} kg</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Produced</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.pieces_produced)} pcs</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Sold</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.pieces_sold)} pcs</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">In Stock</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.pieces_in_stock)} pcs</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Avg Price</div>
+            <div style="font-family:var(--font-mono);font-weight:600">KES ${fmt(g.avg_price,2)}</div>
+          </div>
+          <div style="background:var(--g50);padding:.5rem .75rem;border-radius:6px">
+            <div style="color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.15rem">Customers</div>
+            <div style="font-family:var(--font-mono);font-weight:600">${fmt(g.unique_customers)}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+    PageProgress.done();
+  } catch(e) {
+    PageProgress.error();
+    console.error('loadGaugeKpi error:', e);
+    kpiEl.innerHTML = '<div style="color:var(--red)">Failed to load gauge data</div>';
+  }
+}
+
+// Patch showTab to load gauge data on demand
+const _origShowTab = typeof showTab !== 'undefined' ? showTab : null;
+
+init().then(() => preset(30));
+</script>
+</body>
+</html>

@@ -1,0 +1,492 @@
+// db/sqlite-schema.js — IMARA LINKS (SQLite3 Local)
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const os = require('os');
+
+// Database file path — stored in user's home directory
+const dbPath = path.join(os.homedir(), '.imara', 'imara.db');
+
+// Create .imara directory if it doesn't exist
+const fs = require('fs');
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+let _db = null;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    _db = new sqlite3.Database(dbPath, (err) => {
+      if (err) reject(err);
+      else {
+        _db.run('PRAGMA foreign_keys = ON', (err) => {
+          if (err) reject(err);
+          else resolve(_db);
+        });
+      }
+    });
+  });
+}
+
+
+// ── SQL dialect translator — strips PostgreSQL-only syntax for SQLite ─────────
+function toSQLite(sql) {
+  return sql
+    // Remove ::numeric, ::text, ::integer casts
+    .replace(/::numeric/g, '')
+    .replace(/::text/g, '')
+    .replace(/::integer/g, '')
+    .replace(/::bigint/g, '')
+    // INTERVAL must be handled BEFORE NOW() replacement so the pattern can match
+    // NOW() - INTERVAL 'N minutes/hours/days' → datetime('now', '-N minutes')
+    .replace(/NOW\(\)\s*-\s*INTERVAL\s*'(\d+)\s*minutes'/gi, (_, m) => `datetime('now', '-${m} minutes')`)
+    .replace(/NOW\(\)\s*-\s*INTERVAL\s*'(\d+)\s*hours'/gi,   (_, m) => `datetime('now', '-${m} hours')`)
+    .replace(/NOW\(\)\s*-\s*INTERVAL\s*'(\d+)\s*days'/gi,    (_, m) => `datetime('now', '-${m} days')`)
+    // NOW() → datetime('now')  (any remaining NOW() after INTERVAL patterns above)
+    .replace(/\bNOW\(\)/g, "datetime('now')")
+    // FULL OUTER JOIN → LEFT JOIN (SQLite doesn't support FULL OUTER JOIN;
+    // the only usage here is for gauge stock aggregation where LEFT JOIN is equivalent
+    // because the base table (purchases) always contains the gauges we care about)
+    .replace(/FULL OUTER JOIN/gi, 'LEFT JOIN')
+    // RETURNING id — SQLite 3.35+ supports RETURNING, but older builds don't.
+    // Strip it and rely on lastInsertRowid instead.
+    .replace(/\s+RETURNING\s+id\b/gi, '')
+    // NULLIF is supported in SQLite — no change needed
+    ;
+}
+
+function getDb() {
+  if (!_db) throw new Error('DB not initialised — await initDb() first');
+
+  return {
+    async exec(sql) {
+      return new Promise((resolve, reject) => {
+        _db.run(toSQLite(sql), (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    },
+
+    prepare(sql) {
+      return {
+        async get(...params) {
+          return new Promise((resolve, reject) => {
+            _db.get(toSQLite(sql), params.flat(), (err, row) => {
+              if (err) reject(err);
+              else resolve(row);
+            });
+          });
+        },
+
+        async all(...params) {
+          return new Promise((resolve, reject) => {
+            _db.all(toSQLite(sql), params.flat(), (err, rows) => {
+              if (err) reject(err);
+              else resolve(rows || []);
+            });
+          });
+        },
+
+        async run(...params) {
+          return new Promise((resolve, reject) => {
+            _db.run(toSQLite(sql), params.flat(), function(err) {
+              if (err) reject(err);
+              else resolve({ lastInsertRowid: this.lastID, changes: this.changes });
+            });
+          });
+        },
+      };
+    },
+
+    // True ACID transaction — BEGIN / COMMIT / ROLLBACK
+    async transaction(fn) {
+      return new Promise((resolve, reject) => {
+        _db.serialize(async () => {
+          _db.run('BEGIN TRANSACTION', async (err) => {
+            if (err) return reject(err);
+            try {
+              const result = await fn();
+              _db.run('COMMIT', (err) => {
+                if (err) reject(err);
+                else resolve(result);
+              });
+            } catch (e) {
+              _db.run('ROLLBACK', () => reject(e));
+            }
+          });
+        });
+      });
+    },
+
+    close() {
+      return new Promise((resolve, reject) => {
+        if (_db) {
+          _db.close((err) => {
+            if (err) reject(err);
+            else {
+              _db = null;
+              resolve();
+            }
+          });
+        } else resolve();
+      });
+    },
+  };
+}
+
+// ── Tables (SQLite compatible) ────────────────────────────────────────────────
+const TABLE_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('owner','admin','knuckler','operator')),
+    full_name TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+    password_changed_at DATETIME,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS security_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    q1 TEXT NOT NULL,
+    a1_hash TEXT NOT NULL,
+    q2 TEXT NOT NULL,
+    a2_hash TEXT NOT NULL,
+    q3 TEXT NOT NULL,
+    a3_hash TEXT NOT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by INTEGER REFERENCES users(id),
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS piece_types (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    length_m REAL NOT NULL CHECK(length_m > 0),
+    weight_kg REAL NOT NULL CHECK(weight_kg > 0),
+    default_price REAL NOT NULL DEFAULT 0 CHECK(default_price >= 0),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS suppliers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_date TEXT NOT NULL,
+    supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+    kgs_bought REAL NOT NULL CHECK(kgs_bought >= 0),
+    cost_per_kg REAL NOT NULL CHECK(cost_per_kg >= 0),
+    transport_cost REAL NOT NULL DEFAULT 0 CHECK(transport_cost >= 0),
+    gauge TEXT DEFAULT '',
+    entered_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS production (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_date TEXT NOT NULL,
+    kgs_used REAL NOT NULL CHECK(kgs_used >= 0),
+    gauge TEXT DEFAULT '',
+    operator_id INTEGER REFERENCES users(id),
+    knuckler_id INTEGER REFERENCES users(id),
+    operator_cost REAL NOT NULL DEFAULT 0,
+    knuckler_cost REAL NOT NULL DEFAULT 0,
+    sack_cost REAL NOT NULL DEFAULT 0,
+    rent_allocation REAL NOT NULL DEFAULT 0,
+    total_cost REAL NOT NULL DEFAULT 0,
+    entered_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS production_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_id INTEGER NOT NULL REFERENCES production(id) ON DELETE CASCADE,
+    piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
+    pieces_produced INTEGER NOT NULL CHECK(pieces_produced >= 0)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_date TEXT NOT NULL,
+    piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
+    quantity INTEGER NOT NULL CHECK(quantity >= 0),
+    selling_price REAL NOT NULL CHECK(selling_price >= 0),
+    default_price REAL NOT NULL DEFAULT 0,
+    price_overridden INTEGER NOT NULL DEFAULT 0,
+    transport_to_market REAL NOT NULL DEFAULT 0,
+    buyer_name TEXT DEFAULT '',
+    gauge_source TEXT DEFAULT '',
+    entered_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_number TEXT NOT NULL UNIQUE,
+    invoice_date TEXT NOT NULL,
+    due_date TEXT DEFAULT '',
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT DEFAULT '',
+    customer_email TEXT DEFAULT '',
+    customer_address TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'partial_payment' CHECK(status IN ('partial_payment','paid','cancelled')),
+    subtotal REAL NOT NULL DEFAULT 0,
+    discount_pct REAL NOT NULL DEFAULT 0,
+    discount_amount REAL NOT NULL DEFAULT 0,
+    tax_pct REAL NOT NULL DEFAULT 0,
+    tax_amount REAL NOT NULL DEFAULT 0,
+    total_amount REAL NOT NULL DEFAULT 0,
+    amount_paid REAL NOT NULL DEFAULT 0,
+    notes TEXT DEFAULT '',
+    sale_id INTEGER,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS invoice_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    piece_type_id INTEGER REFERENCES piece_types(id),
+    description TEXT NOT NULL,
+    gauge TEXT DEFAULT '',
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    unit_price REAL NOT NULL CHECK(unit_price >= 0),
+    line_total REAL NOT NULL CHECK(line_total >= 0)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id),
+    action TEXT NOT NULL,
+    table_name TEXT,
+    record_id INTEGER,
+    old_values TEXT,
+    new_values TEXT,
+    ip_address TEXT,
+    logged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id),
+    role_target TEXT,
+    type TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payment_date TEXT NOT NULL,
+    category TEXT NOT NULL CHECK(category IN ('wages_operator','wages_knuckler','rent','supplier','sack','other')),
+    payee_user_id INTEGER REFERENCES users(id),
+    payee_supplier_id INTEGER REFERENCES suppliers(id),
+    payee_name TEXT,
+    amount REAL NOT NULL CHECK(amount > 0),
+    notes TEXT DEFAULT '',
+    recorded_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS rent_months (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month TEXT NOT NULL UNIQUE,
+    amount_due REAL NOT NULL DEFAULT 0,
+    paid INTEGER NOT NULL DEFAULT 0 CHECK(paid IN (0,1)),
+    payment_id INTEGER REFERENCES payments(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS invoice_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    payment_date TEXT NOT NULL,
+    amount REAL NOT NULL CHECK(amount > 0),
+    payment_method TEXT NOT NULL DEFAULT 'cash',
+    notes TEXT DEFAULT '',
+    recorded_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS stock_reservations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    reservation_type TEXT NOT NULL CHECK(reservation_type IN ('invoice', 'order')),
+    reservation_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'fulfilled', 'expired', 'cancelled')),
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME
+  )`,
+];
+
+// ── Indexes ──────────────────────────────────────────────────────────────────
+const INDEX_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS idx_purchases_date    ON purchases(entry_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_purchases_gauge   ON purchases(gauge)`,
+  `CREATE INDEX IF NOT EXISTS idx_production_date   ON production(entry_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_production_gauge  ON production(gauge)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_date        ON sales(entry_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_gauge       ON sales(gauge_source)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_name)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_user        ON audit_log(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_payments_date     ON payments(payment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_payments_category ON payments(category)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoice_payments_date    ON invoice_payments(payment_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoices_sale_id         ON invoices(sale_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_stock_reservations_piece  ON stock_reservations(piece_type_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_stock_reservations_status ON stock_reservations(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_piece_type         ON sales(piece_type_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_production_items_prod_id ON production_items(production_id)`,
+];
+
+// ── Migrations ──────────────────────────────────────────────────────────────
+async function runMigrations() {
+  const db = getDb();
+  
+  // Check for columns and add if needed
+  const cols = [
+    { table: 'users',      col: 'phone' },
+    { table: 'users',      col: 'email' },
+    { table: 'users',      col: 'password_changed_at' },
+    { table: 'payments',   col: 'payee_name' },
+    { table: 'purchases',  col: 'gauge' },
+    { table: 'production', col: 'gauge' },
+    { table: 'production', col: 'total_cost' },
+    { table: 'sales',      col: 'transport_to_market' },
+    { table: 'sales',      col: 'buyer_name' },
+    { table: 'sales',      col: 'gauge_source' },
+    { table: 'invoices',   col: 'sale_id' },
+    { table: 'notifications', col: 'title' },
+    { table: 'notifications', col: 'category' },
+  ];
+
+  for (const { table, col } of cols) {
+    try {
+      const stmt = await db.prepare(`PRAGMA table_info(${table})`);
+      const cols_info = await stmt.all();
+      const hasCol = cols_info.some(c => c.name === col);
+      
+      if (!hasCol) {
+        let def = 'TEXT';
+        if (col === 'total_cost' || col === 'transport_to_market') def = 'REAL DEFAULT 0';
+        if (col === 'password_changed_at') def = 'DATETIME';
+        if (col === 'sale_id') def = 'INTEGER';
+        
+        await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+        console.log(`✅  ${table}.${col} added`);
+      }
+    } catch (e) {
+      console.warn(`⚠️   ${table}.${col}: ${e.message}`);
+    }
+  }
+
+  // Cleanup legacy data
+  try {
+    await db.prepare("UPDATE users SET role='knuckler' WHERE role='worker'").run();
+  } catch (_) {}
+
+  try {
+    await db.prepare("UPDATE invoices SET status='partial_payment' WHERE status='draft'").run();
+  } catch (_) {}
+}
+
+// ── initDb ────────────────────────────────────────────────────────────────────
+async function initDb() {
+  await openDb();
+  const db = getDb();
+
+  console.log('▶  Creating tables…');
+  for (const stmt of TABLE_STATEMENTS) {
+    await db.exec(stmt);
+  }
+
+  console.log('▶  Running migrations…');
+  await runMigrations();
+
+  console.log('▶  Creating indexes…');
+  for (const stmt of INDEX_STATEMENTS) {
+    await db.exec(stmt);
+  }
+
+  // Seed default config values
+  const configKeys = [
+    ['cost_per_kg',       '0'],
+    ['transport_cost',    '0'],
+    ['operator_cost',     '0'],
+    ['knuckler_cost',     '0'],
+    ['sack_cost',         '0'],
+    ['rent_allocation',   '0'],
+    ['stock_threshold',   '100'],
+    ['business_name',     ''],
+    ['business_slogan',   ''],
+    ['currency',          'KES'],
+    ['wire_gauges',       '12,14,16'],
+    ['transport_to_market','0'],
+    ['invoice_prefix',    'INV'],
+    ['invoice_tax_pct',   '0'],
+  ];
+
+  for (const [k, v] of configKeys) {
+    const stmt = await db.prepare('SELECT COUNT(*) as c FROM config WHERE key=?');
+    const res = await stmt.all(k);
+    if (!res[0]?.c) {
+      await db.prepare('INSERT INTO config(key,value) VALUES(?,?)').run(k, v);
+    }
+  }
+
+  // Seed default supplier
+  const suppliers = await db.prepare('SELECT COUNT(*) as c FROM suppliers').all();
+  if (!suppliers[0]?.c) {
+    await db.prepare("INSERT INTO suppliers(name) VALUES(?)").run('Default Supplier');
+  }
+
+  // Seed default owner account
+  const owners = await db.prepare("SELECT COUNT(*) as c FROM users WHERE role='owner'").all();
+  if (!owners[0]?.c) {
+    await db.prepare(
+      'INSERT INTO users(username,password,role,full_name) VALUES(?,?,?,?)'
+    ).run('owner', bcrypt.hashSync('owner1234', 12), 'owner', 'Business Owner');
+    console.log('\n✅  Default owner created  →  username: owner  /  password: owner1234');
+    console.log('⚠️   CHANGE THIS PASSWORD ON FIRST LOGIN\n');
+  }
+
+  console.log(`✅  IMARA LINKS DB ready (SQLite3 Local) — Database: ${dbPath}`);
+}
+
+module.exports = { getDb, initDb, openDb, dbPath, enqueue: () => {}, importDb: () => false };

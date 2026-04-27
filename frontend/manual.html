@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>User Manual IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<style>
+  :root { --primary: #1e9a62; --primary-light: #d1fae5; }
+  html { overflow-y: auto; height: auto; }
+  body { background: #f8fafc; color: var(--ink); line-height: 1.6; height: auto; overflow: visible; }
+  .manual-container { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  .manual-card { background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); padding: 3rem; margin-bottom: 2rem; border: 1px solid #e2e8f0; }
+  
+  header { text-align: center; margin-bottom: 4rem; border-bottom: 2px solid var(--primary-light); padding-bottom: 2rem; }
+  .manual-logo { width: 120px; height: 120px; margin: 0 auto 1.5rem; border-radius: 50%; border: 3px solid var(--primary); padding: 5px; background: white; }
+  h1 { color: var(--primary); font-size: 2.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--muted); font-size: 1.1rem; font-style: italic; }
+
+  h2 { color: var(--primary); border-left: 5px solid var(--primary); padding-left: 1rem; margin: 3rem 0 1.5rem; font-size: 1.75rem; }
+  h3 { color: var(--g700); margin: 2rem 0 1rem; font-size: 1.3rem; display: flex; align-items: center; gap: 0.5rem; }
+  
+  .calc-box { background: #f1f5f9; border-radius: 8px; padding: 1.5rem; margin: 1rem 0; border-left: 4px solid var(--g400); }
+  .calc-box code { font-family: var(--font-mono); color: #1e293b; font-weight: 600; font-size: 1.05rem; }
+  .formula-label { display: block; font-size: 0.8rem; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; font-weight: 700; }
+
+  .kpi-desc { display: grid; grid-template-columns: 180px 1fr; gap: 1rem; margin-bottom: 1.5rem; padding: 1rem; background: white; border: 1px solid #edf2f7; border-radius: 8px; }
+  .kpi-name { font-weight: 700; color: var(--primary); font-size: 0.95rem; }
+  .kpi-text { font-size: 0.9rem; color: var(--g600); }
+
+  .illustration { background: var(--primary-light); border-radius: 12px; padding: 2rem; margin: 2rem 0; text-align: center; position: relative; overflow: hidden; }
+  .workflow-step { display: inline-block; background: white; padding: 1rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin: 0.5rem; font-weight: 600; font-size: 0.9rem; position: relative; z-index: 1; }
+  .workflow-arrow { color: var(--primary); font-size: 1.5rem; vertical-align: middle; }
+
+  .control-badge { display: inline-block; padding: 0.25rem 0.75rem; background: #fee2e2; color: #b91c1c; border-radius: 99px; font-size: 0.75rem; font-weight: 700; margin-bottom: 0.5rem; }
+  
+  .nav-toc { position: sticky; top: 2rem; height: fit-content; background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid #e2e8f0; font-size: 0.85rem; margin-top: 2rem; }
+  .nav-toc a { display: block; color: var(--g600); text-decoration: none; padding: 0.4rem 0; transition: color 0.2s; }
+  .nav-toc a:hover { color: var(--primary); }
+  
+  .download-bar { position: fixed; bottom: 2rem; right: 2rem; z-index: 100; }
+  .btn-download { background: var(--red); color: white; padding: 1rem 2rem; border-radius: 99px; border: none; font-weight: 700; cursor: pointer; box-shadow: 0 10px 25px rgba(220,38,38,0.3); display: flex; align-items: center; gap: 0.75rem; transition: all 0.3s; }
+  .btn-download:hover { transform: translateY(-3px); box-shadow: 0 15px 30px rgba(220,38,38,0.4); }
+
+  @media (max-width: 1100px) { .nav-toc { display: none; } }
+  @media print { .btn-download, .nav-toc { display: none; } .manual-card { box-shadow: none; border: none; padding: 0; } }
+</style>
+</head>
+<body>
+
+<div style="display: flex; justify-content: center; gap: 2rem;" class="manual-container">
+  
+  <div class="manual-card" style="flex: 1;">
+    <header>
+      <div class="manual-logo">
+        <img src="logo.png" alt="Logo" style="width:100%; height:100%; object-fit:contain" onerror="this.src='https://via.placeholder.com/120?text=IL'">
+      </div>
+      <h1 id="top">System User Manual</h1>
+      <div class="subtitle">Operational Intelligence & Data Integrity Guide — Imara Links</div>
+      <p style="margin-top: 1rem; color: var(--muted); font-size: 0.9rem;">Version 2.0 | Last Updated: March 2026</p>
+    </header>
+
+    <section id="introduction">
+      <h2>1. System Overview</h2>
+      <p>The Imara Links Management System is an enterprise-grade solution designed to automate production tracking, inventory management, and financial reconciliation. At its core, the system enforces a <strong>"Surety Guarantee of Integrity,"</strong> ensuring that every physical transaction is justifiable by data.</p>
+      
+      <div class="illustration">
+        <div class="formula-label">Core Business Workflow</div>
+        <div class="workflow-step">Raw Material Purchase</div>
+        <span class="workflow-arrow">→</span>
+        <div class="workflow-step">Production Entry</div>
+        <span class="workflow-arrow">→</span>
+        <div class="workflow-step">Inventory Update</div>
+        <span class="workflow-arrow">→</span>
+        <div class="workflow-step">Sales Fulfillment</div>
+      </div>
+    </section>
+
+    <section id="dashboard">
+      <h2>2. Executive Dashboard</h2>
+      <p>The dashboard provides a real-time snapshot of business health using advanced analytics.</p>
+      
+      <h3><span style="font-size:1.5rem">📊</span> Key Performance Indicators (KPIs)</h3>
+      <div class="kpi-desc">
+        <div class="kpi-name">Revenue</div>
+        <div class="kpi-text">Total gross income from sales in the selected period.</div>
+      </div>
+      <div class="kpi-desc">
+        <div class="kpi-name">Net Profit</div>
+        <div class="kpi-text">Revenue minus sold-item direct costs and rent for the selected period.</div>
+      </div>
+      <div class="kpi-desc">
+        <div class="kpi-name">Sold Direct Costs</div>
+        <div class="kpi-text">Calculated from sold quantities only: <code>Sold Wire Cost + Sold Conversion Cost + Transport to Market</code>.</div>
+      </div>
+      <div class="kpi-desc">
+        <div class="kpi-name">Utilization (Efficiency)</div>
+        <div class="kpi-text">Measures material wastage. Compares expected wire weight vs. actual wire used.</div>
+      </div>
+
+      <div class="calc-box">
+        <span class="formula-label">Profit Calculation</span>
+        <code>Profit = Total Sales - (Purchase Costs + Operator Wages + Knuckler Wages + Sack Costs + Rent)</code>
+      </div>
+    </section>
+
+    <section id="daily">
+      <h2>3. Daily Data Entry</h2>
+      <p>The system prevents "data drift" by requiring consecutive entry. If yesterday's data is missing, today's entry is blocked for production staff.</p>
+      
+      <h3><span style="font-size:1.5rem">📦</span> Purchases</h3>
+      <p>Records incoming raw wire. The system automatically calculates the <strong>Landed Cost</strong>.</p>
+      <div class="calc-box">
+        <span class="formula-label">Landed Cost Formula</span>
+        <code>Landed Cost per Kg = (Total Bought * Cost per Kg + Transport Cost) / Total Bought</code>
+      </div>
+
+      <h3><span style="font-size:1.5rem">⚙</span> Production</h3>
+      <p>Tracks how raw material is converted into finished pieces. <strong>Integrity Control:</strong> You cannot use more wire than is available in stock.</p>
+      <div class="control-badge">Integrity Control</div>
+      <p style="font-size: 0.9rem; color: var(--muted);">The system validates that <code>Pieces Produced * Unit Weight</code> does not exceed <code>Total Wire Used</code>. If wastage is too high, the Utilization KPI will drop below 90% (marked in Red).</p>
+
+      <h3><span style="font-size:1.5rem">💰</span> Sales</h3>
+      <p>Records revenue. <strong>Integrity Control:</strong> You cannot sell pieces that haven't been produced (prevents negative stock).</p>
+    </section>
+
+    <section id="inventory">
+      <h2>4. Inventory & Stock Control</h2>
+      <p>Automated stock tracking for both Raw Materials and Finished Goods.</p>
+      
+      <div class="kpi-desc">
+        <div class="kpi-name">Raw Stock</div>
+        <div class="kpi-text"><code>Total Bought - Total Used in Production</code>. Alerts trigger when below 100kg.</div>
+      </div>
+      <div class="kpi-desc">
+        <div class="kpi-name">Finished Goods</div>
+        <div class="kpi-text"><code>Total Produced - Total Sold</code>. tracked per piece type (e.g., 2x2 Roll).</div>
+      </div>
+      <div class="kpi-desc">
+        <div class="kpi-name">Stock Value</div>
+        <div class="kpi-text">Current inventory multiplied by default selling prices.</div>
+      </div>
+    </section>
+
+    <section id="reconciliation">
+      <h2>5. Financial Reconciliation</h2>
+      <p>A specialized module for System Owner to track what the business owes to production staff and suppliers.</p>
+      
+      <h3><span style="font-size:1.5rem">⚖</span> Liability Pipeline</h3>
+      <ul style="font-size: 0.95rem; padding-left: 1.5rem;">
+        <li><strong>Production Staff Wages:</strong> Accrued automatically per piece produced during production entry.</li>
+        <li><strong>Supplier Balances:</strong> Accrued when purchases are recorded but not yet marked as paid.</li>
+        <li><strong>Rent Automation:</strong> The system detects a new month and automatically generates a rent liability based on your configuration.</li>
+      </ul>
+      
+      <div class="calc-box">
+        <span class="formula-label">Outstanding Liability</span>
+        <code>Liability = (Accrued Wages + Accrued Supplier Bills + Rent Due) - Total Payments Made</code>
+      </div>
+    </section>
+
+    <section id="admin">
+      <h2>6. System Administration</h2>
+      <p>Tools for security, data portability, and configuration.</p>
+      
+      <ul style="font-size: 0.95rem; padding-left: 1.5rem;">
+        <li><strong>Audit Log:</strong> Every single change (Edit, Delete, Custom Price) is logged with the timestamp and the user who performed it.</li>
+        <li><strong>Backup & Restore:</strong> Owners can download the entire database as a <code>.db</code> file. This file can be re-imported to restore the system to a previous state.</li>
+        <li><strong>Global Config:</strong> Centralized control for wage rates, transport costs, and business branding.</li>
+      </ul>
+    </section>
+
+    <footer style="margin-top: 5rem; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 2rem; color: var(--muted); font-size: 0.8rem;">
+      &copy; 2026 Imara Links. All rights reserved. Confirmed Accurate Operational Documentation.
+    </footer>
+  </div>
+
+  <div class="nav-toc">
+    <div style="font-weight: 700; color: var(--primary); margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 1px;">Contents</div>
+    <a href="#introduction">1. System Overview</a>
+    <a href="#dashboard">2. Executive Dashboard</a>
+    <a href="#daily">3. Daily Data Entry</a>
+    <a href="#inventory">4. Inventory Control</a>
+    <a href="#reconciliation">5. Financial Reconciliation</a>
+    <a href="#admin">6. System Admin</a>
+    <hr style="margin: 1rem 0; border: none; border-top: 1px solid #eee;">
+    <a href="#" onclick="window.close(); return false;" style="color: var(--red); font-weight: 600;">✕ Close Manual</a>
+  </div>
+
+</div>
+
+<div class="download-bar">
+  <button class="btn-download" onclick="window.print()">
+    <span>🖨️</span> Print to PDF
+  </button>
+</div>
+
+<script src="shared.js"></script>
+<script>
+  // Simple check to ensure branding is consistent
+  fetch(API + '/auth/public-config')
+    .then(r => r.json())
+    .then(cfg => {
+      if (cfg.business_name) {
+        document.querySelectorAll('h1, .manual-logo img, footer').forEach(el => {
+          if (el.tagName === 'H1') el.textContent = cfg.business_name + ' Manual';
+          if (el.tagName === 'IMG') el.alt = cfg.business_name;
+        });
+      }
+    }).catch(() => {});
+</script>
+
+</body>
+</html>

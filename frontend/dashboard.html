@@ -1,0 +1,1347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard — IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preload" href="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" as="script">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<style>
+/* ── Period bar ─────────────────────────────────────────────── */
+.period-bar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}
+.period-bar label{font-size:.8rem;color:var(--muted);white-space:nowrap}
+.period-preset{background:var(--g50);border:1px solid var(--border);border-radius:6px;
+               padding:.3rem .65rem;font-size:.78rem;font-family:var(--font);color:var(--g700);
+               cursor:pointer;transition:all .15s}
+.period-preset:hover,.period-preset.active{background:var(--g500);color:#fff;border-color:var(--g500)}
+.gran-badge{background:var(--g100);color:var(--g700);padding:.2rem .5rem;border-radius:99px;
+            font-size:.75rem;font-weight:600}
+
+/* ── Charts ─────────────────────────────────────────────────── */
+.chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+@media(max-width:720px){.chart-pair{grid-template-columns:1fr}}
+.chart-container{position:relative;height:290px;width:100%;overflow:auto;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+.chart-container canvas{display:block}
+@media(max-width:768px){.chart-container{height:240px}}
+@media(max-width:480px){.chart-container{height:200px}.chart-pair{gap:.5rem}}
+/* No-data placeholder */
+.chart-no-data{
+  position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:.5rem;color:var(--muted);font-size:.85rem;font-weight:500;
+  background:var(--g50);border-radius:var(--radius-sm)
+}
+.chart-no-data span:first-child{font-size:2rem;opacity:.4}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      box-shadow:0 1px 3px rgba(0,0,0,.05);transition:all .2s ease}
+.card:hover{box-shadow:0 4px 12px rgba(0,0,0,.1);transform:translateY(-1px)}
+
+/* ── KPI cards — compact, dense, scan-friendly ─────────────── */
+.kpi{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:.5rem .7rem .5rem .85rem;
+  transition:box-shadow .18s,border-color .18s;
+  position:relative;cursor:default;
+  display:flex;flex-direction:row;align-items:center;
+  gap:.6rem;min-width:0;
+}
+/* Coloured left accent bar */
+.kpi::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:linear-gradient(180deg,var(--g400),var(--g600));
+  border-radius:var(--radius) 0 0 var(--radius);
+}
+.kpi:hover{box-shadow:0 3px 12px rgba(0,0,0,.08);border-color:var(--g200)}
+.kpi.danger::before{background:linear-gradient(180deg,#f87171,#dc2626)}
+.kpi.warning::before{background:linear-gradient(180deg,#fbbf24,#d97706)}
+.kpi.info::before{background:linear-gradient(180deg,#60a5fa,#2563eb)}
+.kpi.amber::before{background:linear-gradient(180deg,#fcd34d,#d97706)}
+
+/* Icon — left side, compact */
+.kpi-icon{
+  flex-shrink:0;width:30px;height:30px;border-radius:7px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:.9rem;
+  background:var(--g50);border:1px solid var(--g100);
+}
+.kpi.danger .kpi-icon{background:#fef2f2;border-color:#fecaca}
+.kpi.warning .kpi-icon,.kpi.amber .kpi-icon{background:#fffbeb;border-color:#fde68a}
+.kpi.info .kpi-icon{background:#eff6ff;border-color:#bfdbfe}
+
+/* Text block — fills remaining width */
+.kpi-header{ display:none }
+.kpi-body{ flex:1;min-width:0;display:flex;flex-direction:column;gap:.05rem }
+.kpi-label{
+  font-size:.62rem;color:var(--muted);font-weight:700;
+  text-transform:uppercase;letter-spacing:.06em;line-height:1;
+  white-space:nowrap;
+}
+/* Value: full width, whole-word wrap only, never mid-digit */
+.kpi-value{
+  font-size:1.15rem;font-weight:700;color:var(--ink);
+  line-height:1.15;font-family:var(--font-mono);
+  white-space:normal;overflow-wrap:break-word;word-break:normal;
+}
+.kpi-value.text-val{
+  font-size:.95rem;font-family:var(--font);font-weight:700;
+  white-space:normal;overflow-wrap:break-word;word-break:normal;
+}
+/* Suffix letter K / M / B — styled, prominent, never ambiguous */
+.kpi-sfx{
+  display:inline-block;
+  font-size:.68em;
+  font-weight:900;
+  font-family:var(--font);
+  letter-spacing:.02em;
+  opacity:.55;
+  margin-left:.06em;
+  vertical-align:baseline;
+}
+.kpi-sub{
+  font-size:.62rem;color:var(--muted);font-weight:500;
+  display:flex;align-items:center;gap:.25rem;flex-wrap:wrap;line-height:1.3;
+  margin-top:.08rem;
+}
+.kpi-sub .dot{width:4px;height:4px;border-radius:50%;background:var(--g400);flex-shrink:0}
+.kpi-sub.warn{color:var(--amber)}.kpi-sub.danger{color:var(--red)}.kpi-sub.ok{color:var(--g600)}
+
+/* ── Notification bell ──────────────────────────────────────── */
+.notif-btn{position:relative;background:none;border:none;cursor:pointer;
+           padding:.4rem;border-radius:8px;display:flex;align-items:center;justify-content:center;
+           transition:background .15s;line-height:1;margin-right:.25rem}
+.notif-btn:hover{background:var(--g50)}
+.notif-btn svg{width:22px;height:22px;transition:color .2s}
+.notif-btn.state-none svg{color:var(--muted,#9ca3af)}
+.notif-btn.state-info  svg{color:#3b82f6}
+.notif-btn.state-warn  svg{color:#f59e0b}
+.notif-btn.state-alert svg{color:#dc2626;animation:bellRing .5s ease-in-out}
+@keyframes bellRing{0%,100%{transform:rotate(0)}25%{transform:rotate(-12deg)}75%{transform:rotate(12deg)}}
+.notif-badge{position:absolute;top:1px;right:1px;min-width:17px;height:17px;
+             background:#dc2626;color:#fff;border-radius:99px;font-size:.62rem;
+             font-weight:700;display:flex;align-items:center;justify-content:center;
+             padding:0 3px;pointer-events:none;border:2px solid white}
+
+/* ── Notification panel ─────────────────────────────────────── */
+.notif-panel{position:fixed;top:58px;right:1rem;width:390px;max-width:calc(100vw - 1.5rem);
+             background:var(--surface,#fff);border:1px solid var(--border,#e5e7eb);
+             border-radius:var(--radius,10px);box-shadow:0 12px 40px rgba(0,0,0,.18);
+             z-index:800;display:none;flex-direction:column;max-height:530px;overflow:hidden}
+.notif-panel.open{display:flex}
+.notif-header{display:flex;align-items:center;justify-content:space-between;
+              padding:.875rem 1rem;border-bottom:1px solid var(--border);flex-shrink:0}
+.notif-header h4{margin:0;font-size:.95rem;font-weight:700}
+.notif-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
+.notif-tab{flex:1;background:none;border:none;border-bottom:2.5px solid transparent;
+           padding:.55rem .4rem;font-size:.75rem;font-weight:600;cursor:pointer;
+           color:var(--muted);transition:all .15s;font-family:var(--font);white-space:nowrap}
+.notif-tab.active{color:var(--g600,#16a34a);border-bottom-color:var(--g500,#22c55e)}
+.notif-tab:hover:not(.active){color:var(--ink,#111)}
+.notif-list{overflow-y:auto;flex:1}
+.notif-item{display:flex;gap:.75rem;padding:.7rem 1rem;border-bottom:1px solid var(--border);
+            cursor:pointer;transition:background .1s;align-items:flex-start}
+.notif-item:hover{background:var(--g50)}
+.notif-item.unread{background:#f0fdf4}
+.notif-item.unread:hover{background:#dcfce7}
+.notif-item.read{opacity:.68}
+.ndot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:5px}
+.ndot.info{background:#3b82f6}
+.ndot.warn{background:#f59e0b}
+.ndot.alert{background:#dc2626}
+.ndot.ok{background:#22c55e}
+.ndot.read-dot{background:#9ca3af;opacity:.5}
+.notif-body{flex:1;min-width:0}
+.notif-title{font-size:.82rem;font-weight:600;color:var(--ink);margin-bottom:.15rem;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.notif-msg{font-size:.77rem;color:var(--muted);line-height:1.4}
+.notif-time{font-size:.7rem;color:var(--muted);margin-top:.2rem}
+.notif-goto{font-size:.72rem;color:var(--g600);font-weight:600;margin-top:.25rem;display:inline-block}
+.notif-empty{text-align:center;padding:2.5rem 1rem;color:var(--muted);font-size:.85rem}
+.notif-footer{padding:.6rem 1rem;border-top:1px solid var(--border);display:flex;
+              justify-content:space-between;align-items:center;flex-shrink:0}
+.notif-footer button{background:none;border:none;cursor:pointer;font-size:.75rem;
+                      color:var(--g600);font-family:var(--font);font-weight:600;padding:.2rem .4rem}
+.notif-footer button:hover{color:var(--g700);text-decoration:underline}
+
+/* ── Admin modal ────────────────────────────────────────────── */
+.admin-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;
+             display:flex;align-items:center;justify-content:center}
+.admin-modal-content{background:var(--surface);border-radius:var(--radius);
+                     box-shadow:var(--shadow-md);width:90%;max-width:500px;max-height:90vh;overflow-y:auto}
+.admin-modal-header{padding:1.25rem;border-bottom:1px solid var(--border);
+                    display:flex;justify-content:space-between;align-items:center}
+.admin-modal-header h3{margin:0;font-size:1.1rem;font-weight:600;color:var(--ink)}
+.admin-modal-close{background:none;border:none;font-size:1.5rem;cursor:pointer;color:var(--muted);
+                   padding:0;width:24px;height:24px;display:flex;align-items:center;justify-content:center}
+.admin-modal-close:hover{color:var(--ink)}
+.admin-modal-body{padding:1.25rem}
+.admin-modal-footer{padding:1rem 1.25rem;border-top:1px solid var(--border);display:flex;gap:.75rem;justify-content:flex-end}
+.module-health-card{background:var(--g50);border:1px solid var(--border);border-radius:var(--radius-sm);
+                    padding:1rem;transition:all .2s}
+.module-health-card:hover{box-shadow:var(--shadow);transform:translateY(-1px)}
+
+@keyframes fadeInUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.chart-pair>.card{animation:fadeInUp .45s ease-out both}
+.chart-pair>.card:nth-child(2){animation-delay:.07s}
+.chart-pair>.card:nth-child(3){animation-delay:.14s}
+.chart-pair>.card:nth-child(4){animation-delay:.21s}
+
+/* ── Skeleton loading ───────────────────────────────────────── */
+@keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
+.skel{border-radius:6px;background:linear-gradient(90deg,var(--g100) 25%,var(--g50) 50%,var(--g100) 75%);
+      background-size:800px 100%;animation:shimmer 1.4s infinite linear}
+.skel-kpi{height:80px;border-radius:var(--radius);margin-bottom:.5rem}
+.skel-chart{height:290px;border-radius:var(--radius)}
+.skel-text{height:14px;border-radius:4px;margin-bottom:.5rem}
+.skel-text.w60{width:60%}.skel-text.w80{width:80%}.skel-text.w40{width:40%}
+.chart-loading-overlay{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;background:var(--surface);border-radius:var(--radius);
+  z-index:5;gap:.75rem}
+.chart-loading-spinner{width:36px;height:36px;border:3px solid var(--g100);
+  border-top-color:var(--g500);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.chart-loading-text{font-size:.8rem;color:var(--muted);font-weight:500}
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+const user = requireAuth();
+if (!user) throw '';
+const pg = renderLayout('dashboard.html');
+
+/* ═══════════════════════════════════════════════════════════════
+   CHART HELPERS
+═══════════════════════════════════════════════════════════════ */
+Chart.register(ChartDataLabels);
+const chartRegistry = new Map();
+
+/* ── Loading helpers ─────────────────────────────────────────── */
+function showSkeletonKpis() {
+  const el = document.getElementById('kpiGrid');
+  if (!el) return;
+  el.innerHTML = Array(7).fill(0).map(() =>
+    `<div class="kpi"><div class="skel skel-kpi"></div></div>`
+  ).join('');
+}
+
+function showChartLoading(canvasId, label) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  if (wrap.querySelector('.chart-loading-overlay')) return;
+  wrap.style.position = 'relative';
+  const ov = document.createElement('div');
+  ov.className = 'chart-loading-overlay';
+  ov.innerHTML = `<div class="chart-loading-spinner"></div><div class="chart-loading-text">Loading ${label}…</div>`;
+  wrap.appendChild(ov);
+}
+
+function hideChartLoading(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ov = canvas.parentElement.querySelector('.chart-loading-overlay');
+  if (ov) {
+    ov.style.transition = 'opacity .2s';
+    ov.style.opacity = '0';
+    setTimeout(() => ov.remove(), 220);
+  }
+}
+
+function showAllChartLoaders() {
+  const charts = [
+    ['revenueChart','Revenue Trend'],['prodChart','Production'],
+    ['bestCustomersChart','Top Customers'],['gaugeBreakdownChart','Gauge Breakdown'],
+    ['workerProductionChart','Worker Output'],['salesByPieceChart','Sales Mix'],
+    ['revenueBreakdownChart','Revenue Breakdown'],['costAnalysisChart','Cost Analysis']
+  ];
+  charts.forEach(([id, label]) => showChartLoading(id, label));
+}
+
+function hideAllChartLoaders() {
+  ['revenueChart','prodChart','bestCustomersChart','gaugeBreakdownChart',
+   'workerProductionChart','salesByPieceChart','revenueBreakdownChart','costAnalysisChart'
+  ].forEach(hideChartLoading);
+}
+
+function destroyChart(id) {
+  const c = chartRegistry.get(id);
+  if (c) { try { c.destroy(); } catch(e){} chartRegistry.delete(id); }
+  // Also clear any "no data" overlay left from a previous load
+  const canvas = document.getElementById(id);
+  if (canvas) {
+    const nd = canvas.parentElement.querySelector('.chart-no-data');
+    if (nd) nd.remove();
+    canvas.style.display = '';
+  }
+}
+/** Show a friendly "No data for this period" message instead of a blank chart */
+function showNoData(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const wrap = canvas.parentElement;
+  canvas.style.display = 'none'; // hide the blank canvas
+  if (wrap.querySelector('.chart-no-data')) return;
+  const el = document.createElement('div');
+  el.className = 'chart-no-data';
+  el.innerHTML = '<span>📭</span><span>No data for this period</span>';
+  wrap.appendChild(el);
+}
+
+/** Format large numbers for chart axes/labels: 1500 → 1.5K, 1200000 → 1.2M */
+function smartVal(v) {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v);
+  if (Math.abs(n) >= 1e9)  return (n/1e9).toFixed(1).replace(/\.0$/,'') + 'B';
+  if (Math.abs(n) >= 1e6)  return (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M';
+  if (Math.abs(n) >= 1000) return (n/1000).toFixed(1).replace(/\.0$/,'') + 'K';
+  if (Math.abs(n) >= 1)    return n.toFixed(0);
+  return n.toFixed(2);
+}
+/** Compact KES for KPI values — always 2 decimal places, styled suffix.
+ *  Returns HTML: the number part plain, the suffix (K/M/B) in a bold styled span.
+ *  e.g.  10490  →  KES 10.49<span class="kpi-suffix">K</span>
+ *        1500000 →  KES 1.50<span class="kpi-suffix">M</span>
+ *        850     →  KES 850.00  (no suffix below 1 000)
+ */
+function compactKES(v) {
+  if (v == null || isNaN(v)) return 'KES —';
+  const n   = Number(v);
+  const neg = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  const sfx = s => `${neg}KES ${s}`;
+  const suf = (num, unit) =>
+    sfx(num.toFixed(2) + `<span class="kpi-sfx">${unit}</span>`);
+  if (abs >= 1e9)  return suf(abs / 1e9,  'B');
+  if (abs >= 1e6)  return suf(abs / 1e6,  'M');
+  if (abs >= 1e3)  return suf(abs / 1e3,  'K');
+  return sfx(abs.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+}
+/** Accurate financial formatter — full precision for tooltips/reports */
+function fmtKES(v) {
+  if (v == null || isNaN(v)) return 'KES —';
+  return 'KES ' + Number(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function smartKES(v) { return fmtKES(v); }
+function numVal(v) {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function compactTrendData(trends=[]) {
+  if (!trends || !trends.length) return [];
+
+  // Dashboard sends: [{ date, type:"sales"|"production"|"purchases", value }, ...]
+  // Reports sends:   [{ date, date_label, revenue, kgs_produced }, ...]
+  // Detect which shape we have by checking the first row
+  const first = trends[0];
+  const isFlat = first && ('type' in first) && ('value' in first);
+
+  if (isFlat) {
+    // Pivot flat rows into one object per date
+    const byDate = {};
+    trends.forEach(t => {
+      const d = t.date || '—';
+      if (!byDate[d]) byDate[d] = { date: d, revenue: 0, production: 0 };
+      const v = parseFloat(t.value) || 0;
+      if (t.type === 'sales')      byDate[d].revenue    += v;
+      if (t.type === 'production') byDate[d].production += v;
+    });
+    return Object.values(byDate)
+      .sort((a, b) => a.date < b.date ? -1 : 1)
+      .map(r => ({
+        label:      r.date.slice(5), // "MM-DD"
+        revenue:    r.revenue,
+        production: r.production
+      }));
+  }
+
+  // Reports shape — already has revenue + kgs_produced per row
+  return trends.map(t => ({
+    label:      t.date_label || t.date?.slice(5) || '—',
+    revenue:    parseFloat(t.revenue)      || 0,
+    production: parseFloat(t.kgs_produced) || 0
+  }));
+}
+function setChartViewport(canvasId, { xPoints=0, yPoints=0, circularItems=0 } = {}) {
+  const canvas = document.getElementById(canvasId);
+  const wrap = canvas?.parentElement;
+  if (!canvas || !wrap) return;
+
+  const narrow = window.innerWidth <= 600;
+  const baseHeight = window.innerWidth <= 480 ? 200 : window.innerWidth <= 768 ? 240 : 290;
+
+  // CRITICAL FIX: clientWidth=0 means card not painted yet — never set canvas to 0px.
+  // Walk up the DOM to get a real width; fall back to a viewport-based estimate.
+  let viewportWidth = wrap.clientWidth || wrap.getBoundingClientRect().width;
+  if (!viewportWidth) {
+    let el = wrap.parentElement;
+    while (el && !viewportWidth) { viewportWidth = el.clientWidth; el = el.parentElement; }
+    const cols = window.innerWidth <= 720 ? 1 : 2;
+    viewportWidth = viewportWidth
+      ? Math.floor((viewportWidth - (cols > 1 ? 32 : 16)) / cols)
+      : Math.floor(window.innerWidth * 0.45);
+  }
+
+  // Smart px-per-point: compress for large datasets so scrolling is comfortable
+  let pxPerPoint = 72;
+  if (xPoints > 60)  pxPerPoint = 40;  // several months
+  if (xPoints > 180) pxPerPoint = 24;  // a year+
+  const targetWidth = xPoints > 0 ? Math.max(viewportWidth, xPoints * pxPerPoint) : viewportWidth;
+  let targetHeight = baseHeight;
+
+  if (yPoints > 0) targetHeight = Math.max(baseHeight, yPoints * 42);
+  if (circularItems > 0) {
+    const legendExtra = narrow ? Math.min(circularItems, 8) * 18 : 0;
+    const overflowExtra = circularItems > 8 ? (circularItems - 8) * 22 : 0;
+    targetHeight = Math.max(baseHeight + legendExtra, baseHeight + overflowExtra);
+  }
+
+  // Only override container height when content needs more space (tall bar/circular charts)
+  // For normal charts: leave the CSS height alone — it's correct from the media queries
+  if (targetHeight > baseHeight) {
+    wrap.style.height = `${Math.min(targetHeight, 720)}px`;
+  } else {
+    wrap.style.height = ''; // let CSS control it (290px / 240px / 200px)
+  }
+  wrap.style.overflowX = 'hidden';
+  wrap.style.overflowY = targetHeight > baseHeight ? 'auto' : 'hidden';
+  // Never set explicit canvas dimensions — let Chart.js responsive:true fill the container
+  canvas.style.width = '';
+  canvas.style.minWidth = '';
+  canvas.style.height = '';
+}
+
+
+const PALETTE = ['#1e9a62','#d97706','#dc2626','#2563eb','#7c3aed',
+                 '#0891b2','#ea580c','#be123c','#15803d','#4338ca'];
+
+const BASE_TOOLTIP = {
+  backgroundColor:'rgba(255,255,255,.97)', borderColor:'#e5e7eb', borderWidth:1,
+  titleColor:'#1f2937', bodyColor:'#4b5563',
+  titleFont:{weight:'600',size:12}, bodyFont:{size:11}, padding:12
+};
+const BASE_SCALES = {
+  x:{ grid:{display:false}, ticks:{font:{size:10,family:'var(--font)'},color:'#64748b',maxRotation:45,maxTicksLimit:10} },
+  y:{ grid:{color:'#f1f5f9',borderDash:[2,2]}, ticks:{font:{size:10,family:'var(--font)'},color:'#64748b'} }
+};
+
+/* Responsive legend: bottom on narrow screens, right on wide */
+function legendOpts(overrides={}) {
+  const narrow = window.innerWidth <= 600;
+  return {
+    position: narrow ? 'bottom' : 'right',
+    align: 'center',
+    labels: {
+      font:{size:10, family:'var(--font)'},
+      color:'#5a7a68',
+      boxWidth:12,
+      padding:10,
+      usePointStyle:true,
+      ...overrides
+    }
+  };
+}
+
+function cartesianOpts(extra={}, dataPoints=0) {
+  const { plugins: extraPlugins, scales: extraScales, layout: extraLayout, ...extraRest } = extra;
+  // For large datasets: disable animations (faster render) and auto-limit x-axis ticks
+  const large = dataPoints > 30;
+  const huge  = dataPoints > 90;
+  const smartX = {
+    ...BASE_SCALES.x,
+    ticks: {
+      ...BASE_SCALES.x.ticks,
+      maxTicksLimit: huge ? 12 : large ? 18 : 20,
+      maxRotation: large ? 60 : 45,
+    }
+  };
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: large ? { duration: 400 } : { duration: 700, easing: 'easeOutQuart' },
+    interaction: { mode: 'index', intersect: false },
+    layout: { padding: { top: 36, right: 48, bottom: 4, left: 4 }, ...(extraLayout || {}) },
+    plugins: {
+      legend: { display: false },
+      datalabels: { display: false },
+      tooltip: { ...BASE_TOOLTIP },
+      ...(extraPlugins || {}),
+    },
+    scales: { x: smartX, ...BASE_SCALES, ...(extraScales || {}) },
+    ...extraRest,
+  };
+}
+function circularOpts(extra={}) {
+  const { plugins: extraPlugins, ...extraRest } = extra;
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    // Give the chart room so slice labels don't bleed into the legend area
+    layout: { padding: { top: 20, bottom: 20, left: 24, right: 24 } },
+    plugins: {
+      legend: legendOpts(),
+      datalabels: { display: false },
+      tooltip: { ...BASE_TOOLTIP },
+      ...(extraPlugins || {}),
+    },
+    ...extraRest,
+  };
+}
+
+/* shared datalabel for bar/line ends */
+function endLabel(color, unit='') {
+  return {
+    display: function(ctx) {
+      const v = ctx.dataset.data[ctx.dataIndex];
+      return v != null && v !== 0; // hide on zero/null
+    },
+    anchor:'end', align:'end', offset:2, clamp:true,
+    color, font:{weight:'bold', size:9},
+    formatter: v => v != null && v !== 0 ? smartVal(v) + unit : ''
+  };
+}
+/* shared datalabel for pie/doughnut slices — only on slices big enough to hold the text */
+function pctLabel() {
+  return {
+    color: '#fff',
+    font: { weight: 'bold', size: 10 },
+    anchor: 'center',
+    align: 'center',
+    offset: 0,
+    // White outline so text is readable on any slice color and doesn't bleed into legend
+    textStrokeColor: 'rgba(0,0,0,0.25)',
+    textStrokeWidth: 2,
+    display: function(context) {
+      const data = context.dataset.data || [];
+      const toN  = v => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : 0; };
+      const tot  = data.reduce((s, v) => s + toN(v), 0);
+      const val  = toN(data[context.dataIndex]);
+      // Only render inside slices that are ≥ 10% — below that the label won't fit and spills onto legend
+      return tot > 0 && (val / tot) >= 0.10;
+    },
+    formatter: function(value, context) {
+      const toN = v => { const n = typeof v === 'number' ? v : parseFloat(v); return Number.isFinite(n) ? n : 0; };
+      const tot = (context.dataset.data || []).reduce((s, v) => s + toN(v), 0);
+      if (!tot) return '';
+      const val = toN(context.parsed ?? value);
+      return ((val / tot) * 100).toFixed(1) + '%';
+    }
+  };
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ROLE HTML
+═══════════════════════════════════════════════════════════════ */
+if (user.role === 'admin') {
+  pg.innerHTML = `
+<div class="kpi-grid">
+  <div class="kpi"><div class="kpi-label">System Status</div><div class="kpi-value">🟢 Healthy</div></div>
+  <div class="kpi"><div class="kpi-label">Active Users</div><div class="kpi-value" id="activeUsers">—</div></div>
+  <div class="kpi"><div class="kpi-label">Uptime</div><div class="kpi-value">99.9%</div></div>
+  <div class="kpi"><div class="kpi-label">Sessions</div><div class="kpi-value" id="activeSessions">—</div></div>
+</div>
+<div class="card" style="margin-bottom:1.5rem">
+  <div class="card-title">Module Health</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;margin-top:.75rem">
+    ${[['👥','User Management','userMod'],['📊','Daily Entry','dailyMod'],['📦','Inventory','invMod'],
+       ['📈','Reports','reportsMod'],['⚙','Configuration','configMod'],['🔐','Authentication','authMod']
+    ].map(([ic,lb,id])=>`<div class="module-health-card">
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem"><span>${ic}</span><div style="font-weight:600">${lb}</div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:500;font-size:.85rem;color:var(--g600)" id="${id}">✓ Operational</span>
+        <span style="font-size:.75rem;color:var(--muted)">Live</span>
+      </div>
+    </div>`).join('')}
+  </div>
+</div>
+<div class="chart-pair">
+  <div class="card"><div class="card-title">System Issues</div>
+    <div id="systemIssues" style="max-height:200px;overflow-y:auto;margin-top:.75rem">
+      <div style="color:var(--g600);text-align:center;padding:1rem">✅ No issues detected</div>
+    </div>
+  </div>
+  <div class="card"><div class="card-title">Recent Activity</div>
+    <div id="recentActivity" style="max-height:200px;overflow-y:auto;margin-top:.75rem">
+      <div style="color:var(--muted);text-align:center;padding:1rem">Loading…</div>
+    </div>
+  </div>
+</div>
+<div class="card" style="margin-bottom:1.5rem">
+  <div class="card-title">Support Actions</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin-top:.75rem">
+    <a href="users.html"  class="btn btn-primary"   style="justify-content:center">👥 Manage Users</a>
+    <button class="btn btn-secondary" onclick="showPasswordReset()" style="justify-content:center">🔑 Reset Password</button>
+    <a href="audit.html"  class="btn btn-secondary" style="justify-content:center">📋 Audit Log</a>
+    <button class="btn btn-secondary" onclick="loadAdminDashboard()" style="justify-content:center">🔄 Refresh</button>
+  </div>
+</div>
+<div id="passwordResetModal" class="admin-modal" style="display:none">
+  <div class="admin-modal-content" style="max-width:400px">
+    <div class="admin-modal-header"><h3>Reset User Password</h3>
+      <button class="admin-modal-close" onclick="closePasswordReset()">&times;</button></div>
+    <div class="admin-modal-body">
+      <div style="margin-bottom:1rem"><label class="input-label">Select User</label>
+        <select id="resetUserSelect" class="input"><option value="">Loading…</option></select></div>
+      <div style="margin-bottom:1rem"><label class="input-label">New Password</label>
+        <input type="password" id="newPassword" class="input" placeholder="Min 8 characters"></div>
+      <div style="margin-bottom:1rem"><label class="input-label">Confirm Password</label>
+        <input type="password" id="confirmPassword" class="input" placeholder="Confirm new password"></div>
+    </div>
+    <div class="admin-modal-footer">
+      <button class="btn btn-secondary" onclick="closePasswordReset()">Cancel</button>
+      <button class="btn btn-primary"   onclick="executePasswordReset()">Reset Password</button>
+    </div>
+  </div>
+</div>`;
+
+} else if (user.role === 'owner') {
+  pg.innerHTML = `
+<div id="blockedBanner" class="alert alert-err" style="display:none">
+  <span class="alert-icon">⛔</span>
+  <div><strong>Data entry blocked.</strong> Yesterday's data has not been entered. Please complete it first.</div>
+</div>
+<div id="warnBanner" class="alert alert-warn" style="display:none">
+  <span class="alert-icon">⚠</span><div id="warnMsg"></div>
+</div>
+<div id="kpiSection">
+  <div class="period-bar">
+    <label>Period:</label>
+    <input type="date" class="input" id="fromDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+    <span style="font-size:.8rem;color:var(--muted)">to</span>
+    <input type="date" class="input" id="toDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+    <button class="btn btn-primary btn-sm" onclick="loadDash()">Apply</button>
+    <div style="display:flex;gap:.25rem;margin-left:auto;flex-wrap:wrap">
+      <button class="period-preset active" onclick="applyPreset(7,this)">7 Days</button>
+      <button class="period-preset"        onclick="applyPreset(30,this)">30 Days</button>
+      <button class="period-preset"        onclick="applyPreset(0,this)">Today</button>
+      <button class="period-preset"        onclick="applyPreset(90,this)">90 Days</button>
+      <button class="period-preset"        onclick="applyPreset(365,this)">1 Year</button>
+    </div>
+    <div id="granWrap" style="display:none;align-items:center;gap:.25rem;margin-left:.5rem">
+      <span style="font-size:.75rem;color:var(--muted)">View:</span>
+      <span class="gran-badge" id="granBadge">Daily</span>
+    </div>
+  </div>
+  <div class="kpi-grid" id="kpiGrid"></div>
+  <div class="chart-pair">
+    <div class="card"><div class="card-title">Revenue Trend</div>
+      <div class="chart-container"><canvas id="revenueChart"></canvas></div></div>
+    <div class="card"><div class="card-title">Production — kg Wire Used</div>
+      <div class="chart-container"><canvas id="prodChart"></canvas></div></div>
+  </div>
+  <div class="chart-pair">
+    <div class="card"><div class="card-title">Top Customers</div>
+      <div class="chart-container"><canvas id="bestCustomersChart"></canvas></div></div>
+    <div class="card"><div class="card-title">Revenue by Gauge</div>
+      <div class="chart-container"><canvas id="gaugeBreakdownChart"></canvas></div></div>
+  </div>
+  <div class="chart-pair">
+    <div class="card"><div class="card-title">Production Staff Output (Pieces)</div>
+      <div class="chart-container"><canvas id="workerProductionChart"></canvas></div></div>
+    <div class="card"><div class="card-title">Sales Mix by Piece Type</div>
+      <div class="chart-container"><canvas id="salesByPieceChart"></canvas></div></div>
+  </div>
+  <div class="chart-pair">
+    <div class="card"><div class="card-title">Where Revenue Goes</div>
+      <div class="chart-container"><canvas id="revenueBreakdownChart"></canvas></div></div>
+    <div class="card"><div class="card-title">Cost Breakdown</div>
+      <div class="chart-container"><canvas id="costAnalysisChart"></canvas></div></div>
+  </div>
+  <div class="card" style="margin-bottom:1.5rem">
+    <div class="card-title">Stock Overview</div>
+    <div id="stockOverview" style="margin-top:.75rem"></div>
+  </div>
+</div>
+<div class="card" style="max-width:560px;margin-top:1rem">
+  <div class="card-title">Export Data</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem;margin-top:.75rem">
+    <button class="btn btn-primary btn-sm" onclick="exportPurchases()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Purchases</button>
+    <button class="btn btn-primary btn-sm" onclick="exportProduction()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Production</button>
+    <button class="btn btn-primary btn-sm" onclick="exportSales()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Sales</button>
+  </div>
+</div>`;
+
+} else {
+  pg.innerHTML = `
+<div class="kpi-grid">
+  <div class="kpi"><div class="kpi-label">My Purchases (30d)</div><div class="kpi-value" id="myPurchases">—</div></div>
+  <div class="kpi"><div class="kpi-label">My Production (30d)</div><div class="kpi-value" id="myProduction">—</div></div>
+  <div class="kpi"><div class="kpi-label">My Sales (30d)</div><div class="kpi-value" id="mySales">—</div></div>
+</div>
+<div class="card" style="max-width:420px">
+  <div class="card-title">Quick Actions</div>
+  <a href="daily.html" class="btn btn-primary" style="display:flex;justify-content:center;margin:.75rem 0">✎ &nbsp;Enter Today's Data</a>
+  <div style="font-size:.82rem;color:var(--muted);text-align:center">Covers Purchases, Production and Sales</div>
+</div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ADMIN LOGIC
+═══════════════════════════════════════════════════════════════ */
+async function loadAdminDashboard() {
+  try {
+    const users = await api('GET','/users').catch(()=>[]);
+    const cnt = users.filter(u=>u.active===1).length;
+    const au = document.getElementById('activeUsers');
+    const as = document.getElementById('activeSessions');
+    if(au) au.textContent = cnt;
+    if(as) as.textContent = cnt;
+
+    for (const [ep,el] of [['/daily/status','dailyMod'],['/inventory','invMod']]) {
+      try { await api('GET',ep); }
+      catch(e){ const d=document.getElementById(el); if(d){d.textContent='⚠ Error';d.style.color='var(--amber)';} }
+    }
+
+    const audit = await api('GET','/audit?limit=10').catch(()=>[]);
+    const ra = document.getElementById('recentActivity');
+    if (ra) ra.innerHTML = audit.length
+      ? audit.map(e=>`<div style="padding:.5rem 0;border-bottom:1px solid var(--border);font-size:.85rem">
+          <div style="font-weight:500">${escHtml(e.username)} — ${escHtml(e.action)}</div>
+          <div style="color:var(--muted);font-size:.8rem">${new Date(e.timestamp).toLocaleString()}</div>
+        </div>`).join('')
+      : '<div style="color:var(--muted);text-align:center;padding:1rem">No recent activity</div>';
+
+    await loadUsersForPasswordReset();
+  } catch(e){ console.error('Admin error:',e); }
+}
+
+function showPasswordReset(){ document.getElementById('passwordResetModal').style.display='flex'; }
+function closePasswordReset(){
+  document.getElementById('passwordResetModal').style.display='none';
+  ['resetUserSelect','newPassword','confirmPassword'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+}
+async function loadUsersForPasswordReset(){
+  try{
+    const users=await api('GET','/users');
+    const sel=document.getElementById('resetUserSelect');
+    if(!sel)return;
+    sel.innerHTML='<option value="">Select a user…</option>'+
+      users.filter(u=>u.active===1).map(u=>`<option value="${u.id}">${escHtml(u.full_name)} (${u.username})</option>`).join('');
+  }catch(e){}
+}
+async function executePasswordReset(){
+  const uid=document.getElementById('resetUserSelect').value;
+  const pw=document.getElementById('newPassword').value;
+  const pw2=document.getElementById('confirmPassword').value;
+  if(!uid) return showToast('Please select a user','error');
+  if(!pw||pw.length<8) return showToast('Password must be at least 8 characters','error');
+  if(pw!==pw2) return showToast('Passwords do not match','error');
+  try{ await api('POST',`/users/${uid}/reset-password`,{new_password:pw}); showToast('Password reset successfully'); closePasswordReset(); }
+  catch(e){ showToast(e.error||'Failed to reset password','error'); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PRODUCTION STAFF LOGIC
+═══════════════════════════════════════════════════════════════ */
+async function loadWorkerDashboard(){
+  try{
+    const s=await api('GET','/worker-summary?period=30');
+    const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+    set('myPurchases',s.my_purchases.count);
+    set('myProduction',s.my_production.count);
+    set('mySales', fmtKES(s.my_sales.total_revenue));
+    await loadStatus();
+  }catch(e){console.error('Production Staff error:',e);}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   OWNER PERIOD CONTROLS
+═══════════════════════════════════════════════════════════════ */
+function applyPreset(days, btn) {
+  document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  // Use local date parts to avoid timezone-shift on toISOString()
+  function localDateStr(d) {
+    const y  = d.getFullYear();
+    const m  = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${dd}`;
+  }
+  const toD   = new Date();
+  const fromD = days===0 ? new Date() : new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-days);
+  document.getElementById('toDate').value   = localDateStr(toD);
+  document.getElementById('fromDate').value = localDateStr(fromD);
+  loadDash();
+}
+
+function _granularity(from, to) {
+  const d = Math.round((new Date(to)-new Date(from))/864e5)+1;
+  if (d<=1)   return 'Daily';
+  if (d<=31)  return 'Daily';
+  if (d<=90)  return 'Weekly';
+  if (d<=365) return 'Monthly';
+  return 'Quarterly';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   OWNER DASHBOARD LOAD
+═══════════════════════════════════════════════════════════════ */
+
+
+let _dashLoading = false;
+async function loadDash(){
+  if(_dashLoading) return;
+  if(user.role!=='owner') return;
+  const from=document.getElementById('fromDate')?.value;
+  const to=document.getElementById('toDate')?.value;
+  if(!from||!to) return;
+  _dashLoading = true;
+
+  // Show skeleton + chart loaders immediately — no idle white screen
+  showSkeletonKpis();
+  showAllChartLoaders();
+  PageProgress.show(5, 'Loading dashboard…');
+
+  const gran=_granularity(from,to);
+  const gw=document.getElementById('granWrap'), gb=document.getElementById('granBadge');
+  if(gw&&gb){gw.style.display='flex';gb.textContent=gran;}
+
+  try {
+    // Fire all 5 fetches in parallel; update progress as each resolves
+    PageProgress.show(12, 'Fetching KPIs…');
+    const [d, inv, wp, sp, rb] = await Promise.all([
+      api('GET',`/dashboard?from=${from}&to=${to}`).then(r=>{ PageProgress.show(35,'Loading inventory…'); return r; }),
+      api('GET','/inventory').then(r=>{ PageProgress.show(50,'Loading worker data…'); return r; }),
+      api('GET',`/worker-production?from=${from}&to=${to}`).then(r=>{ PageProgress.show(65,'Loading sales mix…'); return r; }),
+      api('GET',`/sales-by-piece?from=${from}&to=${to}`).then(r=>{ PageProgress.show(80,'Loading revenue breakdown…'); return r; }),
+      api('GET',`/revenue-breakdown?from=${from}&to=${to}`).then(r=>{ PageProgress.show(92,'Rendering charts…'); return r; }),
+    ]);
+
+    // api() returns null when the server responds with 401 (session expired).
+    // The handle401() in shared.js already shows the modal and redirects —
+    // just stop here silently so we don't crash into "Failed to load dashboard data".
+    if (!d || !inv || !wp || !sp || !rb) return;
+
+    const k=d.kpis, raw=inv.raw_material;
+
+    hideAllChartLoaders();
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // Outstanding figures are all-time snapshots, not period-filtered
+    const recvAmt  = d.summary?.invoices?.outstanding_amount || 0;
+    const recvCnt  = d.summary?.invoices?.partial_count || 0;
+    const payAmt   = d.summary?.purchases?.outstanding_payable || 0;
+    const suppOut  = d.summary?.purchases?.supplier_outstanding || 0;
+    const wageOut  = d.summary?.purchases?.wages_outstanding || 0;
+    const rentOut  = d.summary?.purchases?.rent_outstanding || 0;
+    const sackOut  = d.summary?.purchases?.sack_outstanding || 0;
+
+    document.getElementById('kpiGrid').innerHTML=`
+      <div class="kpi" title="Cash collected from customers · ${from} → ${to}">
+        <div class="kpi-icon">💰</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Revenue Received</div>
+          <div class="kpi-value">${compactKES(k.total_revenue)}</div>
+          <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
+        </div>
+      </div>
+      <div class="kpi ${k.net_profit<0?'danger':''}" title="Revenue minus cost of goods sold · ${from} → ${to}">
+        <div class="kpi-icon">${k.net_profit<0?'📉':'📈'}</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Net Profit</div>
+          <div class="kpi-value">${compactKES(k.net_profit)}</div>
+          <div class="kpi-sub ${k.net_profit<0?'danger':'ok'}"><span class="dot" style="background:${k.net_profit<0?'var(--red)':'var(--g500)'}"></span><span>${k.net_margin_pct}% net margin</span></div>
+        </div>
+      </div>
+      <div class="kpi" title="Wire + labour + transport on items sold · ${from} → ${to}">
+        <div class="kpi-icon">🧾</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Cost of Sales</div>
+          <div class="kpi-value">${compactKES(k.direct_costs_sold)}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue</span></div>
+        </div>
+      </div>
+      <div class="kpi" title="Wire used in production · ${from} → ${to}">
+        <div class="kpi-icon">⚙️</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Production</div>
+          <div class="kpi-value">${smartVal(k.total_kgs_produced)}<span style="font-size:.82em;font-weight:500;color:var(--muted)"> kg</span></div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_pieces_sold} pieces sold</span></div>
+        </div>
+      </div>
+      <div class="kpi ${raw.low_stock?(raw.out_of_stock?'danger':'warning'):''}" title="All-time · Bought: ${smartVal(raw.total_bought_kgs)} kg · Used: ${smartVal(raw.total_used_kgs)} kg">
+        <div class="kpi-icon">${raw.out_of_stock?'🚨':raw.low_stock?'⚠️':'📦'}</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Raw Stock</div>
+          <div class="kpi-value">${smartVal(raw.remaining_kgs)}<span style="font-size:.82em;font-weight:500;color:var(--muted)"> kg</span></div>
+          <div class="kpi-sub ${raw.out_of_stock?'danger':raw.low_stock?'warn':''}"><span class="dot" style="background:${raw.out_of_stock?'var(--red)':raw.low_stock?'var(--amber)':'var(--g500)'}"></span><span>${raw.out_of_stock?'Out of stock':raw.remaining_pct+'% remaining'}</span></div>
+        </div>
+      </div>
+      <div class="kpi info" title="Highest revenue piece this period · ${from} → ${to}">
+        <div class="kpi-icon">🏆</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Top Piece</div>
+          <div class="kpi-value text-val">${escHtml(k.best_piece||'—')}</div>
+          <div class="kpi-sub ok"><span class="dot" style="background:var(--blue)"></span><span>${compactKES(k.best_piece_revenue)}</span></div>
+        </div>
+      </div>
+      <div class="kpi info" title="Highest paying customer this period · ${from} → ${to}">
+        <div class="kpi-icon">⭐</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Top Customer</div>
+          <div class="kpi-value text-val">${escHtml(k.best_customer||'—')}</div>
+          <div class="kpi-sub ok"><span class="dot" style="background:var(--blue)"></span><span>${compactKES(k.best_customer_revenue)}</span></div>
+        </div>
+      </div>
+      <div class="kpi ${recvAmt>0?'amber':''}" title="Invoices in this period with outstanding balances · ${from} → ${to}">
+        <div class="kpi-icon">📥</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Receivables</div>
+          <div class="kpi-value">${compactKES(recvAmt)}</div>
+          <div class="kpi-sub ${recvAmt>0?'warn':'ok'}"><span class="dot" style="background:${recvAmt>0?'var(--amber)':'var(--g500)'}"></span><span>${recvCnt} invoice${recvCnt!==1?'s':''} outstanding</span></div>
+        </div>
+      </div>
+      <div class="kpi ${payAmt>0?'danger':''}" title="Period costs incurred vs paid · Suppliers: ${fmtKES(suppOut)} · Wages: ${fmtKES(wageOut)} · Rent: ${fmtKES(rentOut)}">
+        <div class="kpi-icon">📤</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Payables</div>
+          <div class="kpi-value">${compactKES(payAmt)}</div>
+          <div class="kpi-sub ${payAmt>0?'danger':'ok'}"><span class="dot" style="background:${payAmt>0?'var(--red)':'var(--g500)'}"></span><span>${payAmt>0?'Unpaid this period':'All settled'}</span></div>
+        </div>
+      </div>`;
+
+    const trendRows = compactTrendData(d.trends || []);
+    const labels = trendRows.map(t=>t.label);
+    const revs   = trendRows.map(t=>t.revenue);
+    const prods  = trendRows.map(t=>t.production);
+
+    /* Revenue trend — line */
+    destroyChart('revenueChart');
+    const revHasData = labels.length > 0;
+    setChartViewport('revenueChart', { xPoints: labels.length });
+    if (!revHasData) {
+      showNoData('revenueChart');
+    } else {
+      chartRegistry.set('revenueChart', new Chart(document.getElementById('revenueChart'),{
+        type:'line',
+        data:{ labels, datasets:[{
+          label:'Revenue', data:revs, borderColor:'#1e9a62',
+          backgroundColor:'rgba(30,154,98,.08)', borderWidth:2.5,
+          fill:true, tension:.4, spanGaps:true,
+          pointRadius:labels.length > 60 ? 1 : 3, pointHoverRadius:5,
+          pointBackgroundColor:'#1e9a62', pointBorderColor:'#fff', pointBorderWidth:2
+        }]},
+        options: cartesianOpts({
+          plugins:{
+            datalabels: labels.length > 30 ? { display: false } : endLabel('#1e9a62'),
+            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Revenue: '+smartKES(ctx.parsed.y) : 'No data' }}
+          },
+          scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>smartVal(v)}} }
+        }, labels.length)
+      }));
+    }
+
+    /* Production — bar */
+    destroyChart('prodChart');
+    const prodHasData = labels.length > 0;
+    setChartViewport('prodChart', { xPoints: labels.length });
+    if (!prodHasData) {
+      showNoData('prodChart');
+    } else {
+      chartRegistry.set('prodChart', new Chart(document.getElementById('prodChart'),{
+        type:'bar',
+        data:{ labels, datasets:[{
+          label:'Wire Used', data:prods,
+          backgroundColor:'rgba(217,119,6,.65)', borderRadius:labels.length > 30 ? 2 : 4,
+          hoverBackgroundColor:'rgba(217,119,6,.85)'
+        }]},
+        options: cartesianOpts({
+          plugins:{
+            datalabels: labels.length > 30 ? { display: false } : endLabel('#d97706',' kg'),
+            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+smartVal(ctx.parsed.y)+' kg' : 'No data' }}
+          },
+          scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>smartVal(v)+' kg'}} }
+        }, labels.length)
+      }));
+    }
+
+    /* Top Customers — horizontal bar */
+    destroyChart('bestCustomersChart');
+    const custData=d.analytics?.best_customers || [];
+    setChartViewport('bestCustomersChart', { yPoints: custData.length });
+    chartRegistry.set('bestCustomersChart', new Chart(document.getElementById('bestCustomersChart'),{
+      type:'bar',
+      data:{
+        labels:custData.map(c=>c.customer_name||'Unknown'),
+        datasets:[{ label:'Revenue', data:custData.map(c=>numVal(c.total_revenue)),
+          backgroundColor:'rgba(34,197,94,.65)', borderRadius:4, hoverBackgroundColor:'rgba(34,197,94,.85)' }]
+      },
+      options: cartesianOpts({
+        indexAxis:'y',
+        plugins:{
+          datalabels: endLabel('#1e9a62'),
+          tooltip:{ callbacks:{ label: ctx=>{
+            const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + numVal(item), 0);
+            return [`Revenue: ${smartKES(ctx.parsed.x)}`,`Share: ${((ctx.parsed.x/tot)*100).toFixed(1)}%`];
+          }}}
+        },
+        scales:{
+          x:{...BASE_SCALES.x, grid:{color:'#f1f5f9',borderDash:[2,2]}, ticks:{...BASE_SCALES.x.ticks, callback:v=>smartVal(v)}},
+          y:{...BASE_SCALES.y, grid:{display:false}}
+        }
+      })
+    }));
+
+    /* Revenue by Gauge — doughnut */
+    destroyChart('gaugeBreakdownChart');
+    const gd=d.analytics?.gauge_breakdown || [];
+    setChartViewport('gaugeBreakdownChart', { circularItems: gd.length });
+    chartRegistry.set('gaugeBreakdownChart', new Chart(document.getElementById('gaugeBreakdownChart'),{
+      type:'doughnut',
+      data:{ labels:gd.map(g=>g.gauge_source),
+             datasets:[{ data:gd.map(g=>numVal(g.total_revenue)), backgroundColor:PALETTE, borderWidth:0 }] },
+      options: circularOpts({
+        plugins:{
+          legend: legendOpts(),
+          datalabels: pctLabel(),
+          tooltip:{ callbacks:{ label: ctx=>{
+            const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + numVal(item), 0);
+            return `${ctx.label}: ${smartKES(ctx.parsed)} (${((ctx.parsed/tot)*100).toFixed(1)}%)`;
+          }}}
+        }
+      })
+    }));
+
+    /* Production Staff Output — bar */
+    destroyChart('workerProductionChart');
+    const wkrs=[
+      ...(wp.operators||[]).map(o=>({...o,label:`${o.worker_name} (Op)`})),
+      ...(wp.knucklers||[]).map(k=>({...k,label:`${k.worker_name} (Kn)`}))
+    ];
+    setChartViewport('workerProductionChart', { xPoints: wkrs.length });
+    chartRegistry.set('workerProductionChart', new Chart(document.getElementById('workerProductionChart'),{
+      type:'bar',
+      data:{
+        labels:wkrs.map(w=>w.label),
+        datasets:[{ label:'Pieces', data:wkrs.map(w=>numVal(w.total_pieces)),
+          backgroundColor:'rgba(99,102,241,.65)', borderRadius:3 }]
+      },
+      options: cartesianOpts({
+        plugins:{ datalabels: endLabel('#6366f1') },
+        scales:{
+          x:{grid:{display:false},ticks:{font:{size:10},color:'#5a7a68',maxRotation:45}},
+          y:{grid:{color:'#dde9e3'},ticks:{font:{size:10},color:'#6366f1'}}
+        }
+      })
+    }));
+
+    /* Sales Mix — pie */
+    destroyChart('salesByPieceChart');
+    const topP=sp.sales_data || [];
+    setChartViewport('salesByPieceChart', { circularItems: topP.length });
+    chartRegistry.set('salesByPieceChart', new Chart(document.getElementById('salesByPieceChart'),{
+      type:'pie',
+      data:{
+        labels:topP.map(p=>`${p.piece_name} (${p.length_m}m)`),
+        datasets:[{ data:topP.map(p=>numVal(p.total_pieces)), backgroundColor:PALETTE, borderWidth:0 }]
+      },
+      options: circularOpts({
+        plugins:{
+          legend: legendOpts(),
+          datalabels: pctLabel(),
+          tooltip:{ callbacks:{ label: ctx=>{
+            const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + (parseFloat(item) || 0), 0);
+            const current=parseFloat(ctx.parsed) || 0;
+            const pct=tot ? ((current / tot) * 100).toFixed(1) : '0.0';
+            const salesItem = topP[ctx.dataIndex] || {};
+            const salesValue = parseFloat(salesItem.total_revenue) || 0;
+            return [
+              `${ctx.label}`,
+              `Pieces sold: ${current}`,
+              `Sales: ${smartKES(salesValue)}`,
+              `Share: ${pct}%`
+            ];
+          }}}
+        }
+      })
+    }));
+
+    /* Revenue Breakdown — doughnut */
+    destroyChart('revenueBreakdownChart');
+    const bd=rb.cost_breakdown;
+    chartRegistry.set('revenueBreakdownChart', new Chart(document.getElementById('revenueBreakdownChart'),{
+      type:'doughnut',
+      data:{
+        labels:['Wire Cost','Conversion Cost','Transport Cost','Net Profit'],
+        datasets:[{ data:[bd.wire_cost.amount,bd.conversion_cost.amount,bd.transport_cost.amount,bd.net_profit.amount],
+          backgroundColor:['#dc2626','#f59e0b','#3b82f6','#10b981'], borderWidth:0 }]
+      },
+      options: circularOpts({
+        plugins:{
+          legend: legendOpts(),
+          datalabels: pctLabel(),
+          tooltip:{ callbacks:{ label: ctx=>{
+            const pcts=[bd.wire_cost.percentage,bd.conversion_cost.percentage,bd.transport_cost.percentage,bd.net_profit.percentage];
+            return `${ctx.label}: ${smartKES(ctx.parsed)} (${pcts[ctx.dataIndex]}%)`;
+          }}}
+        }
+      })
+    }));
+
+    /* Cost Breakdown — bar */
+    destroyChart('costAnalysisChart');
+    chartRegistry.set('costAnalysisChart', new Chart(document.getElementById('costAnalysisChart'),{
+      type:'bar',
+      data:{
+        labels:['Wire Cost','Conversion Cost','Transport Cost'],
+        datasets:[{ label:'Cost (KES)',
+          data:[bd.wire_cost.amount,bd.conversion_cost.amount,bd.transport_cost.amount],
+          backgroundColor:['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)'], borderRadius:3
+        }]
+      },
+      options: cartesianOpts({
+        plugins:{ datalabels: endLabel('#374151') },
+        scales:{
+          x:{grid:{display:false},ticks:{font:{size:10},color:'#5a7a68'}},
+          y:{grid:{color:'#dde9e3'},ticks:{font:{size:10},color:'#64748b',callback:v=>smartVal(v)}}
+        }
+      })
+    }));
+
+    /* Stock overview */
+    const fg=inv.finished_goods||[];
+    inv.total_stock_value = fg.reduce((s,f)=>s+(parseFloat(f.stock_value)||0),0);
+    document.getElementById('stockOverview').innerHTML=`
+      <div style="margin-bottom:1rem">
+        <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.35rem">
+          <span>Raw wire stock</span><span>${smartVal(raw.remaining_kgs)} kg of ${smartVal(raw.total_bought_kgs)} kg</span>
+        </div>
+        <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden">
+          <div style="width:${Math.min(raw.remaining_pct,100)}%;height:100%;border-radius:99px;transition:.4s;
+            background:${raw.out_of_stock?'var(--red)':raw.low_stock?'var(--amber)':'var(--g500)'}"></div>
+        </div>
+        ${raw.low_stock?`<div style="font-size:.75rem;color:${raw.out_of_stock?'var(--red)':'var(--amber)'};margin-top:.35rem">
+          ${raw.out_of_stock?'⚠ Out of stock!':'⚠ Low stock — below threshold of '+smartVal(raw.threshold)+' kg'}</div>`:''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:.75rem">
+        ${fg.map(f=>`<div style="background:var(--g50);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem">
+            <div style="font-size:.8rem;font-weight:600;color:var(--ink);margin-bottom:.15rem">${escHtml(f.name)}</div>
+            <div style="font-size:.72rem;color:var(--muted);margin-bottom:.4rem;display:flex;align-items:center;gap:.3rem">
+              <span style="background:var(--border);border-radius:4px;padding:.05rem .35rem;font-weight:600;color:var(--ink);letter-spacing:.03em">G${escHtml(f.gauge||'—')}</span>
+              <span>gauge</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted)">
+              <span>Available</span><span class="mono" style="color:var(--ink);font-weight:600">${fmt(f.available_pieces)} pcs</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:.75rem;color:var(--muted);margin-top:.2rem">
+              <span>Value</span><span class="mono">${smartVal(f.stock_value)} KES</span>
+            </div>
+            <div style="margin-top:.4rem">
+              ${f.available_pieces<=0?'<span class="badge badge-red">Out of Stock</span>':
+                f.available_pieces<5?'<span class="badge badge-amber">Low</span>':
+                '<span class="badge badge-green">In Stock</span>'}
+            </div>
+          </div>`).join('')}
+      </div>
+      <div style="margin-top:.75rem;font-size:.8rem;color:var(--muted)">
+        Total stock value: <strong class="mono">${smartVal(inv.total_stock_value)} KES</strong>
+      </div>`;
+
+    PageProgress.done();
+    await loadStatus();
+
+    // ── Smart bell notifications — fire from fresh dashboard data ────────────
+    _fireSmartNotifs({ d, inv, k, raw, recvAmt, recvCnt, payAmt });
+  } catch(e){
+    console.error('Dashboard load error:',e);
+    PageProgress.error();
+    showToast('Failed to load dashboard data','error');
+  } finally {
+    _dashLoading = false;
+  }
+}
+
+async function loadStatus(){
+  try{
+    const s=await api('GET','/daily/status');
+    const render=(obj,id)=>{
+      const el=document.getElementById(id); if(!el)return;
+      el.innerHTML=[
+        obj.purchases ?'<span style="color:var(--g600)">✓ Purchases</span>':'<span style="color:var(--amber)">⚠ Purchases</span>',
+        obj.production?'<span style="color:var(--g600)">✓ Production</span>':'<span style="color:var(--amber)">⚠ Production</span>',
+        obj.sales     ?'<span style="color:var(--g600)">✓ Sales</span>'    :'<span style="color:var(--amber)">⚠ Sales</span>',
+      ].join(' ');
+    };
+    render(s.yesterday,'yStatus'); render(s.today,'tStatus');
+  }catch(e){}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SMART BELL NOTIFICATIONS — fired on each dashboard load
+   Only posts if condition is notable; deduped by title+day
+═══════════════════════════════════════════════════════════════ */
+const _notifPosted = new Set(); // session-level dedup (reset on page load)
+async function _postSmartNotif(payload) {
+  const key = (payload.title || '') + new Date().toDateString();
+  if (_notifPosted.has(key)) return;
+  _notifPosted.add(key);
+  try {
+    await api('POST', '/notifications', { ...payload, roleTarget: 'owner' });
+    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 500);
+  } catch(_) {}
+}
+
+async function _fireSmartNotifs({ d, inv, k, raw, recvAmt, recvCnt, payAmt }) {
+  const fg = inv.finished_goods || [];
+
+  // 1. Stock outs — each out-of-stock product gets its own alert
+  const stockOuts = fg.filter(f => (f.available_pieces || 0) <= 0);
+  for (const f of stockOuts) {
+    await _postSmartNotif({
+      type: 'alert', category: 'stock_out',
+      title: `🚨 Stock Out — ${f.name}`,
+      message: `${f.name} (Gauge ${f.gauge || '—'}) is completely out of stock. Restock immediately.`,
+    });
+  }
+
+  // 2. Low stock (not zero) — single summary if multiple items low
+  const lowStock = fg.filter(f => f.available_pieces > 0 && f.available_pieces < 5);
+  if (lowStock.length) {
+    await _postSmartNotif({
+      type: 'warn', category: 'stock_low',
+      title: `⚠ Low Stock — ${lowStock.length} product${lowStock.length > 1 ? 's' : ''}`,
+      message: lowStock.map(f => `${f.name}: ${f.available_pieces} pcs left`).join(' · '),
+    });
+  }
+
+  // 3. Raw wire low or out
+  if (raw.out_of_stock) {
+    await _postSmartNotif({
+      type: 'alert', category: 'stock_out',
+      title: '🚨 Raw Wire — Out of Stock',
+      message: `Wire stock is at 0 kg. Production is at risk. Buy wire urgently.`,
+    });
+  } else if (raw.low_stock) {
+    await _postSmartNotif({
+      type: 'warn', category: 'stock_low',
+      title: `⚠ Raw Wire Low — ${smartVal(raw.remaining_kgs)} kg remaining`,
+      message: `Only ${raw.remaining_pct}% of wire stock left (threshold: ${smartVal(raw.threshold)} kg). Consider restocking.`,
+    });
+  }
+
+  // 4. Outstanding receivables (period-filtered — only invoices in selected period)
+  if (recvAmt > 0 && recvCnt > 0) {
+    await _postSmartNotif({
+      type: recvAmt > 50000 ? 'alert' : 'warn', category: 'sales',
+      title: `📥 Receivables — ${fmtKES(recvAmt)} This Period`,
+      message: `${recvCnt} invoice${recvCnt !== 1 ? 's' : ''} raised this period still unpaid, totalling ${fmtKES(recvAmt)}. Follow up with customers.`,
+    });
+  }
+
+  // 5. Outstanding payables (period-filtered — costs incurred vs paid in selected period)
+  if (payAmt > 0) {
+    await _postSmartNotif({
+      type: payAmt > 100000 ? 'alert' : 'warn', category: 'sales',
+      title: `📤 Payables — ${fmtKES(payAmt)} This Period`,
+      message: `Period costs outstanding: ${fmtKES(payAmt)} (suppliers, wages, rent). Check obligations for this period.`,
+    });
+  }
+
+  // 6. Best customer highlight (when there is meaningful revenue)
+  if (k.best_customer && k.best_customer_revenue > 0) {
+    await _postSmartNotif({
+      type: 'info', category: 'sales',
+      title: `⭐ Top Customer — ${k.best_customer}`,
+      message: `${k.best_customer} is your highest-value customer this period with ${fmtKES(k.best_customer_revenue)} in revenue.`,
+    });
+  }
+
+  // 7. Best performing gauge (highest revenue gauge from gauge_breakdown)
+  const gd = d.analytics?.gauge_breakdown || [];
+  if (gd.length) {
+    const topG = gd.reduce((a, b) => (parseFloat(b.total_revenue) > parseFloat(a.total_revenue) ? b : a), gd[0]);
+    if (topG && parseFloat(topG.total_revenue) > 0) {
+      await _postSmartNotif({
+        type: 'info', category: 'sales',
+        title: `📊 Top Gauge — ${topG.gauge_source}`,
+        message: `Gauge ${topG.gauge_source} is your best performer this period with ${fmtKES(topG.total_revenue)} in sales.`,
+      });
+    }
+  }
+
+  // 8. Best performing piece type
+  if (k.best_piece && k.best_piece_revenue > 0) {
+    await _postSmartNotif({
+      type: 'info', category: 'sales',
+      title: `🏆 Top Piece — ${k.best_piece}`,
+      message: `${k.best_piece} is your best-selling piece type with ${fmtKES(k.best_piece_revenue)} revenue this period.`,
+    });
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════════════════════════ */
+// Global bell with analytic tips is handled by layout.js _injectGlobalAnalyticTips()
+
+if (user.role==='admin') {
+  loadAdminDashboard();
+} else if (user.role==='owner') {
+  function _localDateStr(d) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+  const toD=new Date(), fromD=new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-7);
+  document.getElementById('toDate').value   = _localDateStr(toD);
+  document.getElementById('fromDate').value = _localDateStr(fromD);
+  document.getElementById('fromDate').addEventListener('change',()=>document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active')));
+  document.getElementById('toDate').addEventListener('change',  ()=>document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active')));
+  loadDash();
+} else {
+  loadWorkerDashboard();
+  setInterval(loadWorkerDashboard, 30000);
+  window.addEventListener('focus', loadWorkerDashboard);
+}
+
+window.addEventListener('beforeunload',()=>{chartRegistry.forEach(c=>{try{c.destroy();}catch(e){}});chartRegistry.clear();});
+
+/* ═══════════════════════════════════════════════════════════════
+   EXPORT FUNCTIONS
+═══════════════════════════════════════════════════════════════ */
+async function exportPurchases() {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  showPageLoader('Exporting purchases…');
+  try {
+    await apiDownload(`/export/purchases?from=${from}&to=${to}`, `imara_purchases_${from}_to_${to}.csv`);
+    showToast('Purchases exported');
+  } catch(e) {
+    showToast('Export failed: ' + (e.error || e.message), 'error');
+  } finally {
+    hidePageLoader();
+  }
+}
+
+async function exportProduction() {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  showPageLoader('Exporting production…');
+  try {
+    await apiDownload(`/export/production?from=${from}&to=${to}`, `imara_production_${from}_to_${to}.csv`);
+    showToast('Production exported');
+  } catch(e) {
+    showToast('Export failed: ' + (e.error || e.message), 'error');
+  } finally {
+    hidePageLoader();
+  }
+}
+
+async function exportSales() {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  showPageLoader('Exporting sales…');
+  try {
+    await apiDownload(`/export/sales?from=${from}&to=${to}`, `imara_sales_${from}_to_${to}.csv`);
+    showToast('Sales exported');
+  } catch(e) {
+    showToast('Export failed: ' + (e.error || e.message), 'error');
+  } finally {
+    hidePageLoader();
+  }
+}
+</script>
+</body>
+</html>

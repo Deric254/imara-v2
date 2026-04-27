@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Configuration - IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+const me = requireAuth(['owner','admin']);
+if (!me) throw new Error('Unauthorized');
+const pg = renderLayout('config.html');
+
+pg.innerHTML = `
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem" id="configGrid">
+
+  <div class="card">
+    <div class="card-title">Default Costs Market (KES)</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="label">Cost per Kg (Wire)</label>
+        <input class="input" type="number" id="c_cost_per_kg" min="0" step="0.01" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="label">Transport to Market <span style="font-weight:400;color:var(--muted)">(per piece)</span></label>
+        <input class="input" type="number" id="c_market_transport" min="0" step="1" placeholder="0">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="label">Operator Cost <span style="font-weight:400;color:var(--muted)">(per piece)</span></label>
+        <input class="input" type="number" id="c_operator" min="0" step="1" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="label">Knuckler Cost <span style="font-weight:400;color:var(--muted)">(per piece)</span></label>
+        <input class="input" type="number" id="c_knuckler" min="0" step="1" placeholder="0">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="label">Sack Cost <span style="font-weight:400;color:var(--muted)">(per piece type)</span></label>
+        <input class="input" type="number" id="c_sack" min="0" step="1" placeholder="0">
+      </div>
+      <div class="form-group">
+        <label class="label">Rent Allocation <span style="font-weight:400;color:var(--muted)">(per month)</span></label>
+        <input class="input" type="number" id="c_rent" min="0" step="1" placeholder="0">
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveCosts()">Save Costs</button>
+    <div id="cost_err" class="err" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">System Metrics Wire Gauges</div>
+    <div class="form-group">
+      <label class="label">Available Wire Gauges <span style="font-weight:400;color:var(--muted)">(comma-separated)</span></label>
+      <input class="input" id="c_wire_gauges" placeholder="12,14,16">
+    </div>
+    <div class="form-group">
+      <label class="label">Low Stock Threshold (kg)</label>
+      <input class="input" type="number" id="c_threshold" min="0" step="1" placeholder="100">
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveMetrics()">Save Metrics</button>
+    <div id="metric_err" class="err" style="margin-top:.5rem"></div>
+  </div>
+
+</div>
+
+<hr class="divider" style="margin:1.5rem 0">
+
+<div class="section-header" style="margin-bottom:.75rem">
+  <div class="section-title">Piece Types</div>
+  <button class="btn btn-secondary btn-sm" onclick="showPieceModal()">+ Add Piece Type</button>
+</div>
+<div class="table-wrap" style="margin-bottom:1.5rem">
+  <table><thead><tr>
+    <th>Name</th><th>Length (m)</th><th>Weight (kg)</th><th>Price</th><th>Actions</th>
+  </tr></thead>
+  <tbody id="ptTable"><tr class="loading-row"><td colspan="5"><div class="spinner"></div></td></tr></tbody>
+  </table>
+</div>
+
+<div class="section-header" style="margin-bottom:.75rem">
+  <div class="section-title">Suppliers</div>
+  <button class="btn btn-secondary btn-sm" onclick="showSupplierModal()">+ Add Supplier</button>
+</div>
+<div class="table-wrap">
+  <table><thead><tr><th>Name</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody id="supTable"><tr class="loading-row"><td colspan="3"><div class="spinner"></div></td></tr></tbody>
+  </table>
+</div>
+
+<div class="modal-overlay" id="pieceModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title" id="pieceModalTitle">Add Piece Type</div>
+    <input type="hidden" id="pm_id">
+    <div class="form-group"><label class="label">Name *</label><input class="input" id="pm_name" placeholder='e.g. 5 M Roll (5 M)'></div>
+    <div class="form-row">
+      <div class="form-group"><label class="label">Length (m) *</label><input class="input" type="number" id="pm_len" min="0.01" step="0.01" placeholder="50"></div>
+      <div class="form-group"><label class="label">Weight (kg) *</label><input class="input" type="number" id="pm_wt" min="0.01" step="0.01" placeholder="18"></div>
+    </div>
+    <div class="form-group">
+      <label class="label">Price (KES)</label>
+      <input class="input" type="number" id="pm_price" min="0" step="0.01" placeholder="0">
+    </div>
+    <div id="pm_err" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closePieceModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="savePiece()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="supModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-title">Add Supplier</div>
+    <div class="form-group"><label class="label">Supplier Name *</label><input class="input" id="sm_name" placeholder="Supplier name"></div>
+    <div id="sm_err" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('supModal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSupplier()">Add Supplier</button>
+    </div>
+  </div>
+</div>
+`;
+
+if (window.innerWidth < 640) document.getElementById('configGrid').style.gridTemplateColumns = '1fr';
+
+let _pts = [];
+let _sups = [];
+
+async function load() {
+  try {
+    await loadGlobalConfig();
+
+    const [pts, sups] = await Promise.all([
+      api('GET', '/piece-types'),
+      api('GET', '/suppliers'),
+    ]);
+    _pts = pts || [];
+    _sups = sups || [];
+
+    document.getElementById('c_cost_per_kg').value = getConfig('cost_per_kg', '');
+    document.getElementById('c_market_transport').value = getConfig('transport_to_market', '');
+    document.getElementById('c_operator').value = getConfig('operator_cost', '');
+    document.getElementById('c_knuckler').value = getConfig('knuckler_cost', '');
+    document.getElementById('c_sack').value = getConfig('sack_cost', '');
+    document.getElementById('c_rent').value = getConfig('rent_allocation', '');
+    document.getElementById('c_threshold').value = getConfig('stock_threshold', '');
+    document.getElementById('c_wire_gauges').value = getConfig('wire_gauges', '');
+
+    renderPieces();
+    renderSuppliers();
+  } catch (e) {
+    console.error('config load error:', e);
+    showToast('Failed to load configuration', 'error');
+  }
+}
+
+function renderPieces() {
+  document.getElementById('ptTable').innerHTML = _pts.length
+    ? _pts.map(p => `<tr>
+        <td><strong>${escHtml(p.name)}</strong></td>
+        <td class="mono">${fmt(p.length_m, 1)}</td>
+        <td class="mono">${fmt(p.weight_kg, 2)}</td>
+        <td class="mono"><strong>${fmt(p.default_price, 2)} KES</strong></td>
+        <td>
+          <button class="btn btn-secondary btn-sm" onclick='editPiece(${JSON.stringify(p)})'>Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deletePiece(${p.id}, '${escJs(p.name)}')">Delete</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="empty"><div class="empty-text">No piece types</div></td></tr>';
+}
+
+function renderSuppliers() {
+  document.getElementById('supTable').innerHTML = _sups.length
+    ? _sups.map(s => `<tr>
+        <td><strong>${escHtml(s.name)}</strong></td>
+        <td><span class="badge badge-green">Active</span></td>
+        <td>
+          <button class="btn btn-danger btn-sm" onclick="deactivateSupplier(${s.id}, '${escJs(s.name)}')" ${me.role !== 'owner' ? 'style="display:none"' : ''}>Remove</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="3" class="empty"><div class="empty-text">No suppliers</div></td></tr>';
+}
+
+function escJs(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+async function saveCosts() {
+  showErr('cost_err', '');
+  const vals = {
+    cost_per_kg: document.getElementById('c_cost_per_kg').value,
+    transport_to_market: document.getElementById('c_market_transport').value,
+    operator_cost: document.getElementById('c_operator').value,
+    knuckler_cost: document.getElementById('c_knuckler').value,
+    sack_cost: document.getElementById('c_sack').value,
+    rent_allocation: document.getElementById('c_rent').value,
+  };
+  for (const [k, v] of Object.entries(vals)) {
+    if (v !== '' && isNaN(parseFloat(v))) return showErr('cost_err', `Invalid value for ${k}`);
+  }
+  try {
+    await api('PUT', '/config', vals);
+    await refreshGlobalConfig();
+    showToast('Costs saved');
+  } catch (e) {
+    showErr('cost_err', e.error || 'Failed to save');
+  }
+}
+
+async function saveMetrics() {
+  showErr('metric_err', '');
+  const vals = {
+    wire_gauges: document.getElementById('c_wire_gauges').value.trim(),
+    stock_threshold: document.getElementById('c_threshold').value,
+  };
+  if (vals.stock_threshold !== '' && isNaN(parseFloat(vals.stock_threshold))) {
+    return showErr('metric_err', 'Invalid threshold');
+  }
+  try {
+    await api('PUT', '/config', vals);
+    await refreshGlobalConfig();
+    showToast('Metrics saved');
+  } catch (e) {
+    showErr('metric_err', e.error || 'Failed to save');
+  }
+}
+
+function showPieceModal(p) {
+  document.getElementById('pieceModalTitle').textContent = p ? 'Edit Piece Type' : 'Add Piece Type';
+  document.getElementById('pm_id').value = p?.id || '';
+  document.getElementById('pm_name').value = p?.name || '';
+  document.getElementById('pm_len').value = p?.length_m || '';
+  document.getElementById('pm_wt').value = p?.weight_kg || '';
+  document.getElementById('pm_price').value = p?.default_price ?? '';
+  showErr('pm_err', '');
+  document.getElementById('pieceModal').style.display = 'flex';
+}
+
+function closePieceModal() {
+  document.getElementById('pieceModal').style.display = 'none';
+}
+
+function editPiece(p) {
+  showPieceModal(p);
+}
+
+async function savePiece() {
+  showErr('pm_err', '');
+  const id = document.getElementById('pm_id').value;
+  const name = document.getElementById('pm_name').value.trim();
+  const len = parseFloat(document.getElementById('pm_len').value);
+  const wt = parseFloat(document.getElementById('pm_wt').value);
+  const price = parseFloat(document.getElementById('pm_price').value) || 0;
+
+  if (!name) return showErr('pm_err', 'Name required');
+  if (isNaN(len) || len <= 0) return showErr('pm_err', 'Length must be > 0');
+  if (isNaN(wt) || wt <= 0) return showErr('pm_err', 'Weight must be > 0');
+
+  try {
+    if (id) {
+      await api('PUT', `/piece-types/${id}`, { name, length_m: len, weight_kg: wt, default_price: price });
+      showToast('Piece type updated');
+    } else {
+      await api('POST', '/piece-types', { name, length_m: len, weight_kg: wt, default_price: price });
+      showToast('Piece type added');
+    }
+    closePieceModal();
+    _pts = await api('GET', '/piece-types');
+    renderPieces();
+  } catch (e) {
+    showErr('pm_err', e.error || 'Failed');
+  }
+}
+
+async function deletePiece(id, name) {
+  if (!confirm(`Delete piece type "${name}"?`)) return;
+  try {
+    await api('DELETE', `/piece-types/${id}`);
+    showToast('Piece type deleted');
+    _pts = await api('GET', '/piece-types');
+    renderPieces();
+  } catch (e) {
+    showToast(e.error || 'Failed to delete piece type', 'error');
+  }
+}
+
+function showSupplierModal() {
+  document.getElementById('sm_name').value = '';
+  showErr('sm_err', '');
+  document.getElementById('supModal').style.display = 'flex';
+}
+
+async function saveSupplier() {
+  showErr('sm_err', '');
+  const name = document.getElementById('sm_name').value.trim();
+  if (!name) return showErr('sm_err', 'Name required');
+  try {
+    await api('POST', '/suppliers', { name });
+    showToast('Supplier added');
+    document.getElementById('supModal').style.display = 'none';
+    _sups = await api('GET', '/suppliers');
+    renderSuppliers();
+  } catch (e) {
+    showErr('sm_err', e.error || 'Failed');
+  }
+}
+
+async function deactivateSupplier(id, name) {
+  if (!confirm(`Remove supplier "${name}"? They will no longer appear in dropdowns.`)) return;
+  try {
+    await api('DELETE', `/suppliers/${id}`);
+    showToast('Supplier removed');
+    _sups = await api('GET', '/suppliers');
+    renderSuppliers();
+  } catch (e) {
+    showToast(e.error || 'Failed', 'error');
+  }
+}
+
+load();
+</script>
+</body>
+</html>

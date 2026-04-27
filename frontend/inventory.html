@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inventory IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+async function init() {
+  const me = requireAuth(['owner','admin']);
+  if (!me) return;
+  const pg = renderLayout('inventory.html');
+
+  await loadGlobalConfig();
+
+  pg.innerHTML = `
+<div class="kpi-grid" id="rawKpis"></div>
+<div style="margin-bottom:1.5rem" id="rawBarWrap"></div>
+
+<div class="section-header" style="margin-bottom:.75rem">
+  <div class="section-title">Raw Materials Stock</div>
+</div>
+<div class="table-wrap" style="margin-bottom:2rem">
+  <table><thead><tr>
+    <th>Gauge</th><th>Purchased (kg)</th><th>Used in Production (kg)</th><th>Remaining (kg)</th><th>Status</th>
+  </tr></thead>
+  <tbody id="rawTable"><tr class="loading-row"><td colspan="5"><div class="spinner"></div></td></tr></tbody>
+  </table>
+</div>
+
+<div class="section-header" style="margin-bottom:.75rem">
+  <div class="section-title">Finished Goods Stock</div>
+  <div style="display:flex;gap:.5rem">
+    <button class="btn btn-secondary btn-sm" onclick="exportInventoryCSV()" id="invExportBtn" style="display:none">📥 Export CSV</button>
+    <button class="btn btn-secondary btn-sm" onclick="load()">↻ Refresh</button>
+  </div>
+</div>
+<div class="table-wrap">
+  <table><thead><tr>
+    <th>Piece Type</th><th>Gauge</th><th>Produced</th><th>Sold</th><th>Available (pcs)</th>
+    <th>Available (kg)</th><th>Available (m)</th><th>Stock Value</th><th>Status</th>
+  </tr></thead>
+  <tbody id="fgTable"><tr class="loading-row"><td colspan="9"><div class="spinner"></div></td></tr></tbody>
+  </table>
+</div>
+`;
+}
+
+async function load() {
+  try {
+    const inv = await api('GET', '/inventory');
+    const r   = inv.raw_material;
+    const finishedGoods = (inv.finished_goods || []).map(f => {
+      const availablePieces = Number.isFinite(parseFloat(f.available_pieces)) ? parseFloat(f.available_pieces) : 0;
+      const weightKg = Number.isFinite(parseFloat(f.weight_kg)) ? parseFloat(f.weight_kg) : 0;
+      const lengthM = Number.isFinite(parseFloat(f.length_m)) ? parseFloat(f.length_m) : 0;
+      const defaultPrice = Number.isFinite(parseFloat(f.default_price)) ? parseFloat(f.default_price) : 0;
+      return {
+        ...f,
+        available_pieces: availablePieces,
+        available_kgs: Number.isFinite(parseFloat(f.available_kgs)) ? parseFloat(f.available_kgs) : (availablePieces * weightKg),
+        available_meters: Number.isFinite(parseFloat(f.available_meters)) ? parseFloat(f.available_meters) : (availablePieces * lengthM),
+        stock_value: Number.isFinite(parseFloat(f.stock_value)) ? parseFloat(f.stock_value) : (availablePieces * defaultPrice)
+      };
+    });
+    inv.finished_goods = finishedGoods;
+
+    window._lastInvData = { ...inv, finished_goods: finishedGoods };
+    document.getElementById('invExportBtn').style.display = 'block';
+
+    // KPIs
+    document.getElementById('rawKpis').innerHTML = `
+      <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">
+        <div class="kpi-label">Raw Wire Stock</div>
+        <div class="kpi-value mono">${fmt(r.remaining_kgs,1)}</div>
+        <div class="kpi-sub">kg remaining</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Total Purchased</div>
+        <div class="kpi-value mono">${fmt(r.total_bought_kgs,1)}</div>
+        <div class="kpi-sub">kg all-time</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Total Used</div>
+        <div class="kpi-value mono">${fmt(r.total_used_kgs,1)}</div>
+        <div class="kpi-sub">kg in production</div>
+      </div>
+      <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">
+        <div class="kpi-label">Stock Level</div>
+        <div class="kpi-value mono">${fmt(r.remaining_pct,1)}%</div>
+        <div class="kpi-sub">threshold: ${fmt(r.threshold)} kg</div>
+      </div>
+      <div class="kpi ${inv.finished_goods.reduce((t,f)=>t+f.available_pieces,0)===0?'danger':inv.finished_goods.reduce((t,f)=>t+f.available_pieces,0)<50?'warning':''}">
+        <div class="kpi-label">Finished Goods</div>
+        <div class="kpi-value mono">${fmt(inv.finished_goods.reduce((t,f)=>t+f.available_pieces,0))}</div>
+        <div class="kpi-sub">pcs available • KES ${fmt(inv.finished_goods.reduce((t,f)=>t+f.stock_value,0),0)}</div>
+      </div>
+    `;
+
+    // Usage bar
+    document.getElementById('rawBarWrap').innerHTML = `
+      <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.4rem">
+        <span>Raw Wire Usage</span><span>${fmt(r.total_used_kgs,1)} kg used of ${fmt(r.total_bought_kgs,1)} kg</span>
+      </div>
+      <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden">
+        <div style="width:${Math.min(100-r.remaining_pct,100)}%;height:100%;border-radius:99px;
+          background:${r.out_of_stock?'var(--red)':r.low_stock?'var(--amber)':'var(--g500)'}"></div>
+      </div>
+      ${r.low_stock?`<div class="alert alert-warn" style="margin-top:.75rem"><span class="alert-icon">⚠</span>
+        ${r.out_of_stock?'Stock depleted!':'Low stock — below threshold of '+fmt(r.threshold)+' kg'}</div>`:''}
+    `;
+
+    // Raw materials table
+    const rawTb = document.getElementById('rawTable');
+    const byGauge = r.by_gauge || [];
+    if (!byGauge.length) {
+      rawTb.innerHTML = `<tr><td colspan="5" class="empty"><div class="empty-text">No raw material purchases recorded yet</div></td></tr>`;
+    } else {
+      rawTb.innerHTML = byGauge.map(g => {
+        const rem    = parseFloat(g.remaining_kgs) || 0;
+        const bought = parseFloat(g.kgs_bought)    || 0;
+        const used   = parseFloat(g.kgs_used)      || 0;
+        const status = rem <= 0
+          ? '<span class="badge badge-red">Depleted</span>'
+          : rem < 20
+          ? '<span class="badge badge-amber">Low</span>'
+          : '<span class="badge badge-green">In Stock</span>';
+        return `<tr>
+          <td><strong>${escHtml(g.gauge || '—')}</strong></td>
+          <td class="mono">${fmt(bought,1)}</td>
+          <td class="mono">${fmt(used,1)}</td>
+          <td class="mono"><strong>${fmt(rem,1)}</strong></td>
+          <td>${status}</td>
+        </tr>`;
+      }).join('') + `<tr style="background:var(--g50);font-weight:700">
+        <td>Total</td>
+        <td class="mono">${fmt(r.total_bought_kgs,1)}</td>
+        <td class="mono">${fmt(r.total_used_kgs,1)}</td>
+        <td class="mono">${fmt(r.remaining_kgs,1)}</td>
+        <td></td>
+      </tr>`;
+    }
+
+    // Finished goods table — with Gauge column
+    const tb = document.getElementById('fgTable');
+    if (!inv.finished_goods.length) {
+      tb.innerHTML = '<tr><td colspan="9" class="empty"><div class="empty-text">No production data yet</div></td></tr>';
+    } else {
+      tb.innerHTML = inv.finished_goods.map(f => {
+        let status = '';
+        if (f.available_pieces === 0) {
+          status = '<span class="badge badge-red">Out of Stock</span>';
+        } else if (f.available_pieces < 5) {
+          status = '<span class="badge badge-amber">Low</span>';
+        } else {
+          status = '<span class="badge badge-green">In Stock</span>';
+        }
+        return `<tr>
+          <td><strong>${escHtml(f.name)}</strong></td>
+          <td class="mono">${escHtml(f.gauge || '—')}</td>
+          <td class="mono">${fmt(f.total_produced)}</td>
+          <td class="mono">${fmt(f.total_sold)}</td>
+          <td class="mono"><strong>${fmt(f.available_pieces)}</strong></td>
+          <td class="mono">${fmt(f.available_kgs,2)}</td>
+          <td class="mono">${fmt(f.available_meters,1)}</td>
+          <td class="mono">${fmt(f.stock_value,2)} KES</td>
+          <td>${status}</td>
+        </tr>`;
+      }).join('');
+    }
+
+  } catch(e) {
+    console.error('Inventory load error:', e);
+    showToast('Failed to load inventory', 'error');
+  }
+}
+
+function exportInventoryCSV() {
+  const data = window._lastInvData;
+  if (!data || !data.finished_goods) return;
+
+  const headers = ['Piece Type', 'Gauge', 'Produced', 'Sold', 'Available (pcs)', 'Available (kg)', 'Available (m)', 'Stock Value (KES)'];
+  const rows = data.finished_goods.map(f => [
+    f.name,
+    f.gauge || '—',
+    f.total_produced,
+    f.total_sold,
+    f.available_pieces,
+    f.available_kgs,
+    f.available_meters,
+    f.stock_value
+  ]);
+
+  downloadCSV(`inventory_report_${today()}`, headers, rows);
+}
+
+init().then(() => load());
+</script>
+</body>
+</html>
