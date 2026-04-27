@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*'   # triggers on: git tag v2.0.1 && git push --tags
 
 jobs:
   build:
@@ -17,27 +17,32 @@ jobs:
       with:
         node-version: '18'
 
-    # Step 1: Install root-level node_modules (express, sqlite3, etc.)
-    # electron-builder's "app": ".." points here, so node_modules must exist here.
+    # Step 1: Install root dependencies (express, sqlite3, etc.)
+    # electron-builder "app": ".." points here so node_modules must be here.
     - name: Install root dependencies
       run: npm install
       working-directory: .
 
-    # Step 2: Install backend devDependencies (electron, electron-builder, nodemon)
-    - name: Install backend dev dependencies
+    # Step 2: Install backend devDependencies (electron, electron-builder)
+    - name: Install backend dependencies
       run: npm install
       working-directory: backend
 
-    # Step 3: Build the Windows installer from the backend folder
+    # Step 3: Build the Windows installer + portable exe
+    # GH_TOKEN lets electron-builder upload assets to the GitHub Release automatically.
     - name: Build Windows installer
       run: npm run build
       working-directory: backend
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload Release
+    # Step 4: Attach .exe files to the GitHub Release created by the tag push
+    - name: Upload release assets
       uses: softprops/action-gh-release@v2
       with:
-        files: backend/dist/*.exe
+        files: |
+          backend/dist/*.exe
+          backend/dist/*.yml
+          backend/dist/*.blockmap
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

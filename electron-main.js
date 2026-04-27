@@ -8,11 +8,7 @@ const cors    = require('cors');
 const helmet  = require('helmet');
 
 // ── Environment setup ─────────────────────────────────────────────────────────
-// In a packaged app .env doesn't exist — set required vars programmatically
-// so the app works without any config file on the user's machine.
 if (!process.env.JWT_SECRET) {
-  // Derive a stable per-machine secret from the machine's userData path.
-  // This means tokens are valid across restarts on the same machine.
   const crypto = require('crypto');
   const seed   = app.getPath('userData') + 'imara-links-v2';
   process.env.JWT_SECRET = crypto.createHash('sha256').update(seed).digest('hex');
@@ -22,23 +18,65 @@ process.env.NODE_ENV       = process.env.NODE_ENV       || 'production';
 
 const { initDb } = require('./backend/db');
 
-// Try loading .env for dev overrides (silently ignored if not present)
 try { require('dotenv').config(); } catch (_) {}
 
 let mainWindow;
 let backendServer;
 let serverPort = 9000;
 
-// ── Auto-updater (safe — crashes are silently caught) ─────────────────────────
-let autoUpdater;
-try {
-  autoUpdater = require('electron-updater').autoUpdater;
-  autoUpdater.checkForUpdatesAndNotify().catch(() => {});
-  autoUpdater.on('update-available',  () => mainWindow?.webContents.send('update-available'));
-  autoUpdater.on('update-downloaded', () => mainWindow?.webContents.send('update-downloaded'));
-} catch (_) { /* unsigned/dev builds — updater not available */ }
+// ── Auto-updater ──────────────────────────────────────────────────────────────
+// Loaded lazily after the window is ready — avoids crashes in dev/unsigned builds.
+let autoUpdater = null;
 
-ipcMain.on('install-update', () => { try { autoUpdater?.quitAndInstall(); } catch (_) {} });
+function initAutoUpdater() {
+  if (!app.isPackaged) return; // never run updater in dev
+  try {
+    autoUpdater = require('electron-updater').autoUpdater;
+
+    // Silent background download — user only sees a prompt when it's ready to install
+    autoUpdater.autoDownload        = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.logger = require('electron').require
+      ? null
+      : console; // log to console in packaged builds for debugging
+
+    autoUpdater.on('update-available', (info) => {
+      mainWindow?.webContents.send('update-available', {
+        version: info.version,
+        releaseDate: info.releaseDate,
+      });
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+      mainWindow?.webContents.send('update-downloaded', {
+        version: info.version,
+      });
+    });
+
+    autoUpdater.on('error', (err) => {
+      // Silent — don't bother users with update errors
+      console.error('Auto-updater error:', err?.message || err);
+    });
+
+    // Check on startup, then every 4 hours
+    autoUpdater.checkForUpdates().catch(() => {});
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 4 * 60 * 60 * 1000);
+
+  } catch (err) {
+    console.warn('Auto-updater not available:', err?.message);
+  }
+}
+
+ipcMain.on('install-update', () => {
+  try { autoUpdater?.quitAndInstall(false, true); } catch (_) {}
+});
+
+ipcMain.on('check-for-updates', () => {
+  try { autoUpdater?.checkForUpdates().catch(() => {}); } catch (_) {}
+});
 
 // ── Find a free port (fallback if 9000 is taken) ─────────────────────────────
 function findFreePort(preferred) {
@@ -49,7 +87,6 @@ function findFreePort(preferred) {
       server.close(() => resolve(preferred));
     });
     server.on('error', () => {
-      // preferred port busy — let OS pick one
       const s2 = net.createServer();
       s2.listen(0, '127.0.0.1', () => {
         const port = s2.address().port;
@@ -90,21 +127,19 @@ async function startBackendServer() {
   backendApp.use(cors({ origin: true, credentials: true }));
   backendApp.use(express.json({ limit: '2mb' }));
 
-  // Routes
-  backendApp.use('/api/auth',          require('./backend/routes/auth'));
-  backendApp.use('/api/users',         require('./backend/routes/users'));
-  backendApp.use('/api/daily',         require('./backend/routes/daily'));
-  backendApp.use('/api/reconciliation',require('./backend/routes/reconciliation'));
-  backendApp.use('/api/backup',        require('./backend/routes/backup'));
-  backendApp.use('/api/invoices',      require('./backend/routes/invoices'));
-  backendApp.use('/api/inventory',     require('./backend/routes/inventory'));
-  backendApp.use('/api/dashboard',     require('./backend/routes/dashboard'));
-  backendApp.use('/api',               require('./backend/routes/config'));
-  backendApp.use('/api',               require('./backend/routes/reports'));
+  backendApp.use('/api/auth',           require('./backend/routes/auth'));
+  backendApp.use('/api/users',          require('./backend/routes/users'));
+  backendApp.use('/api/daily',          require('./backend/routes/daily'));
+  backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
+  backendApp.use('/api/backup',         require('./backend/routes/backup'));
+  backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
+  backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
+  backendApp.use('/api/dashboard',      require('./backend/routes/dashboard'));
+  backendApp.use('/api',                require('./backend/routes/config'));
+  backendApp.use('/api',                require('./backend/routes/reports'));
 
-  backendApp.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  backendApp.get('/health', (_req, res) => res.json({ status: 'ok', version: app.getVersion() }));
 
-  // Serve frontend from the correct path (works both in dev and packaged)
   const frontendPath = path.join(__dirname, 'frontend');
   backendApp.use(express.static(frontendPath));
   backendApp.get('*', (_req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
@@ -137,7 +172,7 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900,
     minWidth: 1024, minHeight: 680,
-    show: false,   // don't show until ready
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -148,14 +183,15 @@ async function createWindow() {
 
   mainWindow.loadURL(`http://localhost:${serverPort}`);
 
-  // Show window only once it's fully rendered — no white flash
   mainWindow.once('ready-to-show', () => {
     splash.close();
     mainWindow.show();
     mainWindow.focus();
+
+    // Start updater AFTER window is visible — never blocks startup
+    initAutoUpdater();
   });
 
-  // Dev-only: open DevTools
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools();
   }
@@ -190,15 +226,33 @@ function createMenu() {
     },
     {
       label: 'Help',
-      submenu: [{
-        label: 'About IMARA LINKS',
-        click: () => dialog.showMessageBox(mainWindow, {
-          type: 'info',
-          title: 'About IMARA LINKS',
-          message: 'IMARA LINKS v2.0.0',
-          detail: 'Business management system\nRunning locally — your data stays on this machine.',
-        })
-      }]
+      submenu: [
+        {
+          label: 'Check for Updates',
+          click: () => {
+            if (autoUpdater) {
+              autoUpdater.checkForUpdates().catch(() => {});
+              mainWindow?.webContents.send('checking-for-updates');
+            } else {
+              dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: 'Updates',
+                message: 'Auto-updates are only available in the installed version.',
+              });
+            }
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'About IMARA LINKS',
+          click: () => dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: 'About IMARA LINKS',
+            message: `IMARA LINKS v${app.getVersion()}`,
+            detail: 'Business management system\nRunning locally — your data stays on this machine.',
+          })
+        }
+      ]
     }
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

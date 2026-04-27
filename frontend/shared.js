@@ -35,13 +35,10 @@ const Store = {
 const _401Modal = { shown: false };
 function handle401(path) {
   if (path === '/auth/login') return false;
-  if (_401Modal.shown) return false; // Only show once per page load
+  if (_401Modal.shown) return false;
 
   _401Modal.shown = true;
-  // Clear the stale token NOW so login.html never sees it and bounces back
   Store.clear();
-
-  // Redirect straight to login with a reason flag — no modal needed
   window.location.replace('login.html?reason=session_expired');
   return true;
 }
@@ -95,7 +92,6 @@ const ErrorTracker = {
 };
 
 // ── Core API call with retry-once on network error ────────────────────────────
-// ── Active request counter for global loading indicator ──────────────────────
 let _apiMutationCount = 0;
 
 async function api(method, path, body) {
@@ -106,11 +102,9 @@ async function api(method, path, body) {
   if (Store.token) opts.headers['Authorization'] = `Bearer ${Store.token}`;
   if (body !== undefined) opts.body = JSON.stringify(body);
 
-  // POST/PUT mutations use a longer timeout (30s) to handle slow/satellite networks
   const timeoutMs = (method === 'POST' || method === 'PUT' || method === 'DELETE') ? 30000 : 15000;
   const isMutation = method === 'POST' || method === 'PUT' || method === 'DELETE';
 
-  // Show progress bar for all mutations so users know something is happening
   if (isMutation) {
     _apiMutationCount++;
     try { PageProgress.show(20, 'Saving…'); } catch(e) {}
@@ -125,7 +119,7 @@ async function api(method, path, body) {
       if (res.status === 401) {
         if (path !== '/auth/login') ErrorTracker.logError({ error: 'Auth 401', status: 401 }, { path });
         handle401(path);
-        return null; // caller checks null
+        return null;
       }
       const ct = res.headers.get('content-type') || '';
       const data = ct.includes('application/json') ? await res.json() : { error: await res.text() };
@@ -154,7 +148,6 @@ async function api(method, path, body) {
       _apiMutationCount = Math.max(0, _apiMutationCount - 1);
       if (_apiMutationCount === 0) try { PageProgress.error(); } catch(e) {}
     }
-    // Retry once on network errors (not HTTP errors), with a longer wait on slow networks
     if (error instanceof TypeError && error.message.includes('fetch')) {
       if (isMutation) try { PageProgress.show(70, 'Retrying…'); } catch(e) {}
       await new Promise(r => setTimeout(r, 1500));
@@ -221,7 +214,6 @@ function today() { return new Date().toISOString().split('T')[0]; }
 
 function showToast(msg, type = 'success', duration = 3500) {
   const t = document.createElement('div');
-  // map 'warn' to warning style if CSS has it, otherwise fall back to 'error'
   t.className = `toast toast-${type === 'warn' ? 'warn' : type}`;
   t.innerHTML = msg;
   document.body.appendChild(t);
@@ -265,7 +257,6 @@ function updateConfigField(fieldId, configKey, defaultValue = '') {
   const el = document.getElementById(fieldId);
   if (!el) return;
   const v = getConfig(configKey, defaultValue);
-  // Always set the actual value so JS reads it correctly; also keep placeholder for UX hint
   el.value = (v !== null && v !== undefined && v !== '') ? v : defaultValue;
   if (el.type === 'number') el.placeholder = el.value || defaultValue;
 }
@@ -321,7 +312,6 @@ function downloadCSV(filename, headers, rows) {
 }
 
 // ── Global progress bar (used by all pages) ───────────────────────────────────
-// Inject DOM on first use; works without any HTML changes in other pages.
 const PageProgress = (() => {
   let _wrap, _bar, _lbl, _t;
 
@@ -382,4 +372,70 @@ const PageProgress = (() => {
       }, 700);
     },
   };
+})();
+
+// ── Auto-updater UI ───────────────────────────────────────────────────────────
+// Listens for update events from the Electron main process (via preload.js IPC bridge)
+// and shows a non-intrusive banner when an update is ready to install.
+(function initUpdaterUI() {
+  if (typeof window === 'undefined' || !window.electron) return;
+
+  // Update is available and downloading in background
+  window.electron.onUpdateAvailable((event, info) => {
+    const version = info?.version ? ` (v${info.version})` : '';
+    showToast(
+      `🔄 Update${version} is downloading in the background…`,
+      'info',
+      6000
+    );
+  });
+
+  // Update downloaded — show persistent green banner with restart button
+  window.electron.onUpdateDownloaded((event, info) => {
+    const version = info?.version ? ` v${info.version}` : '';
+
+    document.getElementById('_updateBanner')?.remove();
+
+    const banner = document.createElement('div');
+    banner.id = '_updateBanner';
+    banner.style.cssText = `
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 999999;
+      background: linear-gradient(90deg, #1e9a62, #16a34a);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      padding: .6rem 1.2rem;
+      font-family: var(--font, sans-serif);
+      font-size: .85rem;
+      font-weight: 500;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    `;
+    banner.innerHTML = `
+      <span>✅ IMARA LINKS${version} is ready to install</span>
+      <button id="_updateRestartBtn" style="
+        background:#fff;color:#16a34a;border:none;border-radius:6px;
+        padding:.35rem .9rem;font-weight:700;font-size:.82rem;cursor:pointer;
+      ">Restart &amp; Update</button>
+      <button id="_updateDismissBtn" style="
+        background:transparent;color:rgba(255,255,255,.75);
+        border:1px solid rgba(255,255,255,.35);border-radius:6px;
+        padding:.3rem .7rem;font-size:.78rem;cursor:pointer;
+      ">Later</button>
+    `;
+
+    document.body.prepend(banner);
+
+    document.getElementById('_updateRestartBtn').addEventListener('click', () => {
+      window.electron.installUpdate();
+    });
+
+    document.getElementById('_updateDismissBtn').addEventListener('click', () => {
+      banner.remove();
+      showToast('Update will install automatically when you close the app.', 'info', 5000);
+    });
+  });
 })();
