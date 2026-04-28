@@ -4,6 +4,13 @@
   "description": "IMARA LINKS - Local Desktop Application",
   "main": "electron-main.js",
   "private": true,
+  "scripts": {
+    "electron-dev": "electron .",
+    "start": "node backend/server.js"
+  },
+  "devDependencies": {
+    "electron": "latest"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
