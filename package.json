@@ -6,10 +6,13 @@
   "private": true,
   "scripts": {
     "electron-dev": "electron .",
-    "start": "node backend/server.js"
+    "start": "node backend/server.js",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win --publish never"
   },
   "devDependencies": {
-    "electron": "latest"
+    "electron": "latest",
+    "electron-builder": "^24.9.1"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

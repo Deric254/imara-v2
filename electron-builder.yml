@@ -1,3 +1,28 @@
+appId: com.imara-links.app
+productName: IMARA LINKS
+directories:
+  buildResources: assets
+
+files:
+  - "!**/*.map"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/.bin"
+  - "!**/*.{o,a,lib,so,so.a,gyp,gypi,target.gyp}"
+
+win:
+  target:
+    - nsis
+  certificateFile: null
+  certificatePassword: null
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: IMARA LINKS
+
 publish:
   provider: github
   owner: Deric254
