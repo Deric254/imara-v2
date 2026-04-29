@@ -3,6 +3,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const os = require('os');
+const { runMigrations } = require('./migrations');
 
 // Database file path — stored in user's home directory
 const dbPath = path.join(os.homedir(), '.imara', 'imara.db');
@@ -437,7 +438,7 @@ async function initDb() {
   }
 
   console.log('▶  Running migrations…');
-  await runMigrations();
+  await runMigrations(db);
 
   console.log('▶  Creating indexes…');
   for (const stmt of INDEX_STATEMENTS) {
