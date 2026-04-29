@@ -376,57 +376,6 @@ const INDEX_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_production_items_prod_id ON production_items(production_id)`,
 ];
 
-// ── Migrations ──────────────────────────────────────────────────────────────
-async function runMigrations() {
-  const db = getDb();
-  
-  // Check for columns and add if needed
-  const cols = [
-    { table: 'users',      col: 'phone' },
-    { table: 'users',      col: 'email' },
-    { table: 'users',      col: 'password_changed_at' },
-    { table: 'payments',   col: 'payee_name' },
-    { table: 'purchases',  col: 'gauge' },
-    { table: 'production', col: 'gauge' },
-    { table: 'production', col: 'total_cost' },
-    { table: 'sales',      col: 'transport_to_market' },
-    { table: 'sales',      col: 'buyer_name' },
-    { table: 'sales',      col: 'gauge_source' },
-    { table: 'invoices',   col: 'sale_id' },
-    { table: 'notifications', col: 'title' },
-    { table: 'notifications', col: 'category' },
-  ];
-
-  for (const { table, col } of cols) {
-    try {
-      const stmt = await db.prepare(`PRAGMA table_info(${table})`);
-      const cols_info = await stmt.all();
-      const hasCol = cols_info.some(c => c.name === col);
-      
-      if (!hasCol) {
-        let def = 'TEXT';
-        if (col === 'total_cost' || col === 'transport_to_market') def = 'REAL DEFAULT 0';
-        if (col === 'password_changed_at') def = 'DATETIME';
-        if (col === 'sale_id') def = 'INTEGER';
-        
-        await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
-        console.log(`✅  ${table}.${col} added`);
-      }
-    } catch (e) {
-      console.warn(`⚠️   ${table}.${col}: ${e.message}`);
-    }
-  }
-
-  // Cleanup legacy data
-  try {
-    await db.prepare("UPDATE users SET role='knuckler' WHERE role='worker'").run();
-  } catch (_) {}
-
-  try {
-    await db.prepare("UPDATE invoices SET status='partial_payment' WHERE status='draft'").run();
-  } catch (_) {}
-}
-
 // ── initDb ────────────────────────────────────────────────────────────────────
 async function initDb() {
   await openDb();

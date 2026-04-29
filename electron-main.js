@@ -117,42 +117,47 @@ function createSplash() {
 
 // ── Backend server ────────────────────────────────────────────────────────────
 async function startBackendServer() {
-  serverPort = await findFreePort(9000);
+  try {
+    serverPort = await findFreePort(9000);
 
-  const backendApp = express();
+    const backendApp = express();
 
-  await initDb();
+    await initDb();
 
-  backendApp.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-  backendApp.use(cors({ origin: true, credentials: true }));
-  backendApp.use(express.json({ limit: '2mb' }));
+    backendApp.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+    backendApp.use(cors({ origin: true, credentials: true }));
+    backendApp.use(express.json({ limit: '2mb' }));
 
-  backendApp.use('/api/auth',           require('./backend/routes/auth'));
-  backendApp.use('/api/users',          require('./backend/routes/users'));
-  backendApp.use('/api/daily',          require('./backend/routes/daily'));
-  backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
-  backendApp.use('/api/backup',         require('./backend/routes/backup'));
-  backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
-  backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
-  backendApp.use('/api/dashboard',      require('./backend/routes/dashboard'));
-  backendApp.use('/api',                require('./backend/routes/config'));
-  backendApp.use('/api',                require('./backend/routes/reports'));
+    backendApp.use('/api/auth',           require('./backend/routes/auth'));
+    backendApp.use('/api/users',          require('./backend/routes/users'));
+    backendApp.use('/api/daily',          require('./backend/routes/daily'));
+    backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
+    backendApp.use('/api/backup',         require('./backend/routes/backup'));
+    backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
+    backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
+    backendApp.use('/api/dashboard',      require('./backend/routes/dashboard'));
+    backendApp.use('/api',                require('./backend/routes/config'));
+    backendApp.use('/api',                require('./backend/routes/reports'));
 
-  backendApp.get('/health', (_req, res) => res.json({ status: 'ok', version: app.getVersion() }));
+    backendApp.get('/health', (_req, res) => res.json({ status: 'ok', version: app.getVersion() }));
 
-  const frontendPath = path.join(__dirname, 'frontend');
-  backendApp.use(express.static(frontendPath));
-  backendApp.get('*', (_req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
+    const frontendPath = path.join(__dirname, 'frontend');
+    backendApp.use(express.static(frontendPath));
+    backendApp.get('*', (_req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
 
-  backendApp.use((err, _req, res, _next) => {
-    console.error('Backend error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  });
+    backendApp.use((err, _req, res, _next) => {
+      console.error('Backend error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    });
 
-  await new Promise((resolve, reject) => {
-    backendServer = backendApp.listen(serverPort, '127.0.0.1', resolve);
-    backendServer.on('error', reject);
-  });
+    await new Promise((resolve, reject) => {
+      backendServer = backendApp.listen(serverPort, '127.0.0.1', resolve);
+      backendServer.on('error', reject);
+    });
+  } catch (err) {
+    console.error('Backend server startup failed:', err);
+    throw new Error(`Failed to start backend: ${err.message}`);
+  }
 }
 
 // ── Main window ───────────────────────────────────────────────────────────────
@@ -257,6 +262,28 @@ function createMenu() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+// ── Error handling ────────────────────────────────────────────────────────────
+// Catch uncaught exceptions and show friendly error instead of technical dialog
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  dialog.showMessageBox({
+    type: 'error',
+    title: 'IMARA LINKS - Error',
+    message: 'Something went wrong',
+    detail: 'The application encountered an unexpected error.\n\nPlease restart the application.\n\nIf this keeps happening, contact support.',
+    buttons: ['Restart', 'Exit']
+  }).then((result) => {
+    if (result.response === 0) {
+      app.relaunch();
+    }
+    app.exit();
+  });
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 app.whenReady().then(createWindow);
