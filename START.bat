@@ -1,35 +1,31 @@
 @echo off
-REM IMARA LINKS - Start Application
-REM This file automatically runs the app
+REM IMARA LINKS - Start Application (Hidden Mode)
+REM This file runs silently without showing the console window to users
 
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 REM Check if dependencies are installed
 if not exist "node_modules" (
-    echo Installing dependencies... (this only happens once)
-    call npm install
+    call npm install >nul 2>&1
     if errorlevel 1 (
-        echo Error: npm install failed. Make sure Node.js is installed.
-        echo Download from: https://nodejs.org
-        pause
+        echo Error: npm install failed. Make sure Node.js is installed from https://nodejs.org
+        timeout /t 5 >nul
         exit /b 1
     )
 )
 
 REM Check backend dependencies
 if not exist "backend\node_modules" (
-    echo Installing backend dependencies...
     cd backend
-    call npm install
+    call npm install >nul 2>&1
     cd ..
     if errorlevel 1 (
         echo Error: backend npm install failed.
-        pause
+        timeout /t 5 >nul
         exit /b 1
     )
 )
 
-REM Start the app
-echo Starting IMARA LINKS...
-npm run electron-dev
-pause
+REM Start the app (npm will open Electron window directly, no cmd window)
+npm run electron-dev >nul 2>&1

@@ -1,6 +1,16 @@
 # IMARA LINKS — How to Run
 
-## Two ways to run
+## Quickest way (Windows users)
+
+**Just double-click one of these:**
+- **`START.vbs`** ← Use this! Runs silently with no console window (recommended)
+- **`START.bat`** ← Also works, but may show a brief console window
+
+The app opens automatically. That's it.
+
+---
+
+## Manual commands
 
 | Mode | Command | Use for |
 |------|---------|---------|

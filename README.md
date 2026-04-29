@@ -33,7 +33,11 @@ Requirements:
 - Node.js v16+ (Download from [nodejs.org](https://nodejs.org))
 - Git
 
-Steps:
+**Quick Start (Windows):**
+- Double-click **`START.vbs`** — Opens app silently with no console window
+- Or double-click **`START.bat`** — Same thing with a brief console
+
+**Manual Setup:**
 
 ```powershell
 # Clone the repository
@@ -49,6 +53,8 @@ npm run electron-dev
 # To build installer
 npm run build
 ```
+
+More details in [START.md](START.md)
 
 ## Database
 
