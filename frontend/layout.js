@@ -8,7 +8,6 @@ function renderLayout(activePage) {
       { href: 'dashboard.html',      icon: '📊', label: 'Dashboard'      },
       { href: 'daily.html',          icon: '✎', label: 'Daily Entry'     },
       { href: 'inventory.html',      icon: '▦', label: 'Inventory'       },
-      { href: 'reports.html',        icon: '📈', label: 'Reports'         },
       { href: 'invoices.html',       icon: '🧾', label: 'Invoices'        },
       { href: 'reconciliation.html', icon: '⚖', label: 'Reconciliation'  },
       { href: 'users.html',          icon: '◉', label: 'Users'           },

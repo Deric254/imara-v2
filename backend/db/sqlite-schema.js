@@ -54,6 +54,16 @@ function toSQLite(sql) {
     // RETURNING id — SQLite 3.35+ supports RETURNING, but older builds don't.
     // Strip it and rely on lastInsertRowid instead.
     .replace(/\s+RETURNING\s+id\b/gi, '')
+    // LEFT(col, n) → substr(col, 1, n)  — SQLite has no LEFT() function
+    .replace(/\bLEFT\s*\(\s*([^,]+?)\s*,\s*(\d+)\s*\)/g, 'substr($1, 1, $2)')
+    // LEAST(a, b) → MIN(a, b)  — SQLite has no LEAST() function
+    .replace(/\bLEAST\s*\(/gi, 'MIN(')
+    // GREATEST(a, b) → MAX(a, b)  — SQLite has no GREATEST() function
+    .replace(/\bGREATEST\s*\(/gi, 'MAX(')
+    // STRING_AGG(expr, sep) → GROUP_CONCAT(expr, sep)  — SQLite uses GROUP_CONCAT
+    .replace(/\bSTRING_AGG\s*\(/gi, 'GROUP_CONCAT(')
+    // ILIKE → LIKE  — SQLite LIKE is already case-insensitive for ASCII characters
+    .replace(/\bILIKE\b/gi, 'LIKE')
     // NULLIF is supported in SQLite — no change needed
     ;
 }

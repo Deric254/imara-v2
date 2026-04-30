@@ -275,7 +275,7 @@ router.get('/cash-flow', authenticate, requireRole('owner', 'admin'), async (req
     const to   = req.query.to   || new Date().toISOString().split('T')[0];
 
     const cashIn = await db.prepare(`
-      SELECT DATE(ip.payment_date) AS date, ROUND(SUM(ip.amount)::numeric,2) AS amount
+      SELECT DATE(ip.payment_date) AS date, ROUND(SUM(ip.amount),2) AS amount
       FROM invoice_payments ip
       JOIN invoices i ON ip.invoice_id = i.id
       WHERE ip.payment_date BETWEEN ? AND ?
@@ -284,7 +284,7 @@ router.get('/cash-flow', authenticate, requireRole('owner', 'admin'), async (req
     `).all(from, to);
 
     const cashOut = await db.prepare(`
-      SELECT DATE(payment_date) AS date, ROUND(SUM(amount)::numeric,2) AS amount
+      SELECT DATE(payment_date) AS date, ROUND(SUM(amount),2) AS amount
       FROM payments WHERE category='supplier' AND payment_date BETWEEN ? AND ?
       GROUP BY DATE(payment_date) ORDER BY date
     `).all(from, to);
