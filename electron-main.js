@@ -27,47 +27,178 @@ let serverPort = 9000;
 // ── Auto-updater ──────────────────────────────────────────────────────────────
 // Loaded lazily after the window is ready — avoids crashes in dev/unsigned builds.
 let autoUpdater = null;
+let isCheckingForUpdate = false;
+let isDownloadingUpdate = false;
 
 function initAutoUpdater() {
-  if (!app.isPackaged) return; // never run updater in dev
+  if (!app.isPackaged) return null; // never run updater in dev/source mode
+  if (autoUpdater) return autoUpdater;
+
   try {
     autoUpdater = require('electron-updater').autoUpdater;
 
-    // Silent background download — user only sees a prompt when it's ready to install
-    autoUpdater.autoDownload        = true;
+    // Updates are user-controlled from Help -> Check for Updates.
+    autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
 
-    autoUpdater.logger = require('electron').require
-      ? null
-      : console; // log to console in packaged builds for debugging
+    autoUpdater.logger = console;
 
-    autoUpdater.on('update-available', (info) => {
+    autoUpdater.on('checking-for-update', () => {
+      isCheckingForUpdate = true;
+      mainWindow?.setProgressBar(2);
+    });
+
+    autoUpdater.on('update-not-available', () => {
+      isCheckingForUpdate = false;
+      mainWindow?.setProgressBar(-1);
+      dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Updates',
+        message: 'IMARA LINKS is up to date.',
+        detail: `Installed version: ${app.getVersion()}`,
+      });
+    });
+
+    autoUpdater.on('update-available', async (info) => {
+      isCheckingForUpdate = false;
+      mainWindow?.setProgressBar(-1);
       mainWindow?.webContents.send('update-available', {
         version: info.version,
         releaseDate: info.releaseDate,
       });
+
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update Available',
+        message: `IMARA LINKS v${info.version} is available.`,
+        detail: `Installed version: ${app.getVersion()}\n\nDownload this update now?`,
+        buttons: ['Download Update', 'Not Now'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+
+      if (result.response === 0) {
+        downloadUpdate();
+      }
     });
 
-    autoUpdater.on('update-downloaded', (info) => {
+    autoUpdater.on('download-progress', (progress) => {
+      isDownloadingUpdate = true;
+      if (typeof progress.percent === 'number') {
+        mainWindow?.setProgressBar(progress.percent / 100);
+      }
+    });
+
+    autoUpdater.on('update-downloaded', async (info) => {
+      isDownloadingUpdate = false;
+      mainWindow?.setProgressBar(-1);
       mainWindow?.webContents.send('update-downloaded', {
         version: info.version,
       });
+
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update Ready',
+        message: `IMARA LINKS v${info.version} has been downloaded.`,
+        detail: 'Restart now to install it, or install it later when you close the app.',
+        buttons: ['Restart and Install', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+
+      if (result.response === 0) {
+        autoUpdater.quitAndInstall(false, true);
+      }
     });
 
     autoUpdater.on('error', (err) => {
-      // Silent — don't bother users with update errors
+      isCheckingForUpdate = false;
+      isDownloadingUpdate = false;
+      mainWindow?.setProgressBar(-1);
       console.error('Auto-updater error:', err?.message || err);
-    });
 
-    // Check on startup, then every 4 hours
-    autoUpdater.checkForUpdates().catch(() => {});
-    setInterval(() => {
-      autoUpdater.checkForUpdates().catch(() => {});
-    }, 4 * 60 * 60 * 1000);
+      dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: 'Update Check Failed',
+        message: 'IMARA LINKS could not check for updates.',
+        detail: err?.message || 'Please check your internet connection and try again.',
+      });
+    });
 
   } catch (err) {
     console.warn('Auto-updater not available:', err?.message);
+    autoUpdater = null;
   }
+
+  return autoUpdater;
+}
+
+function checkForUpdatesManually() {
+  const updater = initAutoUpdater();
+
+  if (!updater) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Updates',
+      message: 'Updates are only available in the installed version.',
+      detail: 'Build and install the app first, then use Help -> Check for Updates.',
+    });
+    return;
+  }
+
+  if (isCheckingForUpdate) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Updates',
+      message: 'IMARA LINKS is already checking for updates.',
+    });
+    return;
+  }
+
+  if (isDownloadingUpdate) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Updates',
+      message: 'An update is already downloading.',
+    });
+    return;
+  }
+
+  updater.checkForUpdates().catch((err) => {
+    isCheckingForUpdate = false;
+    mainWindow?.setProgressBar(-1);
+    dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: 'Update Check Failed',
+      message: 'IMARA LINKS could not check for updates.',
+      detail: err?.message || 'Please check your internet connection and try again.',
+    });
+  });
+}
+
+function downloadUpdate() {
+  if (!autoUpdater || isDownloadingUpdate) return;
+
+  isDownloadingUpdate = true;
+  mainWindow?.setProgressBar(2);
+
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Downloading Update',
+    message: 'IMARA LINKS is downloading the update.',
+    detail: 'You can continue using the app. You will be asked before it restarts.',
+  });
+
+  autoUpdater.downloadUpdate().catch((err) => {
+    isDownloadingUpdate = false;
+    mainWindow?.setProgressBar(-1);
+    dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: 'Update Download Failed',
+      message: 'IMARA LINKS could not download the update.',
+      detail: err?.message || 'Please check your internet connection and try again.',
+    });
+  });
 }
 
 ipcMain.on('install-update', () => {
@@ -75,7 +206,7 @@ ipcMain.on('install-update', () => {
 });
 
 ipcMain.on('check-for-updates', () => {
-  try { autoUpdater?.checkForUpdates().catch(() => {}); } catch (_) {}
+  checkForUpdatesManually();
 });
 
 // ── Find a free port (fallback if 9000 is taken) ─────────────────────────────
@@ -221,7 +352,7 @@ async function createWindow() {
     mainWindow.show();
     mainWindow.focus();
 
-    // Start updater AFTER window is visible — never blocks startup
+    // Prepare updater after the window is visible. It only checks when the user asks.
     initAutoUpdater();
   });
 
@@ -262,18 +393,7 @@ function createMenu() {
       submenu: [
         {
           label: 'Check for Updates',
-          click: () => {
-            if (autoUpdater) {
-              autoUpdater.checkForUpdates().catch(() => {});
-              mainWindow?.webContents.send('checking-for-updates');
-            } else {
-              dialog.showMessageBox(mainWindow, {
-                type: 'info',
-                title: 'Updates',
-                message: 'Auto-updates are only available in the installed version.',
-              });
-            }
-          }
+          click: () => checkForUpdatesManually()
         },
         { type: 'separator' },
         {

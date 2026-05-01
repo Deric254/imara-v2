@@ -14,6 +14,25 @@ That `.exe` is the only file you give to the customer.
 
 Do not give customers the source ZIP, `node_modules`, `START.bat`, `SETUP-DEV.bat`, or `BUILD-INSTALLER.bat`.
 
+## Publish An Update
+
+Use this only after you have tested the new version.
+
+1. Update the version in `package.json`, for example `2.0.3` to `2.0.4`.
+2. Run `BUILD-INSTALLER.bat`.
+3. Install the new `.exe` on your test machine.
+4. Confirm old data still opens correctly.
+5. Set `GH_TOKEN` for GitHub release upload.
+6. Run `PUBLISH-UPDATE.bat`.
+
+After publishing, customers can open the app and choose:
+
+```text
+Help -> Check for Updates
+```
+
+The app only checks when the user asks. If an update is available, the user chooses whether to download it. After download, the user chooses whether to restart and install.
+
 ## Build A Fresh Installer
 
 Double-click:
@@ -27,6 +46,8 @@ After it finishes, the installer will be in:
 ```text
 dist\
 ```
+
+This creates a local installer only. It does not publish an update to GitHub.
 
 ## Developer Setup
 
@@ -76,3 +97,5 @@ C:\Users\<you>\.imara\imara.db
 ```
 
 Back up the `.imara` folder regularly.
+
+App updates replace application files only. They should not delete this database.
