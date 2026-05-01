@@ -11,7 +11,7 @@
     "build:win": "electron-builder --win --publish never"
   },
   "devDependencies": {
-    "electron": "latest",
+    "electron": "41.3.0",
     "electron-builder": "^24.9.1",
     "electron-updater": "^6.1.1"
   },

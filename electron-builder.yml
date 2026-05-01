@@ -1,5 +1,6 @@
 appId: com.imara-links.app
 productName: IMARA LINKS
+npmRebuild: false
 directories:
   buildResources: assets
 

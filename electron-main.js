@@ -110,20 +110,30 @@ function createSplash() {
       height:100vh;font-family:sans-serif;color:#fff;border-radius:12px;">
       <div style="font-size:2.5rem;margin-bottom:8px;">🔗</div>
       <div style="font-size:1.4rem;font-weight:700;letter-spacing:2px;">IMARA LINKS</div>
-      <div style="font-size:.8rem;color:#94a3b8;margin-top:6px;">Starting up…</div>
+      <div id="status" style="font-size:.8rem;color:#94a3b8;margin-top:6px;">Starting up...</div>
     </body></html>`);
   return splash;
 }
 
+function updateSplashStatus(splash, message) {
+  if (!splash || splash.isDestroyed()) return;
+  splash.webContents.executeJavaScript(
+    `document.getElementById('status').textContent = ${JSON.stringify(message)};`
+  ).catch(() => {});
+}
+
 // ── Backend server ────────────────────────────────────────────────────────────
-async function startBackendServer() {
+async function startBackendServer(onStatus = () => {}) {
   try {
+    onStatus('Finding a local port...');
     serverPort = await findFreePort(9000);
 
     const backendApp = express();
 
+    onStatus('Preparing local database...');
     await initDb();
 
+    onStatus('Loading local services...');
     backendApp.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
     backendApp.use(cors({ origin: true, credentials: true }));
     backendApp.use(express.json({ limit: '2mb' }));
@@ -148,6 +158,7 @@ async function startBackendServer() {
       res.status(500).json({ error: 'Internal server error' });
     });
 
+    onStatus('Starting local server...');
     await new Promise((resolve, reject) => {
       backendServer = backendApp.listen(serverPort, '127.0.0.1', resolve);
       backendServer.on('error', reject);
@@ -163,7 +174,7 @@ async function createWindow() {
   const splash = createSplash();
 
   try {
-    await startBackendServer();
+    await startBackendServer((message) => updateSplashStatus(splash, message));
   } catch (err) {
     splash.close();
     dialog.showErrorBox('IMARA LINKS — Startup Error',
@@ -184,9 +195,28 @@ async function createWindow() {
     icon: path.join(__dirname, 'assets', 'icon.png'),
   });
 
+  updateSplashStatus(splash, 'Opening application window...');
   mainWindow.loadURL(`http://localhost:${serverPort}`);
 
+  const startupTimeout = setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      splash.close();
+      dialog.showErrorBox('IMARA LINKS — Startup Timeout',
+        'The application took too long to open.\n\nPlease restart the app. If this keeps happening, contact support.');
+      app.quit();
+    }
+  }, 45000);
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    clearTimeout(startupTimeout);
+    splash.close();
+    dialog.showErrorBox('IMARA LINKS — Startup Error',
+      `The application window could not load.\n\n${errorDescription} (${errorCode})`);
+    app.quit();
+  });
+
   mainWindow.once('ready-to-show', () => {
+    clearTimeout(startupTimeout);
     splash.close();
     mainWindow.show();
     mainWindow.focus();

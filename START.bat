@@ -1,31 +1,19 @@
 @echo off
-REM IMARA LINKS - Start Application (Hidden Mode)
-REM This file runs silently without showing the console window to users
+REM IMARA LINKS - Developer ZIP launcher
+REM Normal startup must not install dependencies. Run SETUP-DEV.bat once if needed.
 
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
 
-REM Check if dependencies are installed
-if not exist "node_modules" (
-    call npm install >nul 2>&1
-    if errorlevel 1 (
-        echo Error: npm install failed. Make sure Node.js is installed from https://nodejs.org
-        timeout /t 5 >nul
-        exit /b 1
-    )
+if not exist "node_modules\electron" (
+    echo IMARA LINKS cannot start because developer dependencies are missing.
+    echo.
+    echo Run SETUP-DEV.bat once, then start the app again.
+    echo For customer machines, build and share the installer instead of this ZIP.
+    echo.
+    pause
+    exit /b 1
 )
 
-REM Check backend dependencies
-if not exist "backend\node_modules" (
-    cd backend
-    call npm install >nul 2>&1
-    cd ..
-    if errorlevel 1 (
-        echo Error: backend npm install failed.
-        timeout /t 5 >nul
-        exit /b 1
-    )
-)
-
-REM Start the app (npm will open Electron window directly, no cmd window)
-npm run electron-dev >nul 2>&1
+echo Starting IMARA LINKS...
+npm run electron-dev
