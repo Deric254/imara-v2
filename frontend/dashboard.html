@@ -1303,7 +1303,7 @@ window.addEventListener('beforeunload',()=>{chartRegistry.forEach(c=>{try{c.dest
 ═══════════════════════════════════════════════════════════════ */
 async function exportPurchases() {
   const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const to   = document.getElementById('toDate').value   || today();
   showPageLoader('Exporting purchases…');
   try {
     await apiDownload(`/export/purchases?from=${from}&to=${to}`, `imara_purchases_${from}_to_${to}.csv`);
@@ -1317,7 +1317,7 @@ async function exportPurchases() {
 
 async function exportProduction() {
   const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const to   = document.getElementById('toDate').value   || today();
   showPageLoader('Exporting production…');
   try {
     await apiDownload(`/export/production?from=${from}&to=${to}`, `imara_production_${from}_to_${to}.csv`);
@@ -1331,7 +1331,7 @@ async function exportProduction() {
 
 async function exportSales() {
   const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const to   = document.getElementById('toDate').value   || today();
   showPageLoader('Exporting sales…');
   try {
     await apiDownload(`/export/sales?from=${from}&to=${to}`, `imara_sales_${from}_to_${to}.csv`);

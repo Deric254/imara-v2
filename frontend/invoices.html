@@ -179,7 +179,7 @@ async function init() {
 
 async function loadAll() {
   try {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = today();
     const yearStart = `${new Date().getFullYear()}-01-01`;
     // Load current year invoices fast; a "Load All" button lets user expand
     const [list, stats] = await Promise.all([
@@ -975,7 +975,7 @@ async function receivePayment(id, total, balance) {
             <option value="cheque">Cheque</option>
           </select></div>
         <div class="fg"><label>Payment Date <span style="color:var(--red)">*</span></label>
-          <input class="input" type="date" id="pay_date" value="${new Date().toISOString().split('T')[0]}"></div>
+          <input class="input" type="date" id="pay_date" value="${today()}"></div>
       </div>
       <div class="fg"><label>Reference / Notes</label>
         <input class="input" id="pay_notes" placeholder="M-Pesa code, receipt #, etc."></div>
@@ -1078,8 +1078,9 @@ function openCreate(){ _editId=null; showForm(null); }
 function openEdit(inv){ _editId=inv.id; showForm(inv); }
 
 function showForm(inv) {
-  const today = new Date().toISOString().split('T')[0];
-  const due   = new Date(Date.now()+14*86400000).toISOString().split('T')[0];
+  const now = new Date();
+  const today = localDateString(now);
+  const due   = localDateString(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14));
   _itemSeq = 0;
   openModal('formModal',`
     <div class="modal-hd">
@@ -1287,7 +1288,7 @@ async function saveInvoice() {
 
 /* ── STATEMENT ── */
 async function openStatement() {
-  const y=new Date().getFullYear(), from=`${y}-01-01`, to=new Date().toISOString().split('T')[0];
+  const y=new Date().getFullYear(), from=`${y}-01-01`, to=today();
   openModal('stmtModal',`
     <div class="modal-hd">
       <h2>&#x1F4CA; Sales Statement</h2>

@@ -5,9 +5,21 @@ const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { checkAndNotifyStock } = require('./reports');
 
+function localDateString(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function daysAgo(days) {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - days);
+}
+
 // ── Yesterday-missing check ───────────────────────────────────────────────────
 async function yesterdayMissing(db) {
-  const yDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const yDate = localDateString(daysAgo(1));
   const oldest = await db.prepare('SELECT MIN(entry_date) as d FROM purchases').get();
   if (!oldest || !oldest.d || oldest.d >= yDate) return false;
   const p  = (await db.prepare('SELECT COUNT(*) as c FROM purchases  WHERE entry_date=?').get(yDate)).c;
@@ -63,8 +75,8 @@ async function getProductionCostBreakdown(db, totalPieces, kgsUsed) {
 router.get('/status', authenticate, async (req, res) => {
   try {
     const db        = getDb();
-    const today     = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const today     = localDateString();
+    const yesterday = localDateString(daysAgo(1));
     const check = async date => ({
       purchases:  (await db.prepare('SELECT COUNT(*) as c FROM purchases  WHERE entry_date=?').get(date)).c > 0,
       production: (await db.prepare('SELECT COUNT(*) as c FROM production WHERE entry_date=?').get(date)).c > 0,

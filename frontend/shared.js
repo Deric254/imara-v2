@@ -210,7 +210,14 @@ function fmtMoney(n, currency) {
   return cur + ' ' + Number(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function today() { return new Date().toISOString().split('T')[0]; }
+function localDateString(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function today() { return localDateString(); }
 
 function showToast(msg, type = 'success', duration = 3500) {
   const t = document.createElement('div');
@@ -235,9 +242,9 @@ function escHtml(s) {
 
 function setPresetDates(days, fromId, toId) {
   const to   = new Date();
-  const from = new Date(Date.now() - days * 86400000);
-  document.getElementById(toId).value   = to.toISOString().split('T')[0];
-  document.getElementById(fromId).value = from.toISOString().split('T')[0];
+  const from = new Date(to.getFullYear(), to.getMonth(), to.getDate() - days);
+  document.getElementById(toId).value   = localDateString(to);
+  document.getElementById(fromId).value = localDateString(from);
 }
 
 // Global config cache

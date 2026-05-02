@@ -86,8 +86,8 @@
   function preset(days) {
     const to = new Date();
     const from = new Date(Date.now() - days * 86400000);
-    document.getElementById('toDate').value = to.toISOString().split('T')[0];
-    document.getElementById('fromDate').value = from.toISOString().split('T')[0];
+    document.getElementById('toDate').value = localDateString(to);
+    document.getElementById('fromDate').value = localDateString(from);
     loadAudit();
   }
 

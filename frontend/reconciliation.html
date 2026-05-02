@@ -675,7 +675,7 @@ function closeReconStatement() {
 
 async function loadReconStatement() {
   const from = document.getElementById('recon_stmt_from')?.value || '2000-01-01';
-  const to = document.getElementById('recon_stmt_to')?.value || new Date().toISOString().split('T')[0];
+  const to = document.getElementById('recon_stmt_to')?.value || today();
   const el = document.getElementById('reconStmtContent');
   if (!el) return;
   el.innerHTML = `<div style="text-align:center;padding:2rem"><div class="spinner"></div></div>`;

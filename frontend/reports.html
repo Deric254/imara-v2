@@ -149,8 +149,8 @@ function showTab(name, btn) {
 function preset(days) {
   const to   = new Date();
   const from = new Date(Date.now() - days * 86400000);
-  document.getElementById('toDate').value   = to.toISOString().split('T')[0];
-  document.getElementById('fromDate').value = from.toISOString().split('T')[0];
+  document.getElementById('toDate').value   = localDateString(to);
+  document.getElementById('fromDate').value = localDateString(from);
   loadAll();
 }
 
@@ -630,7 +630,7 @@ async function generatePDF() {
 // ── Server-side Excel export (UTF-8 CSV Excel-compatible) ────────────────────
 function exportExcel(type) {
   const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const to   = document.getElementById('toDate').value   || today();
   const filename = `imara_${type}_${from}_to_${to}.csv`;
   apiDownload(`/export/${type}?from=${from}&to=${to}`, filename);
 }
@@ -640,7 +640,7 @@ let _gaugeData = null;
 
 async function loadGaugeKpi() {
   const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || new Date().toISOString().split('T')[0];
+  const to   = document.getElementById('toDate').value   || today();
   const kpiEl  = document.getElementById('gaugeKpiGrid');
   const banEl  = document.getElementById('gaugeBestBanner');
   const carEl  = document.getElementById('gaugeCards');
