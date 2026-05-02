@@ -121,7 +121,7 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
              COALESCE(SUM(p.amount), 0) AS total_paid_amount
       FROM rent_months rm
       LEFT JOIN payments p ON p.category = 'rent'
-        AND LEFT(p.payment_date, 7) = rm.month
+        AND (p.rent_month = rm.month OR (p.rent_month IS NULL AND LEFT(p.payment_date, 7) = rm.month))
       GROUP BY rm.id, rm.month, rm.amount_due, rm.paid, rm.payment_id, rm.created_at
       ORDER BY rm.month DESC
     `).all();
@@ -141,7 +141,26 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
     const totalSupplierBilled = suppliers.reduce((s, x) => s + x.total_billed, 0);
     const totalSupplierPaid   = suppliers.reduce((s, x) => s + x.total_paid,   0);
     const totalSupplierBal    = parseFloat((totalSupplierBilled - totalSupplierPaid).toFixed(2));
-    const grandLiability      = parseFloat((totalWagesBalance + totalSupplierBal + sackBalance + rentBalance).toFixed(2));
+    // Period-filtered grand (wages+suppliers+sack use date filter; rent is always all-time)
+    const grandLiability = parseFloat((totalWagesBalance + totalSupplierBal + sackBalance + rentBalance).toFixed(2));
+
+    // All-time true liability (used for the grand banner so it always matches the dashboard)
+    const allWagesOpAccrued = num((await db.prepare(`SELECT COALESCE(SUM(operator_cost),0) AS t FROM production`).get()).t);
+    const allWagesKnAccrued = num((await db.prepare(`SELECT COALESCE(SUM(knuckler_cost),0) AS t FROM production`).get()).t);
+    const allWagesOpPaid    = num((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='wages_operator'`).get()).t);
+    const allWagesKnPaid    = num((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='wages_knuckler'`).get()).t);
+    const allWagesBal       = Math.max(0, parseFloat(((allWagesOpAccrued + allWagesKnAccrued) - (allWagesOpPaid + allWagesKnPaid)).toFixed(2)));
+
+    const allSuppAccrued    = num((await db.prepare(`SELECT COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost),0) AS t FROM purchases`).get()).t);
+    const allSuppPaid       = num((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='supplier'`).get()).t);
+    const allSuppBal        = Math.max(0, parseFloat((allSuppAccrued - allSuppPaid).toFixed(2)));
+
+    const allSackAccrued    = num((await db.prepare(`SELECT COALESCE(SUM(sack_cost),0) AS t FROM production`).get()).t);
+    const allSackPaid       = num((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='sack'`).get()).t);
+    const allSackBal        = Math.max(0, parseFloat((allSackAccrued - allSackPaid).toFixed(2)));
+
+    // Rent is already all-time
+    const allTimeGrand = parseFloat((allWagesBal + allSuppBal + allSackBal + rentBalance).toFixed(2));
 
     res.json({
       period: { from, to },
@@ -162,7 +181,8 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
         balance:       rentBalance,
       },
       other_paid: parseFloat(num(otherPaid?.total).toFixed(2)),
-      grand_total_outstanding: grandLiability,
+      grand_total_outstanding: allTimeGrand,
+      grand_total_period: grandLiability,
     });
   } catch (e) {
     console.error('Reconciliation summary error:', e);
@@ -265,8 +285,9 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       if (existing) {
         const alreadyPaidForMonth = await db.prepare(`
           SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category='rent' AND LEFT(payment_date, 7) = ?
-        `).get(month);
+          FROM payments WHERE category='rent'
+            AND (rent_month = ? OR (rent_month IS NULL AND LEFT(payment_date, 7) = ?))
+        `).get(month, month);
         const remaining = parseFloat((num(existing.amount_due) - num(alreadyPaidForMonth.total)).toFixed(2));
         if (parseFloat(amount) > remaining + 0.005) {
           return res.status(400).json({
@@ -276,17 +297,18 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       }
     }
 
-    // FIX: RETURNING id
+    // FIX: RETURNING id, store rent_month on payment
     const result = await db.prepare(`
-      INSERT INTO payments(payment_date,category,payee_user_id,payee_supplier_id,payee_name,amount,notes,recorded_by)
-      VALUES(?,?,?,?,?,?,?,?) RETURNING id
+      INSERT INTO payments(payment_date,category,payee_user_id,payee_supplier_id,payee_name,amount,notes,recorded_by,rent_month)
+      VALUES(?,?,?,?,?,?,?,?,?) RETURNING id
     `).run(
       payment_date, category,
       payee_user_id     ? parseInt(payee_user_id)     : null,
       payee_supplier_id ? parseInt(payee_supplier_id) : null,
       payee_name || null,
       parseFloat(amount), notes,
-      req.user.id
+      req.user.id,
+      (category === 'rent' && req.body.rent_month) ? req.body.rent_month : null
     );
 
     const pid = result.lastInsertRowid;
@@ -295,11 +317,12 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       const month    = req.body.rent_month;
       const existing = await db.prepare('SELECT id, amount_due FROM rent_months WHERE month=?').get(month);
       if (existing) {
-        // Sum all rent payments for this month to determine if fully paid
+        // Sum all rent payments for this month using rent_month column (with legacy fallback)
         const totalPaidForMonth = await db.prepare(`
           SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category='rent' AND LEFT(payment_date, 7) = ?
-        `).get(month);
+          FROM payments WHERE category='rent'
+            AND (rent_month = ? OR (rent_month IS NULL AND LEFT(payment_date, 7) = ?))
+        `).get(month, month);
         const fullyPaid = num(totalPaidForMonth.total) >= num(existing.amount_due);
         await db.prepare('UPDATE rent_months SET paid=?, payment_id=? WHERE month=?')
           .run(fullyPaid ? 1 : 0, pid, month);
@@ -364,7 +387,7 @@ router.get('/rent-months', ...OWNER_ONLY, async (req, res) => {
              END AS status
       FROM rent_months rm
       LEFT JOIN payments p ON p.category = 'rent'
-        AND LEFT(p.payment_date, 7) = rm.month
+        AND (p.rent_month = rm.month OR (p.rent_month IS NULL AND LEFT(p.payment_date, 7) = rm.month))
       GROUP BY rm.id, rm.month, rm.amount_due, rm.paid, rm.payment_id, rm.created_at
       ORDER BY rm.month DESC
     `).all());

@@ -21,6 +21,7 @@ function renderLayout(activePage) {
       { href: 'audit.html',          icon: '⊟', label: 'Audit Log'       },
       { href: 'config.html',         icon: '⚙', label: 'System Config'   },
       { href: 'backup.html',         icon: '💾', label: 'System Backup'   },
+      { href: 'database.html',       icon: '🗄', label: 'Database Manager'},
     ],
     knuckler: [
       { href: 'daily.html',          icon: '✎', label: 'Daily Entry'     },

@@ -42,6 +42,7 @@ app.use('/api/users',                        require('./routes/users'));
 app.use('/api/daily',                        require('./routes/daily'));
 app.use('/api/reconciliation',               require('./routes/reconciliation'));
 app.use('/api/backup',                       require('./routes/backup'));
+app.use('/api/database',                     require('./routes/database'));
 app.use('/api/invoices',                     require('./routes/invoices'));
 app.use('/api/inventory',                    require('./routes/inventory'));
 app.use('/api',                              require('./routes/reports'));

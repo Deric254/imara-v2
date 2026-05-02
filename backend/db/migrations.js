@@ -33,6 +33,21 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '003-add-rent-month-to-payments',
+    version: '2.1.0',
+    description: 'Add rent_month column to payments so rent payments are matched by rent period, not payment date',
+    async up(db) {
+      try {
+        const cols = await db.prepare('PRAGMA table_info(payments)').all();
+        if (!cols.some(c => c.name === 'rent_month')) {
+          await db.exec("ALTER TABLE payments ADD COLUMN rent_month TEXT DEFAULT NULL");
+        }
+      } catch (err) {
+        console.warn('Migration 003: rent_month column might already exist', err?.message);
+      }
+    },
+  },
   // Add future migrations here as you update the app
   // Example:
   // {

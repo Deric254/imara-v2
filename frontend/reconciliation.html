@@ -152,8 +152,9 @@ async function init() {
 <!-- Grand banner -->
 <div class="grand-banner" id="grandBanner">
   <div>
-    <div class="grand-label">Total Outstanding Liabilities</div>
+    <div class="grand-label">Total Outstanding Liabilities (All-Time)</div>
     <div class="grand-value" id="grandValue">—</div>
+    <div style="font-size:.72rem;color:var(--g300);margin-top:.2rem">Period view: <span id="grandPeriodValue">—</span></div>
   </div>
   <div style="display:flex;gap:2rem;flex-wrap:wrap">
     <div><div class="grand-label">Wages Due</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gWages">—</div></div>
@@ -502,11 +503,14 @@ async function loadAll() {
 
 function renderGrandBanner() {
   const s = _summary;
-  const grand = s.grand_total_outstanding;
+  const grand = s.grand_total_outstanding;   // all-time true liability
+  const period = s.grand_total_period;       // period-filtered view
   const el = document.getElementById('grandValue');
   if (!el) return;
   el.textContent = 'KES ' + fmt(grand, 2);
   el.className = 'grand-value ' + (grand <= 0 ? 'ok' : grand > 100000 ? 'bad' : 'warn');
+  const periodEl = document.getElementById('grandPeriodValue');
+  if (periodEl) periodEl.textContent = 'KES ' + fmt(period, 2);
   document.getElementById('gWages').textContent    = 'KES ' + fmt(s.wages.balance, 2);
   document.getElementById('gSupplier').textContent = 'KES ' + fmt(s.suppliers.balance, 2);
   document.getElementById('gRent').textContent     = 'KES ' + fmt(s.rent.balance, 2);

@@ -249,9 +249,9 @@ pg.innerHTML = `
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="label">Wire Gauge <span style="color:var(--red)">*</span></label>
+          <label class="label">Default Wire Gauge <span style="color:var(--red)">*</span></label>
           <select class="input" id="pr_gauge" onchange="calcWireNeeded()"></select>
-          <div style="font-size:.72rem;color:var(--muted);margin-top:.2rem">Gauge of wire used in this run</div>
+          <div style="font-size:.72rem;color:var(--muted);margin-top:.2rem">Pre-fills new rows — each row can use a different gauge</div>
         </div>
         <div class="form-group">
           <label class="label">Knuckler</label>
@@ -279,10 +279,10 @@ pg.innerHTML = `
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Kgs Used</th><th>Operator</th><th>Knuckler</th><th>Pieces</th><th>Total Cost</th>
+          <th>Kgs Used</th><th>Gauge</th><th>Operator</th><th>Knuckler</th><th>Pieces</th><th>Total Cost</th>
           ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
         </tr></thead>
-        <tbody id="pr_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?6:5}"><div class="spinner"></div></td></tr></tbody>
+        <tbody id="pr_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?7:6}"><div class="spinner"></div></td></tr></tbody>
         </table>
       </div>
     </div>
@@ -482,6 +482,13 @@ function addPrItem() {
   prItemCount++;
   const div = document.createElement('div');
   div.className='item-row'; div.id=`prItem_${prItemCount}`;
+  // Each row has its own gauge selector so you can mix gauges in one session.
+  // The default value is pre-filled from the form-level gauge selector for convenience.
+  const defaultGauge = document.getElementById('pr_gauge')?.value || '';
+  const gauges = (getConfig('wire_gauges') || '12,14,16').split(',').map(g => g.trim());
+  const gaugeOptions = gauges.map(g =>
+    `<option value="${g}" ${g === defaultGauge ? 'selected' : ''}>${g}</option>`
+  ).join('');
   div.innerHTML=`
     <div class="form-group" style="margin:0">
       <label class="label">Piece Type</label>
@@ -491,11 +498,16 @@ function addPrItem() {
       <label class="label">Pieces Produced</label>
       <input class="input pr-qty" type="number" min="0" step="1" placeholder="0" oninput="calcWireNeeded()">
     </div>
+    <div class="form-group" style="margin:0">
+      <label class="label">Wire Gauge</label>
+      <select class="input pr-item-gauge" onchange="calcWireNeeded()">${gaugeOptions}</select>
+    </div>
     <button class="remove-btn" onclick="document.getElementById('prItem_${prItemCount}').remove();calcWireNeeded()">✕</button>`;
   document.getElementById('pr_items').appendChild(div);
   // Wire quantity input to live overhead calculator
   div.querySelector('.pr-qty').addEventListener('input', calcWireNeeded);
   div.querySelector('.pr-piece').addEventListener('change', calcWireNeeded);
+  div.querySelector('.pr-item-gauge').addEventListener('change', calcWireNeeded);
   calcWireNeeded();
 }
 
@@ -503,13 +515,18 @@ function addPrItem() {
 function calcWireNeeded() {
   const itemEls = document.querySelectorAll('#pr_items .item-row');
   let totalExpectedKgs = 0;
+  // Also build per-gauge totals for the live stock warning
+  const perGauge = {};
 
   itemEls.forEach(el => {
     const qty = parseInt(el.querySelector('.pr-qty').value) || 0;
     const pieceId = el.querySelector('.pr-piece').value;
     const pt = pieceTypes.find(p=>p.id==pieceId);
+    const gauge = el.querySelector('.pr-item-gauge')?.value || document.getElementById('pr_gauge')?.value || '';
     if (pt && qty > 0) {
-      totalExpectedKgs += qty * pt.weight_kg;
+      const kgs = qty * pt.weight_kg;
+      totalExpectedKgs += kgs;
+      perGauge[gauge] = (perGauge[gauge] || 0) + kgs;
     }
   });
 
@@ -518,7 +535,7 @@ function calcWireNeeded() {
   const wireNote  = document.getElementById('pr_wire_note');
   if (totalExpectedKgs > 0) {
     wireInput.value = totalExpectedKgs.toFixed(2);
-    wireNote.textContent = `Strictly deducting: ${totalExpectedKgs.toFixed(2)} kg (Piece Weight × Qty)`;
+    wireNote.textContent = `Strictly deducting: ${totalExpectedKgs.toFixed(2)} kg across ${Object.keys(perGauge).length} gauge(s)`;
   } else {
     wireInput.value = '';
     wireNote.textContent = 'Calculated from pieces produced';
@@ -528,28 +545,33 @@ function calcWireNeeded() {
   calcOverhead();
 
   // Show live gauge-specific availability — debounced, uses cache
-  _calcWireWarningDebounced(totalExpectedKgs);
+  _calcWireWarningDebounced(perGauge);
 }
 
-const _calcWireWarningDebounced = debounce(async function(totalExpectedKgs) {
-  const gauge = document.getElementById('pr_gauge')?.value || '';
+const _calcWireWarningDebounced = debounce(async function(perGauge) {
   const statusDiv = document.getElementById('pr_material_status');
   if (!statusDiv) return;
-  if (!gauge || totalExpectedKgs <= 0) {
+  const gauges = Object.keys(perGauge);
+  if (!gauges.length) {
     statusDiv.style.display = 'none';
     return;
   }
   try {
     const gaugeStock = await getGaugeStockCached();
-    const gs = (gaugeStock || []).find(g => g.gauge === gauge);
-    const available = gs ? parseFloat(gs.kgs_stock) : 0;
-    if (available <= 0) {
-      statusDiv.innerHTML = `<span style="color:var(--red)">❌ No wire in stock for gauge ${gauge}. Buy wire first.</span>`;
-    } else if (totalExpectedKgs > available + 0.001) {
-      statusDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient gauge ${gauge} wire: ${available.toFixed(2)} kg available, ${totalExpectedKgs.toFixed(2)} kg needed</span>`;
-    } else {
-      statusDiv.innerHTML = `<span style="color:var(--g600)">✅ Gauge ${gauge}: ${available.toFixed(2)} kg available</span>`;
+    const lines = [];
+    for (const gauge of gauges) {
+      const needed = perGauge[gauge];
+      const gs = (gaugeStock || []).find(g => g.gauge === gauge);
+      const available = gs ? parseFloat(gs.kgs_stock) : 0;
+      if (available <= 0) {
+        lines.push(`<span style="color:var(--red)">❌ Gauge ${gauge}: No wire in stock (need ${needed.toFixed(2)} kg). Buy wire first.</span>`);
+      } else if (needed > available + 0.001) {
+        lines.push(`<span style="color:var(--red)">⚠ Gauge ${gauge}: ${available.toFixed(2)} kg available, ${needed.toFixed(2)} kg needed</span>`);
+      } else {
+        lines.push(`<span style="color:var(--g600)">✅ Gauge ${gauge}: ${available.toFixed(2)} kg available, ${needed.toFixed(2)} kg needed</span>`);
+      }
     }
+    statusDiv.innerHTML = lines.join('<br>');
     statusDiv.style.display = 'block';
   } catch(e) { statusDiv.style.display = 'none'; }
 }, 280);
@@ -610,8 +632,15 @@ async function loadRefs() {
     const prGaugeSel = document.getElementById('pr_gauge');
     if (prGaugeSel) {
       prGaugeSel.innerHTML = gauges.map(g=>`<option value="${g.trim()}">${g.trim()}</option>`).join('');
-      // Invalidate gauge cache when gauge changes so status reflects new gauge immediately
-      prGaugeSel.addEventListener('change', () => { _gaugeStockCache = null; _gaugeStockExpiry = 0; });
+      // When the default gauge changes, invalidate cache and update rows that were using the old default
+      prGaugeSel.addEventListener('change', () => {
+        _gaugeStockCache = null; _gaugeStockExpiry = 0;
+        // Update per-row gauge selectors that haven't been manually changed (i.e., still match old default)
+        document.querySelectorAll('#pr_items .pr-item-gauge').forEach(sel => {
+          sel.value = prGaugeSel.value;
+        });
+        calcWireNeeded();
+      });
     }
 
     // Load customer names for autocomplete and seed the first sale row
@@ -713,12 +742,12 @@ async function loadTabData(tab) {
     const tb = document.getElementById('pr_list');
     const exportBtn = document.getElementById('prExportBtn');
     exportBtn.style.display = 'none';
-    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?6:5).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?7:6).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
     try {
       const rows = await api('GET',`/daily/production?date=${d}`);
       window._lastProduction = rows;
       if (!rows||!rows.length) {
-        tb.innerHTML=`<tr><td colspan="${canDelete?6:5}" class="empty"><div class="empty-text">No production yet for ${d}</div></td></tr>`;
+        tb.innerHTML=`<tr><td colspan="${canDelete?7:6}" class="empty"><div class="empty-text">No production yet for ${d}</div></td></tr>`;
         return;
       }
       exportBtn.style.display = 'block';
@@ -726,6 +755,7 @@ async function loadTabData(tab) {
         const pieces=(r.items||[]).map(i=>`${escHtml(i.piece_name)}: ${fmt(i.pieces_produced)}`).join('<br>');
         return `<tr>
           <td class="mono">${fmt(r.kgs_used,1)} kg</td>
+          <td>${escHtml(r.gauge||'—')}</td>
           <td>${escHtml(r.operator_name||'—')}</td>
           <td>${escHtml(r.knuckler_name||'—')}</td>
           <td style="font-size:.8rem">${pieces||'—'}</td>
@@ -733,7 +763,7 @@ async function loadTabData(tab) {
           ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('production',${r.id})">✕</button></td>`:''}
         </tr>`;
       }).join('');
-    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?6:5}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load production</div></td></tr>`; PageProgress.error(); return; }
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?7:6}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load production</div></td></tr>`; PageProgress.error(); return; }
   }
 
   if (tab==='sales') {
@@ -977,64 +1007,79 @@ async function submitPurchase() {
   }
 }
 
-// Submit production with integrity checks
+// Submit production with integrity checks — supports mixed gauges in one session.
+// Items are grouped by their per-row gauge, and one POST is fired per gauge group.
 async function submitProduction() {
   // LOCK: block every re-entry — button, keyboard, any source — until fully done
   if (_productionSubmitting) return;
   showErr('pr_err','');
 
   const d           = document.getElementById('entryDate').value;
-  const kgs_used    = parseFloat(document.getElementById('pr_kgs').value);
-  const pr_gauge    = document.getElementById('pr_gauge')?.value || '';
   const operator_id = parseInt(document.getElementById('pr_operator').value)||null;
   const knuckler_id = parseInt(document.getElementById('pr_knuckler').value)||null;
+  const defaultGauge = document.getElementById('pr_gauge')?.value || '';
 
   // Validate BEFORE acquiring lock so errors stay responsive
   if (!operator_id) return showErr('pr_err','Select an operator — production cannot be saved without one');
   if (!knuckler_id) return showErr('pr_err','Select a knuckler — production cannot be saved without one');
-  if (isNaN(kgs_used)||kgs_used<0) return showErr('pr_err','Enter valid kgs used');
 
+  // Collect items and group by gauge
   const itemEls = document.querySelectorAll('#pr_items .item-row');
-  const items=[];
-  itemEls.forEach(row=>{
-    const ptId=parseInt(row.querySelector('.pr-piece').value);
-    const qty =parseInt(row.querySelector('.pr-qty').value)||0;
-    if (ptId) items.push({piece_type_id:ptId,pieces_produced:qty});
+  const gaugeGroups = {}; // gauge → [{piece_type_id, pieces_produced, weight_kg}]
+  itemEls.forEach(row => {
+    const ptId  = parseInt(row.querySelector('.pr-piece').value);
+    const qty   = parseInt(row.querySelector('.pr-qty').value) || 0;
+    const gauge = row.querySelector('.pr-item-gauge')?.value || defaultGauge;
+    if (ptId && qty > 0) {
+      if (!gaugeGroups[gauge]) gaugeGroups[gauge] = [];
+      const pt = pieceTypes.find(p => p.id == ptId);
+      gaugeGroups[gauge].push({ piece_type_id: ptId, pieces_produced: qty, weight_kg: pt?.weight_kg || 0 });
+    }
   });
-  if (!items.length) return showErr('pr_err','Add at least one piece type');
 
-  // Acquire lock + disable button together
+  if (!Object.keys(gaugeGroups).length) return showErr('pr_err','Add at least one piece type with pieces produced');
+
+  // Acquire lock + disable button
   _productionSubmitting = true;
   const prodBtn = document.querySelector('button[onclick="submitProduction()"]');
   if (prodBtn) { prodBtn.disabled = true; prodBtn.textContent = '⏳ Checking stock…'; }
 
   try {
-    // Always fetch live stock — never use cache before a write
+    // Per-gauge stock pre-check (live, not cached)
     const gaugeStock = await api('GET', '/daily/gauge-stock');
-    if (gaugeStock && pr_gauge) {
-      const gs = gaugeStock.find(g => g.gauge === pr_gauge);
-      const available = gs ? gs.kgs_stock : 0;
-      if (kgs_used > available + 0.001) {
-        showErr('pr_err', `Insufficient wire for gauge ${pr_gauge}. Available: ${available.toFixed(2)} kg, Requested: ${kgs_used.toFixed(2)} kg. Buy more wire of this gauge first.`);
-        return; // finally will re-enable
-      }
-    } else if (gaugeStock) {
-      const totalAvail = gaugeStock.reduce((s, g) => s + g.kgs_stock, 0);
-      if (kgs_used > totalAvail + 0.001) {
-        showErr('pr_err', `Insufficient raw material. Only ${totalAvail.toFixed(2)} kg available, but ${kgs_used.toFixed(2)} kg requested.`);
+    for (const [gauge, items] of Object.entries(gaugeGroups)) {
+      const kgsNeeded = items.reduce((s, i) => s + i.pieces_produced * i.weight_kg, 0);
+      const gs = (gaugeStock || []).find(g => g.gauge === gauge);
+      const available = gs ? parseFloat(gs.kgs_stock) : 0;
+      if (kgsNeeded > available + 0.001) {
+        showErr('pr_err', `Insufficient wire for gauge ${gauge}. Available: ${available.toFixed(2)} kg, Needed: ${kgsNeeded.toFixed(2)} kg. Buy more wire of this gauge first.`);
         return;
       }
     }
 
     if (prodBtn) prodBtn.textContent = '⏳ Saving…';
-    await api('POST','/daily/production',{entry_date:d,kgs_used,gauge:pr_gauge,operator_id,knuckler_id,items});
 
-    // Clear form BEFORE re-enabling — user sees a blank form, not the old entry
-    document.getElementById('pr_kgs').value='';
-    document.getElementById('pr_items').innerHTML='';
-    document.getElementById('pr_material_status').style.display='none';
+    // Submit one POST per gauge group — the backend handles each atomically
+    const gaugeList = Object.keys(gaugeGroups);
+    for (const gauge of gaugeList) {
+      const items = gaugeGroups[gauge];
+      const kgsUsed = parseFloat(items.reduce((s, i) => s + i.pieces_produced * i.weight_kg, 0).toFixed(3));
+      await api('POST', '/daily/production', {
+        entry_date: d,
+        kgs_used: kgsUsed,
+        gauge,
+        operator_id,
+        knuckler_id,
+        items: items.map(i => ({ piece_type_id: i.piece_type_id, pieces_produced: i.pieces_produced }))
+      });
+    }
+
+    // Clear form BEFORE re-enabling
+    document.getElementById('pr_kgs').value = '';
+    document.getElementById('pr_items').innerHTML = '';
+    document.getElementById('pr_material_status').style.display = 'none';
     showErr('pr_err','');
-    prItemCount=0; addPrItem();
+    prItemCount = 0; addPrItem();
 
     invalidateStockCaches();
     await loadTabData('production');
@@ -1042,18 +1087,11 @@ async function submitProduction() {
     if (typeof BroadcastChannel !== 'undefined') {
       new BroadcastChannel('daily_entry_updates').postMessage({ type: 'production', date: d });
     }
-    // Push activity notification to bell
-    const totalPieces = items.reduce((s, i) => s + (parseInt(i.pieces_produced) || 0), 0);
-    api('POST', '/notifications', {
-      type: 'info', category: 'production',
-      title: `Production Run Saved — ${d}`,
-      message: `${totalPieces} piece${totalPieces !== 1 ? 's' : ''} produced using ${kgs_used} kg wire (Gauge ${pr_gauge || 'unset'}).`,
-      roleTarget: 'owner',
-    }).catch(() => {});
     if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
-    showToast('✅ Production saved successfully');
+    const gaugesSummary = gaugeList.length > 1 ? `(gauges: ${gaugeList.join(', ')})` : `(gauge ${gaugeList[0]})`;
+    showToast(`✅ Production saved successfully ${gaugesSummary}`);
   } catch(e){
-    showErr('pr_err',e.error||(e.errors&&e.errors[0]?.msg)||'Failed to save production. Please try again.');
+    showErr('pr_err', e.error||(e.errors&&e.errors[0]?.msg)||'Failed to save production. Please try again.');
   } finally {
     // Lock released + button re-enabled only after form cleared and list reloaded
     _productionSubmitting = false;

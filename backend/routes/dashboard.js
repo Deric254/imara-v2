@@ -15,7 +15,7 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
     const fromDate = from || new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
     const toDate   = to   || new Date().toISOString().split('T')[0];
 
-    const [purchasesCash, productionSummary, salesCash, invoicesSummary, inventorySummary] =
+    const [purchasesCash, productionSummary, salesCash, invoicesSummary, inventorySummary, payablesSummary] =
       await Promise.allSettled([
 
         // CASH-BASIS PURCHASES: money actually paid to suppliers in this period
@@ -77,7 +77,44 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
             LEFT JOIN sales s ON pt.id = s.piece_type_id
             WHERE pt.active=1 GROUP BY pt.id
           ) inventory
-        `).get()
+        `).get(),
+
+        // All-time payables snapshot (accrued minus paid, not date-filtered)
+        (async () => {
+          // Supplier outstanding
+          const suppAccrued = await db.prepare(`SELECT COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost),0) AS total FROM purchases`).get();
+          const suppPaid    = await db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='supplier'`).get();
+          const suppOut     = Math.max(0, parseFloat(suppAccrued.total) - parseFloat(suppPaid.total));
+
+          // Wages outstanding
+          const wageOpAccrued = await db.prepare(`SELECT COALESCE(SUM(operator_cost),0) AS total FROM production`).get();
+          const wageKnAccrued = await db.prepare(`SELECT COALESCE(SUM(knuckler_cost),0) AS total FROM production`).get();
+          const wageOpPaid    = await db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='wages_operator'`).get();
+          const wageKnPaid    = await db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='wages_knuckler'`).get();
+          const wageOut       = Math.max(0,
+            (parseFloat(wageOpAccrued.total) - parseFloat(wageOpPaid.total)) +
+            (parseFloat(wageKnAccrued.total) - parseFloat(wageKnPaid.total))
+          );
+
+          // Rent outstanding (using rent_month column with legacy fallback)
+          const rentRows = await db.prepare(`
+            SELECT rm.amount_due,
+                   COALESCE(SUM(p.amount), 0) AS paid
+            FROM rent_months rm
+            LEFT JOIN payments p ON p.category = 'rent'
+              AND (p.rent_month = rm.month OR (p.rent_month IS NULL AND LEFT(p.payment_date, 7) = rm.month))
+            GROUP BY rm.id, rm.amount_due
+          `).all();
+          const rentOut = Math.max(0, rentRows.reduce((s, r) => s + Math.max(0, r.amount_due - r.paid), 0));
+
+          // Sack outstanding
+          const sackAccrued = await db.prepare(`SELECT COALESCE(SUM(sack_cost),0) AS total FROM production`).get();
+          const sackPaid    = await db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='sack'`).get();
+          const sackOut     = Math.max(0, parseFloat(sackAccrued.total) - parseFloat(sackPaid.total));
+
+          const totalOut = parseFloat((suppOut + wageOut + rentOut + sackOut).toFixed(2));
+          return { supplier_outstanding: parseFloat(suppOut.toFixed(2)), wages_outstanding: parseFloat(wageOut.toFixed(2)), rent_outstanding: parseFloat(rentOut.toFixed(2)), sack_outstanding: parseFloat(sackOut.toFixed(2)), outstanding_payable: totalOut };
+        })(),
       ]);
 
     // Daily cash-basis trends
@@ -153,6 +190,7 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
     const sales      = salesCash.status         === 'fulfilled' ? salesCash.value         : { count: 0, total_revenue: 0 };
     const invoices   = invoicesSummary.status   === 'fulfilled' ? invoicesSummary.value   : { count: 0, total_amount: 0, paid_amount: 0, outstanding_amount: 0, paid_count: 0, partial_count: 0 };
     const inventory  = inventorySummary.status  === 'fulfilled' ? inventorySummary.value  : { total_piece_types: 0, in_stock: 0, out_of_stock: 0, low_stock: 0 };
+    const payables   = payablesSummary.status   === 'fulfilled' ? payablesSummary.value   : { outstanding_payable: 0, supplier_outstanding: 0, wages_outstanding: 0, rent_outstanding: 0, sack_outstanding: 0 };
 
     const cashIn     = parseFloat(sales.total_revenue)      || 0;
     const cashOut    = parseFloat(purchases.total_cost)     || 0;
@@ -164,7 +202,16 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
       period: { from: fromDate, to: toDate },
       accounting_basis: 'cash',
       summary: {
-        purchases: { count: parseInt(purchases.count) || 0, total_cost: cashOut, note: 'Cash paid to suppliers' },
+        purchases: {
+          count: parseInt(purchases.count) || 0,
+          total_cost: cashOut,
+          note: 'Cash paid to suppliers',
+          outstanding_payable:  payables.outstanding_payable,
+          supplier_outstanding: payables.supplier_outstanding,
+          wages_outstanding:    payables.wages_outstanding,
+          rent_outstanding:     payables.rent_outstanding,
+          sack_outstanding:     payables.sack_outstanding,
+        },
         production: {
           count: parseInt(production.count) || 0,
           total_kgs_used: parseFloat(production.total_kgs_used) || 0,

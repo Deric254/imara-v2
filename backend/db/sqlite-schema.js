@@ -325,6 +325,7 @@ const TABLE_STATEMENTS = [
     payee_user_id INTEGER REFERENCES users(id),
     payee_supplier_id INTEGER REFERENCES suppliers(id),
     payee_name TEXT,
+    rent_month TEXT DEFAULT NULL,
     amount REAL NOT NULL CHECK(amount > 0),
     notes TEXT DEFAULT '',
     recorded_by INTEGER NOT NULL REFERENCES users(id),

@@ -93,11 +93,15 @@
 .pay-banner{background:#fef3c7;border:1.5px solid #f59e0b;border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:1.25rem;font-size:.85rem;color:#92400e;line-height:1.5}
 @media print{
   body>*{display:none!important}
+  /* Invoice print — A4 */
   #printFrame{display:block!important;position:fixed;inset:0;background:#fff;z-index:99999;overflow:auto;padding:0;margin:0}
   #printFrame .pdoc{margin:0 auto!important;max-width:100%!important;box-shadow:none!important;border-radius:0!important;padding:1.8cm 2cm!important}
+  /* Receipt print — thermal; @page 80mm is declared inside the receipt HTML */
+  #receiptPrintFrame{display:block!important;position:fixed;inset:0;background:#fff;z-index:100000;overflow:auto;padding:0;margin:0}
   @page{size:A4;margin:1.2cm 1.5cm}
 }
 #printFrame{display:none}
+#receiptPrintFrame{display:none}
 </style>
 </head>
 <body>
@@ -401,9 +405,11 @@ function printInv() {
   let f = document.getElementById('printFrame');
   if (!f){ f=document.createElement('div'); f.id='printFrame'; document.body.appendChild(f); }
   f.innerHTML = window._printHtml; f.style.display='block';
-  setTimeout(()=>{ window.print(); setTimeout(()=>{ f.style.display='none'; f.innerHTML=''; },600); },220);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.print();
+    setTimeout(()=>{ f.style.display='none'; f.innerHTML=''; }, 800);
+  }));
 }
-
 // ── PDF helpers using jsPDF (A6 / receipt-card size) ──────────────────────────
 function _pdfInvoice(inv, bizName, slogan) {
   const { jsPDF } = window.jspdf;
@@ -798,31 +804,110 @@ function _buildReceiptDoc(inv) {
   return doc;
 }
 
-// ── Print Receipt (opens print dialog) ──────────────────────────────────────
+// ── Build receipt as HTML for reliable window.print() ───────────────────────
+// Preview on screen looks A4-ish; @page thermal CSS shrinks it on the printer.
+function _buildReceiptHtml(inv) {
+  const bizName  = (_bizCfg && _bizCfg.business_name)  || 'IMARA LINKS';
+  const slogan   = (_bizCfg && _bizCfg.business_slogan) || 'Built Strong by IMARA';
+  const amtPaid  = parseFloat(inv.amount_paid)  || 0;
+  const totalAmt = parseFloat(inv.total_amount) || 0;
+  const balance  = parseFloat((totalAmt - amtPaid).toFixed(2));
+  const isFullPaid = inv.status === 'paid' || balance <= 0;
+  const c = cur();
+  const rcptNum = 'RCT-' + inv.invoice_number;
+  const nowStr  = new Date().toLocaleString('en-KE');
+  const badgeLabel = isFullPaid ? 'PAID IN FULL' : 'PARTIAL PAYMENT';
+  const badgeStyle = isFullPaid
+    ? 'background:#dcfce7;color:#166534'
+    : 'background:#fff7ed;color:#92400e';
+
+  const itemRows = (inv.items || []).map((it, i) => `
+    <tr style="${i%2===0?'background:#f9fafb':''}">
+      <td style="padding:4px 6px;font-size:.82rem">${escHtml(it.description)}${it.gauge?` <span style="color:#6b7280;font-size:.72rem">(G${escHtml(it.gauge)})</span>`:''}</td>
+      <td style="padding:4px 6px;text-align:center;font-size:.82rem">${it.quantity}</td>
+      <td style="padding:4px 6px;text-align:right;font-size:.82rem">${c} ${fmtM(it.unit_price)}</td>
+      <td style="padding:4px 6px;text-align:right;font-weight:700;font-size:.82rem">${c} ${fmtM(it.line_total)}</td>
+    </tr>`).join('');
+
+  return `
+  <style>
+    @page { size: 80mm auto; margin: 4mm 3mm; }
+    .rct-doc { font-family: 'Courier New', monospace; max-width: 76mm; margin: 0 auto; color: #111; }
+    .rct-doc * { box-sizing: border-box; }
+    @media screen { .rct-doc { max-width: 480px; font-family: inherit; padding: 1.5rem 1.8rem; border: 1px solid #e5e7eb; border-radius: 8px; margin: 1rem auto; } }
+  </style>
+  <div class="rct-doc">
+    <div style="text-align:center;border-bottom:2px solid #083d28;padding-bottom:8px;margin-bottom:8px">
+      ${_logoBase64 ? `<img src="${_logoBase64}" style="height:44px;width:auto;object-fit:contain;display:block;margin:0 auto 4px" alt="${escHtml(bizName)}">` : ''}
+      <div style="font-weight:700;font-size:1rem;color:#083d28;letter-spacing:.04em">${escHtml(bizName)}</div>
+      <div style="font-size:.72rem;color:#137a4d;font-style:italic">${escHtml(slogan)}</div>
+    </div>
+
+    <div style="text-align:center;margin-bottom:8px">
+      <div style="font-size:1.1rem;font-weight:900;letter-spacing:.12em;color:#083d28">RECEIPT</div>
+      <div style="font-size:.75rem;color:#555;font-family:monospace">${escHtml(rcptNum)}</div>
+      <div style="display:inline-block;margin-top:4px;padding:2px 12px;border-radius:99px;font-size:.7rem;font-weight:700;${badgeStyle}">${badgeLabel}</div>
+    </div>
+
+    <div style="border-top:1px dashed #ccc;border-bottom:1px dashed #ccc;padding:6px 0;margin-bottom:8px;font-size:.78rem">
+      <div><strong>To:</strong> ${escHtml(inv.customer_name || '')}</div>
+      ${inv.customer_phone ? `<div style="color:#555">${escHtml(inv.customer_phone)}</div>` : ''}
+      <div style="margin-top:3px"><strong>Invoice:</strong> ${escHtml(inv.invoice_number)}</div>
+      <div><strong>Receipt:</strong> ${escHtml(rcptNum)}</div>
+      <div><strong>Date:</strong> ${escHtml(inv.invoice_date)}</div>
+      <div><strong>Printed:</strong> ${escHtml(nowStr)}</div>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;margin-bottom:8px">
+      <thead>
+        <tr style="background:#083d28;color:#fff">
+          <th style="padding:4px 6px;text-align:left;font-size:.7rem;font-weight:700">ITEM</th>
+          <th style="padding:4px 6px;text-align:center;font-size:.7rem;font-weight:700">QTY</th>
+          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">PRICE</th>
+          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">TOTAL</th>
+        </tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+
+    <div style="border-top:1px solid #ddd;padding-top:6px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;font-size:.82rem;margin-bottom:3px">
+        <span>Invoice Total</span><strong>${c} ${fmtM(totalAmt)}</strong>
+      </div>
+      ${(inv.discount_amount||0)>0?`<div style="display:flex;justify-content:space-between;font-size:.78rem;color:#dc2626;margin-bottom:3px"><span>Discount</span><span>-${c} ${fmtM(inv.discount_amount)}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;font-size:.88rem;font-weight:700;color:#166534;border-top:1px solid #ddd;padding-top:4px;margin-top:4px">
+        <span>Amount Received</span><span>${c} ${fmtM(amtPaid)}</span>
+      </div>
+      ${balance>0.01?`<div style="display:flex;justify-content:space-between;font-size:.82rem;font-weight:700;color:#dc2626;margin-top:3px"><span>Balance Due</span><span>${c} ${fmtM(balance)}</span></div>`:''}
+    </div>
+
+    <div style="text-align:center;border-top:2px dashed #083d28;padding-top:6px;font-size:.72rem;color:#555">
+      <div style="color:#1e9a62;font-style:italic;font-weight:600;margin-bottom:2px">Thank you for your business!</div>
+      <div>${escHtml(slogan)}</div>
+      <div style="color:#9ca3af;font-size:.65rem;margin-top:4px">Official receipt · Not editable</div>
+    </div>
+  </div>`;
+}
+
+// ── Print Receipt — uses window.print() for reliable dialog, thermal @page CSS ─
 async function generateReceiptPDF(id) {
   try {
     showToast('Preparing receipt…');
     const inv = await api('GET', `/invoices/${id}`);
-    if (inv.status === 'cancelled') { showToast('Cannot generate receipt for a cancelled invoice', 'error'); return; }
-    const doc = _buildReceiptDoc(inv);
-    const pdfBlob = doc.output('blob');
-    const blobUrl = URL.createObjectURL(pdfBlob);
-    let pf = document.getElementById('receiptPrintFrame');
-    if (!pf) {
-      pf = document.createElement('iframe');
-      pf.id = 'receiptPrintFrame';
-      pf.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:none;visibility:hidden';
-      document.body.appendChild(pf);
-    }
-    pf.onload = function() {
-      setTimeout(function() {
-        try { pf.contentWindow.focus(); pf.contentWindow.print(); }
-        catch(ex) { window.open(blobUrl, '_blank'); }
-        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 30000);
-      }, 350);
-    };
-    pf.src = blobUrl;
-    showToast('Receipt ready — print dialog opening…');
+    if (inv.status === 'cancelled') { showToast('Cannot print receipt for a cancelled invoice', 'error'); return; }
+    if (!(inv.amount_paid > 0)) { showToast('No payment recorded yet — nothing to receipt', 'error'); return; }
+
+    const html = _buildReceiptHtml(inv);
+    let f = document.getElementById('receiptPrintFrame');
+    if (!f) { f = document.createElement('div'); f.id = 'receiptPrintFrame'; document.body.appendChild(f); }
+    f.innerHTML = html;
+    f.style.display = 'block';
+    // Allow browser to paint before opening print dialog
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      window.print();
+      setTimeout(() => { f.style.display = 'none'; f.innerHTML = ''; }, 800);
+    }));
+    showToast('Print dialog opening…');
   } catch(e) { console.error(e); showToast('Receipt print failed', 'error'); }
 }
 
@@ -1432,5 +1517,6 @@ init();
 
 </script>
 <div id="printFrame" style="display:none"></div>
+<div id="receiptPrintFrame" style="display:none"></div>
 </body>
 </html>

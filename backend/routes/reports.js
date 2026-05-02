@@ -7,16 +7,22 @@ const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 // Safe: never throws, never blocks the main request flow.
 async function writeNotification(db, { userId, roleTarget, type, category, message, title }) {
   try {
+    // Explicitly write created_at as a UTC ISO string (ends in 'Z') so browsers
+    // parse it unambiguously. SQLite's CURRENT_TIMESTAMP default stores without the
+    // 'Z' suffix, which causes some browsers to treat it as local time instead of UTC,
+    // making relative-time display ("3h ago") wrong.
+    const now = new Date().toISOString(); // e.g. "2025-05-02T10:30:00.000Z"
     await db.prepare(
-      `INSERT INTO notifications(user_id, role_target, type, category, title, message, read)
-       VALUES(?, ?, ?, ?, ?, ?, 0)`
+      `INSERT INTO notifications(user_id, role_target, type, category, title, message, read, created_at)
+       VALUES(?, ?, ?, ?, ?, ?, 0, ?)`
     ).run(
       userId     ?? null,
       roleTarget ?? null,
-      type       || 'info',
+      type       || 'warn',
       category   || type || '',
       title      || '',
-      message    || ''
+      message    || '',
+      now
     );
   } catch(_) { /* never block the caller */ }
 }
@@ -32,7 +38,7 @@ async function checkAndNotifyStock(db, enteredBy) {
         SELECT id FROM notifications
         WHERE role_target = 'owner'
           AND title = ?
-          AND created_at >= NOW() - INTERVAL '60 minutes'
+          AND (strftime('%s', created_at) + 0) >= (strftime('%s', 'now') - 3600)
         LIMIT 1
       `).get(title);
       if (!recent) {
@@ -1043,26 +1049,37 @@ router.get('/audit', authenticate, requireRole('owner','admin'), async (req, res
 });
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-// POST /notifications — frontend can push activity alerts (sale, purchase, payment, production)
+// POST /notifications — only stock-critical alerts are accepted from the frontend.
+// Activity notifications (production saved, sale saved, etc.) are intentionally
+// suppressed here — they are too noisy. Only alert/warn from automated stock checks matter.
 router.post('/notifications', authenticate, async (req, res) => {
   try {
     const { type, category, title, message, roleTarget } = req.body;
     if (!title || !message) return res.status(400).json({ error: 'title and message required' });
+
+    // Silently drop routine activity notifications — only stock alerts should appear in the bell.
+    // Categories that are suppressed: production, sales, purchase, payment, activity, info.
+    const SUPPRESSED_CATEGORIES = ['production', 'sales', 'purchase', 'payment', 'activity'];
+    const SUPPRESSED_TYPES      = ['info'];
+    if (SUPPRESSED_CATEGORIES.includes(category) || SUPPRESSED_TYPES.includes(type)) {
+      return res.json({ ok: true }); // accepted but not stored
+    }
+
     const db = getDb();
-    // Deduplicate: don't write if same title+user was written in last 5 minutes
+    // Deduplicate: don't write if same title was written in last 5 minutes
     const recent = await db.prepare(`
       SELECT id FROM notifications
       WHERE (user_id=? OR role_target=?)
         AND title=?
-        AND created_at >= NOW() - INTERVAL '5 minutes'
+        AND (strftime('%s', created_at) + 0) >= (strftime('%s', 'now') - 300)
       LIMIT 1
     `).get(req.user.id, roleTarget || 'owner', title);
     if (!recent) {
       await writeNotification(db, {
         userId: req.user.id,
         roleTarget: roleTarget || null,
-        type: type || 'info',
-        category: category || type || 'activity',
+        type: type || 'warn',
+        category: category || type || 'alert',
         title,
         message,
       });
@@ -1075,11 +1092,12 @@ router.post('/notifications', authenticate, async (req, res) => {
 
 router.get('/notifications', authenticate, async (req, res) => {
   try {
-    // Return actionable alerts only — type alert/warn/info, newest first
+    // Return stock alerts and warnings only — activity/info notifications are suppressed.
+    // This keeps the bell focused on things that require action (stockouts, low stock).
     res.json(await getDb().prepare(`
       SELECT * FROM notifications
       WHERE (user_id=? OR role_target=?)
-        AND type IN ('alert','warn','info')
+        AND type IN ('alert','warn')
       ORDER BY created_at DESC LIMIT 100
     `).all(req.user.id, req.user.role));
   } catch(e) {

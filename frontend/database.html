@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Database Manager — IMARA LINKS</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+/* Override shared.css .page so the DB manager grid fills the viewport correctly */
+#pageContent.page { padding: 0 !important; overflow: hidden !important; height: calc(100vh - 58px) !important; max-width: 100% !important; display: flex !important; flex-direction: column !important; }
+
+/* ── Layout ── */
+.dbm-root { display: grid; grid-template-columns: 260px 1fr; gap: 0; flex: 1; min-height: 0; overflow: hidden; }
+@media(max-width:900px){ .dbm-root { grid-template-columns: 1fr; } }
+
+/* ── Left panel: tables list ── */
+.tables-panel {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.tables-panel-header {
+  padding: 1rem 1rem .75rem;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.tables-panel-title { font-size: .85rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.db-badge {
+  font-size: .7rem; padding: .2rem .55rem; border-radius: 99px;
+  background: var(--g100); color: var(--g700); font-weight: 600;
+}
+.tables-search {
+  padding: .6rem .75rem; border: none; border-bottom: 1px solid var(--border);
+  font-size: .875rem; font-family: var(--font); color: var(--ink);
+  background: var(--bg); width: 100%; outline: none;
+}
+.tables-search:focus { background: var(--g50); }
+.tables-list { flex: 1; overflow-y: auto; padding: .5rem 0; }
+.table-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .55rem 1rem; cursor: pointer; transition: background .12s;
+  border-left: 3px solid transparent;
+}
+.table-item:hover { background: var(--g50); }
+.table-item.active { background: var(--g50); border-left-color: var(--g500); }
+.table-item-name { font-size: .875rem; font-weight: 500; color: var(--ink); font-family: var(--font-mono); }
+.table-item-count { font-size: .75rem; color: var(--muted); font-family: var(--font-mono); background: var(--bg); padding: .1rem .4rem; border-radius: 4px; }
+
+/* ── Right panel ── */
+.main-panel { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+
+/* ── Tabs ── */
+.dbm-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border);
+  background: var(--surface); padding: 0 1.5rem; flex-shrink: 0;
+}
+.dbm-tab {
+  padding: .85rem 1.25rem; font-size: .875rem; font-weight: 500; cursor: pointer;
+  color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: all .15s; user-select: none;
+}
+.dbm-tab:hover { color: var(--ink); }
+.dbm-tab.active { color: var(--g600); border-bottom-color: var(--g500); font-weight: 600; }
+
+/* ── Tab content areas ── */
+.tab-pane { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+.tab-pane.active { display: flex; }
+
+/* ── Table viewer ── */
+.table-viewer { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.table-toolbar {
+  padding: .75rem 1.5rem; display: flex; align-items: center; gap: .75rem;
+  background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
+}
+.table-toolbar-title { font-size: 1rem; font-weight: 700; color: var(--ink); font-family: var(--font-mono); flex: 1; }
+.table-meta { font-size: .8rem; color: var(--muted); }
+.table-data-wrap { flex: 1; overflow: auto; }
+.table-data { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.table-data th {
+  background: var(--g900); color: rgba(255,255,255,.85); padding: .6rem .9rem;
+  text-align: left; font-weight: 600; font-size: .75rem; text-transform: uppercase;
+  letter-spacing: .04em; position: sticky; top: 0; z-index: 1; white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.table-data td {
+  padding: .55rem .9rem; border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono); color: var(--ink); max-width: 280px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.table-data tr:hover td { background: var(--g50); }
+.table-data td.null-val { color: var(--faint); font-style: italic; }
+.table-data td.num-val  { color: var(--blue); }
+.table-data td.bool-val { color: var(--g600); font-weight: 600; }
+.table-data td.date-val { color: var(--amber); }
+
+.table-pagination {
+  padding: .75rem 1.5rem; display: flex; align-items: center; gap: 1rem;
+  border-top: 1px solid var(--border); background: var(--surface); font-size: .825rem; color: var(--muted);
+  flex-shrink: 0;
+}
+.table-pagination .pg-info { flex: 1; }
+
+/* ── Schema viewer ── */
+.schema-viewer { flex: 1; overflow: auto; padding: 1.5rem; }
+.schema-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+.schema-table th { background: var(--g800); color: rgba(255,255,255,.85); padding: .6rem 1rem; text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; font-family: var(--font-mono); }
+.schema-table td { padding: .55rem 1rem; border-bottom: 1px solid var(--border); font-size: .825rem; font-family: var(--font-mono); }
+.schema-table tr:last-child td { border-bottom: none; }
+.schema-type-badge { font-size: .7rem; background: var(--g100); color: var(--g700); padding: .15rem .45rem; border-radius: 4px; font-weight: 600; }
+.schema-pk { font-size: .65rem; background: var(--amber); color: #fff; padding: .15rem .4rem; border-radius: 4px; font-weight: 700; margin-left: .35rem; }
+.schema-notnull { font-size: .65rem; background: var(--red); color: #fff; padding: .15rem .4rem; border-radius: 4px; font-weight: 700; margin-left: .35rem; opacity: .7; }
+
+/* ── Query editor ── */
+.query-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 1.25rem 1.5rem; gap: 1rem; }
+.query-editor-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; flex-shrink: 0; }
+.query-editor-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .6rem 1rem; background: var(--g900); gap: .75rem;
+}
+.query-editor-label { font-size: .75rem; font-weight: 600; color: rgba(255,255,255,.6); text-transform: uppercase; letter-spacing: .06em; }
+.query-editor-actions { display: flex; gap: .5rem; align-items: center; }
+textarea#sqlEditor {
+  width: 100%; min-height: 160px; max-height: 260px;
+  padding: 1rem; font-family: var(--font-mono); font-size: .875rem;
+  border: none; outline: none; resize: vertical;
+  background: #1a2e23; color: #a7f3d0; line-height: 1.6;
+  tab-size: 2;
+}
+textarea#sqlEditor::placeholder { color: rgba(167,243,208,.3); }
+
+.query-result-wrap { flex: 1; min-height: 220px; overflow: hidden; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.query-result-header {
+  padding: .6rem 1rem; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: .75rem; background: var(--bg); flex-shrink: 0;
+}
+.query-result-label { font-size: .8rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.query-result-meta { font-size: .78rem; color: var(--g600); margin-left: auto; font-family: var(--font-mono); }
+.query-result-body { flex: 1; overflow: auto; min-height: 0; }
+.query-result-msg {
+  display: flex; align-items: center; justify-content: center; gap: .75rem;
+  height: 100%; font-size: .9rem; color: var(--muted); font-family: var(--font-mono);
+  text-align: center; padding: 2rem; flex-direction: column;
+}
+.query-result-msg.success { color: var(--g600); }
+.query-result-msg.error   { color: var(--red); }
+
+/* ── Export / Import panel ── */
+.export-pane { flex: 1; overflow-y: auto; padding: 1.5rem; }
+.export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+@media(max-width:700px){ .export-grid { grid-template-columns: 1fr; } }
+.export-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 2rem; text-align: center; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; align-items: center;
+}
+.export-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+.export-title { font-size: 1.1rem; font-weight: 700; margin-bottom: .5rem; color: var(--ink); }
+.export-desc { color: var(--muted); font-size: .875rem; line-height: 1.55; margin-bottom: 1.5rem; }
+.file-drop-zone {
+  width: 100%; border: 2px dashed var(--border); border-radius: var(--radius-sm);
+  padding: 1.25rem; text-align: center; cursor: pointer; margin-bottom: 1rem;
+  transition: all .2s; color: var(--muted); font-size: .85rem; position: relative;
+}
+.file-drop-zone:hover, .file-drop-zone.drag { border-color: var(--g400); background: var(--g50); color: var(--g600); }
+.file-drop-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.import-status { margin-top: 1rem; padding: 1rem; border-radius: var(--radius-sm); font-size: .85rem; }
+.import-status.ok  { background: var(--g100); color: var(--g700); }
+.import-status.err { background: #fee2e2; color: var(--red); }
+
+/* ── Buttons ── */
+.btn-run {
+  background: var(--g500); color: #fff; border: none; padding: .5rem 1.2rem;
+  border-radius: var(--radius-sm); font-family: var(--font); font-size: .85rem;
+  font-weight: 600; cursor: pointer; transition: all .15s; display: flex; align-items: center; gap: .4rem;
+}
+.btn-run:hover { background: var(--g600); }
+.btn-run:disabled { opacity: .5; cursor: not-allowed; }
+.btn-clear {
+  background: rgba(255,255,255,.08); color: rgba(255,255,255,.6); border: 1px solid rgba(255,255,255,.12);
+  padding: .4rem .85rem; border-radius: var(--radius-sm); font-family: var(--font);
+  font-size: .8rem; cursor: pointer; transition: all .15s;
+}
+.btn-clear:hover { background: rgba(255,255,255,.14); color: #fff; }
+.btn-sm { padding: .4rem .85rem; font-size: .8rem; border-radius: var(--radius-sm); font-family: var(--font); font-weight: 600; cursor: pointer; transition: all .15s; border: none; }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: .45rem .9rem; border-radius: var(--radius-sm); font-family: var(--font); font-size: .82rem; cursor: pointer; transition: all .15s; }
+.btn-ghost:hover { background: var(--g50); color: var(--ink); border-color: var(--g400); }
+.btn-export-main { background: var(--g500); color: #fff; border: none; padding: .7rem 1.5rem; border-radius: var(--radius-sm); font-family: var(--font); font-weight: 600; cursor: pointer; width: 100%; font-size: .9rem; transition: all .15s; }
+.btn-export-main:hover { background: var(--g600); }
+.btn-export-main:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Empty / loading states ── */
+.empty-state { text-align: center; padding: 3rem 2rem; color: var(--muted); }
+.empty-state-icon { font-size: 3rem; margin-bottom: 1rem; opacity: .4; }
+.spinner-sm { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Keyboard hint ── */
+.kbd { display: inline-block; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2); border-radius: 3px; padding: .1rem .35rem; font-size: .7rem; color: rgba(255,255,255,.5); font-family: var(--font-mono); }
+
+/* ── Pagination buttons ── */
+.pg-btn { padding: .3rem .7rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--ink); cursor: pointer; font-size: .8rem; transition: all .1s; }
+.pg-btn:hover:not(:disabled) { background: var(--g50); border-color: var(--g400); }
+.pg-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Warning chip ── */
+.warn-chip { background: #fef3c7; color: #92400e; font-size: .75rem; padding: .25rem .7rem; border-radius: 4px; font-weight: 600; border: 1px solid #fde68a; }
+
+/* ── Scrollbar in dark areas ── */
+textarea::-webkit-scrollbar { width: 6px; height: 6px; }
+textarea::-webkit-scrollbar-track { background: transparent; }
+textarea::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+</style>
+</head>
+<body>
+<script src="shared.js"></script>
+<script src="layout.js"></script>
+<script>
+// ── Auth guard: admin + owner only ────────────────────────────────────────────
+const me = requireAuth(['owner', 'admin']);
+if (!me) throw '';
+const pg = renderLayout('database.html');
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let allTables   = [];
+let activeTable = null;
+let tableOffset = 0;
+const PAGE_SIZE = 100;
+let queryRunning = false;
+
+// ── Render shell ──────────────────────────────────────────────────────────────
+pg.innerHTML = `
+<div class="section-header" style="padding-bottom:0;margin-bottom:0;border-bottom:1px solid var(--border)">
+  <div class="section-title" style="display:flex;align-items:center;gap:.75rem">
+    <span>🗄</span> Database Manager
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem" id="dbTypeWrap"></div>
+</div>
+
+<div class="dbm-root">
+  <!-- LEFT: tables list -->
+  <div class="tables-panel">
+    <div class="tables-panel-header">
+      <span class="tables-panel-title">Tables</span>
+      <button class="btn-ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="loadTables()" title="Refresh tables">↻</button>
+    </div>
+    <input class="tables-search" id="tableSearch" placeholder="🔍  Filter tables…" oninput="filterTables(this.value)">
+    <div class="tables-list" id="tablesList">
+      <div class="empty-state"><div class="empty-state-icon">⏳</div>Loading…</div>
+    </div>
+  </div>
+
+  <!-- RIGHT: main panel -->
+  <div class="main-panel">
+    <div class="dbm-tabs">
+      <div class="dbm-tab active" data-tab="data"    onclick="switchTab('data')">📋 Data</div>
+      <div class="dbm-tab"        data-tab="schema"  onclick="switchTab('schema')">🏗 Schema</div>
+      <div class="dbm-tab"        data-tab="query"   onclick="switchTab('query')">⌨ Query</div>
+      <div class="dbm-tab"        data-tab="export"  onclick="switchTab('export')">💾 Export / Import</div>
+    </div>
+
+    <!-- DATA tab -->
+    <div class="tab-pane active" id="tab-data">
+      <div class="table-viewer">
+        <div class="table-toolbar" id="dataToolbar">
+          <span class="table-toolbar-title" id="dataTableTitle" style="color:var(--muted);font-style:italic;font-family:var(--font)">Select a table from the left panel</span>
+          <button class="btn-ghost" id="btnRefreshData" onclick="loadTableData()" style="display:none">↻ Refresh</button>
+          <span class="table-meta" id="dataMeta"></span>
+        </div>
+        <div class="table-data-wrap" id="tableDataWrap">
+          <div class="empty-state"><div class="empty-state-icon">🗄</div><div>Select a table to view its data</div></div>
+        </div>
+        <div class="table-pagination" id="tablePagination" style="display:none">
+          <div class="pg-info" id="pgInfo"></div>
+          <button class="pg-btn" id="pgPrev" onclick="changePage(-1)">‹ Prev</button>
+          <button class="pg-btn" id="pgNext" onclick="changePage(1)">Next ›</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCHEMA tab -->
+    <div class="tab-pane" id="tab-schema">
+      <div class="schema-viewer" id="schemaViewer">
+        <div class="empty-state"><div class="empty-state-icon">🏗</div><div>Select a table to view its schema</div></div>
+      </div>
+    </div>
+
+    <!-- QUERY tab -->
+    <div class="tab-pane" id="tab-query">
+      <div class="query-pane">
+        <div class="query-editor-wrap">
+          <div class="query-editor-bar">
+            <span class="query-editor-label">SQL Query Editor</span>
+            <div class="query-editor-actions">
+              <span class="kbd">Ctrl+Enter</span> to run &nbsp;
+              <button class="btn-clear" onclick="clearEditor()">Clear</button>
+              <button class="btn-run" id="btnRun" onclick="runQuery()">
+                ▶ Run
+              </button>
+            </div>
+          </div>
+          <textarea id="sqlEditor" placeholder="-- Write your SQL query here&#10;-- Example: SELECT * FROM users LIMIT 10&#10;-- Ctrl+Enter to run" spellcheck="false"></textarea>
+        </div>
+        <div class="query-result-wrap" id="queryResultWrap">
+          <div class="query-result-header">
+            <span class="query-result-label">Result</span>
+            <span class="query-result-meta" id="queryMeta"></span>
+          </div>
+          <div class="query-result-body" id="queryResultBody">
+            <div class="query-result-msg">Run a query to see results here</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EXPORT/IMPORT tab -->
+    <div class="tab-pane" id="tab-export">
+      <div class="export-pane">
+        <div class="export-grid">
+          <!-- Export -->
+          <div class="export-card">
+            <div class="export-icon">📤</div>
+            <div class="export-title">Export All Data</div>
+            <div class="export-desc">
+              Download a complete JSON backup of all database tables. Use this to safeguard your data or migrate to another system.
+            </div>
+            <button class="btn-export-main" id="btnExport" onclick="doExport()">Download Backup (.json)</button>
+          </div>
+          <!-- Import -->
+          <div class="export-card">
+            <div class="export-icon">📥</div>
+            <div class="export-title">Import / Restore</div>
+            <div class="export-desc">
+              Restore data from a previously exported backup file. All tables are restored including users, invoices, payments, and audit history. Original IDs are preserved so all records stay linked. New users in the backup are added; existing users (same username) are left unchanged.
+            </div>
+            <div class="file-drop-zone" id="dropZone">
+              <input type="file" id="importFile" accept=".json" onchange="onFileChosen(this)">
+              <div id="dropLabel">📂 Click or drag backup .json here</div>
+            </div>
+            <button class="btn-export-main" id="btnImport" onclick="doImport()" disabled style="background:var(--muted)">Import Backup</button>
+            <div id="importStatus"></div>
+          </div>
+        </div>
+
+        <!-- Table-specific export -->
+        <div class="card" style="padding:1.5rem">
+          <div style="font-weight:700;margin-bottom:1rem;display:flex;align-items:center;gap:.5rem">📊 Export Single Table as CSV</div>
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+            <select id="csvTableSelect" class="input" style="max-width:220px;font-family:var(--font-mono)">
+              <option value="">Select table…</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="exportTableCSV()">Download CSV</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main-panel -->
+</div>
+`;
+
+// ── Load tables on mount ───────────────────────────────────────────────────────
+loadTables();
+
+// ── Keyboard shortcut: Ctrl+Enter runs query ──────────────────────────────────
+document.getElementById('sqlEditor').addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runQuery();
+  }
+});
+
+// ── Tab handling ──────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.dbm-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === `tab-${name}`));
+  // Reload schema when schema tab is opened
+  if (name === 'schema' && activeTable) loadSchema(activeTable);
+}
+
+// ── Load table list ───────────────────────────────────────────────────────────
+async function loadTables() {
+  const list = document.getElementById('tablesList');
+  list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div>Loading…</div>';
+  try {
+    const data = await api('GET', '/database/tables');
+    allTables = data.tables || [];
+    // Update DB badge
+    document.getElementById('dbTypeWrap').innerHTML = `<span class="db-badge">${escHtml(data.database_type || 'DB')}</span>`;
+    renderTablesList(allTables);
+
+    // Populate CSV select
+    const sel = document.getElementById('csvTableSelect');
+    sel.innerHTML = '<option value="">Select table…</option>' +
+      allTables.map(t => `<option value="${escHtml(t.name)}">${escHtml(t.name)}</option>`).join('');
+  } catch(e) {
+    list.innerHTML = `<div class="empty-state" style="color:var(--red)"><div class="empty-state-icon">⚠</div>${escHtml(e.error || e.message || 'Failed to load tables')}</div>`;
+  }
+}
+
+function renderTablesList(tables) {
+  const list = document.getElementById('tablesList');
+  if (!tables.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div>No tables found</div>';
+    return;
+  }
+  list.innerHTML = tables.map(t => `
+    <div class="table-item ${activeTable === t.name ? 'active' : ''}" onclick="selectTable('${escHtml(t.name)}')">
+      <span class="table-item-name">${escHtml(t.name)}</span>
+      <span class="table-item-count">${Number(t.row_count).toLocaleString()}</span>
+    </div>
+  `).join('');
+}
+
+function filterTables(q) {
+  const filtered = allTables.filter(t => t.name.toLowerCase().includes(q.toLowerCase()));
+  renderTablesList(filtered);
+}
+
+// ── Select table ──────────────────────────────────────────────────────────────
+function selectTable(name) {
+  activeTable = name;
+  tableOffset = 0;
+  // Update active state in sidebar
+  document.querySelectorAll('.table-item').forEach(el => {
+    el.classList.toggle('active', el.querySelector('.table-item-name').textContent === name);
+  });
+  // Load based on active tab
+  const activeTabEl = document.querySelector('.dbm-tab.active');
+  const tab = activeTabEl ? activeTabEl.dataset.tab : 'data';
+  if (tab === 'data')   loadTableData();
+  if (tab === 'schema') loadSchema(name);
+}
+
+// ── Load table data ───────────────────────────────────────────────────────────
+async function loadTableData() {
+  if (!activeTable) return;
+  const wrap = document.getElementById('tableDataWrap');
+  const toolbar = document.getElementById('dataTableTitle');
+  const meta   = document.getElementById('dataMeta');
+  const pag    = document.getElementById('tablePagination');
+  const refreshBtn = document.getElementById('btnRefreshData');
+
+  toolbar.textContent = activeTable;
+  toolbar.style.fontFamily = 'var(--font-mono)';
+  toolbar.style.fontStyle = 'normal';
+  toolbar.style.color = 'var(--ink)';
+  refreshBtn.style.display = 'inline-block';
+  meta.textContent = '';
+  pag.style.display = 'none';
+  wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div>Loading…</div>';
+
+  try {
+    const data = await api('GET', `/database/table/${encodeURIComponent(activeTable)}?limit=${PAGE_SIZE}&offset=${tableOffset}`);
+    const { rows, columns, total } = data;
+
+    meta.textContent = `${total.toLocaleString()} rows`;
+
+    if (!rows.length) {
+      wrap.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div>This table is empty</div>';
+      return;
+    }
+
+    // Render table
+    const header = columns.map(c => `<th>${escHtml(c)}</th>`).join('');
+    const body = rows.map(row =>
+      `<tr>${columns.map(c => cellHtml(row[c])).join('')}</tr>`
+    ).join('');
+    wrap.innerHTML = `<table class="table-data"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
+
+    // Pagination
+    const from = tableOffset + 1;
+    const to   = Math.min(tableOffset + rows.length, total);
+    document.getElementById('pgInfo').textContent = `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()} rows`;
+    document.getElementById('pgPrev').disabled = tableOffset === 0;
+    document.getElementById('pgNext').disabled = tableOffset + PAGE_SIZE >= total;
+    pag.style.display = 'flex';
+  } catch(e) {
+    wrap.innerHTML = `<div class="empty-state" style="color:var(--red)"><div class="empty-state-icon">⚠</div>${escHtml(e.error || 'Failed to load data')}</div>`;
+  }
+}
+
+function changePage(dir) {
+  tableOffset = Math.max(0, tableOffset + dir * PAGE_SIZE);
+  loadTableData();
+}
+
+function cellHtml(val) {
+  if (val === null || val === undefined) return `<td class="null-val">NULL</td>`;
+  if (typeof val === 'boolean') return `<td class="bool-val">${val ? 'true' : 'false'}</td>`;
+  if (typeof val === 'number') return `<td class="num-val">${val}</td>`;
+  const s = String(val);
+  // Detect ISO date strings
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return `<td class="date-val" title="${escHtml(s)}">${escHtml(s.slice(0,19).replace('T',' '))}</td>`;
+  return `<td title="${escHtml(s)}">${escHtml(s.length > 80 ? s.slice(0,80) + '…' : s)}</td>`;
+}
+
+// ── Load schema ───────────────────────────────────────────────────────────────
+async function loadSchema(name) {
+  const viewer = document.getElementById('schemaViewer');
+  viewer.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⏳</div>Loading schema…</div>';
+  try {
+    const data = await api('GET', `/database/schema/${encodeURIComponent(name)}`);
+    const cols = data.columns || [];
+    if (!cols.length) {
+      viewer.innerHTML = '<div class="empty-state">No column information available</div>';
+      return;
+    }
+    const rows = cols.map(c => {
+      const isPk   = c.pk === 1 || c.pk === true;
+      const notNull = c.notnull === 1 || c.is_nullable === 'NO';
+      return `<tr>
+        <td>${escHtml(c.name || c.column_name || '')}
+          ${isPk ? '<span class="schema-pk">PK</span>' : ''}
+          ${notNull && !isPk ? '<span class="schema-notnull">NOT NULL</span>' : ''}
+        </td>
+        <td><span class="schema-type-badge">${escHtml(c.type || c.data_type || '')}</span></td>
+        <td>${c.dflt_value !== null && c.dflt_value !== undefined ? escHtml(String(c.dflt_value)) : '<span style="color:var(--faint)">—</span>'}</td>
+      </tr>`;
+    }).join('');
+    viewer.innerHTML = `
+      <div style="font-size:.9rem;font-weight:700;margin-bottom:1rem;font-family:var(--font-mono);color:var(--g700)">Schema: ${escHtml(name)}</div>
+      <table class="schema-table">
+        <thead><tr><th>Column</th><th>Type</th><th>Default</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch(e) {
+    viewer.innerHTML = `<div class="empty-state" style="color:var(--red)"><div class="empty-state-icon">⚠</div>${escHtml(e.error || 'Failed to load schema')}</div>`;
+  }
+}
+
+// ── Query runner ──────────────────────────────────────────────────────────────
+async function runQuery() {
+  if (queryRunning) return;
+  const sql = document.getElementById('sqlEditor').value.trim();
+  if (!sql) return;
+
+  queryRunning = true;
+  const btn = document.getElementById('btnRun');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-sm"></span> Running…';
+
+  const body  = document.getElementById('queryResultBody');
+  const meta  = document.getElementById('queryMeta');
+  body.innerHTML = '<div class="query-result-msg">⏳ Executing…</div>';
+  meta.textContent = '';
+
+  try {
+    const result = await api('POST', '/database/query', { sql });
+
+    if (!result) throw { error: 'No response from server.' };
+
+    if (result.type === 'select') {
+      meta.textContent = `${result.row_count.toLocaleString()} rows · ${result.elapsed_ms}ms`;
+      if (!result.rows.length) {
+        body.innerHTML = '<div class="query-result-msg success">✓ Query returned 0 rows</div>';
+      } else {
+        const header = result.columns.map(c => `<th>${escHtml(c)}</th>`).join('');
+        const rows   = result.rows.map(row =>
+          `<tr>${result.columns.map(c => cellHtml(row[c])).join('')}</tr>`
+        ).join('');
+        body.innerHTML = `<table class="table-data"><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table>`;
+      }
+    } else {
+      meta.textContent = `${result.elapsed_ms}ms`;
+      body.innerHTML = `<div class="query-result-msg success">✓ ${escHtml(result.message || 'Query executed successfully')}</div>`;
+    }
+  } catch(e) {
+    meta.textContent = 'Error';
+    body.innerHTML = `<div class="query-result-msg error">⚠ ${escHtml(e.error || e.message || 'Query failed')}</div>`;
+  } finally {
+    queryRunning = false;
+    btn.disabled = false;
+    btn.innerHTML = '▶ Run';
+  }
+}
+
+function clearEditor() {
+  document.getElementById('sqlEditor').value = '';
+  document.getElementById('queryResultBody').innerHTML = '<div class="query-result-msg">Run a query to see results here</div>';
+  document.getElementById('queryMeta').textContent = '';
+  document.getElementById('sqlEditor').focus();
+}
+
+// ── Export full backup ────────────────────────────────────────────────────────
+async function doExport() {
+  const btn = document.getElementById('btnExport');
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const token = Store.token;
+    const response = await fetch(API + '/backup/export', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!response.ok) throw new Error('Export failed: ' + response.statusText);
+    const blob = await response.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    const ts = new Date().toISOString().slice(0,16).replace('T','_').replace(':','-');
+    a.download = `imara_backup_${ts}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    btn.textContent = '✓ Downloaded!';
+    setTimeout(() => { btn.textContent = 'Download Backup (.json)'; btn.disabled = false; }, 2000);
+  } catch(e) {
+    btn.textContent = '⚠ Failed – retry';
+    btn.disabled = false;
+    showToast(e.message || 'Export failed', 'error');
+  }
+}
+
+// ── Import backup ─────────────────────────────────────────────────────────────
+let importFileData = null;
+
+function onFileChosen(input) {
+  const file = input.files[0];
+  if (!file) return;
+  document.getElementById('dropLabel').textContent = `📄 ${file.name}`;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      importFileData = JSON.parse(e.target.result);
+      document.getElementById('btnImport').disabled = false;
+      document.getElementById('btnImport').style.background = 'var(--g500)';
+      document.getElementById('importStatus').innerHTML = '<div class="import-status ok">✓ File loaded. Click "Import Backup" to proceed.</div>';
+    } catch(_) {
+      importFileData = null;
+      document.getElementById('importStatus').innerHTML = '<div class="import-status err">⚠ Invalid JSON file. Please use a backup file exported from this system.</div>';
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function doImport() {
+  if (!importFileData) return;
+  if (!confirm('Import this backup? All data will be restored with original IDs. Existing records with the same ID will be replaced. Proceed?')) return;
+  const btn = document.getElementById('btnImport');
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+  try {
+    const result = await api('POST', '/backup/import', importFileData);
+    document.getElementById('importStatus').innerHTML = `
+      <div class="import-status ok">
+        ✓ ${escHtml(result.summary || 'Import complete')}<br>
+        <small>${result.results?.failed?.length ? 'Skipped: ' + result.results.failed.map(f => f.table).join(', ') : 'All tables imported'}</small>
+      </div>`;
+    btn.textContent = '✓ Done';
+    await loadTables();
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Import Backup'; }, 3000);
+  } catch(e) {
+    document.getElementById('importStatus').innerHTML = `<div class="import-status err">⚠ ${escHtml(e.error || 'Import failed')}</div>`;
+    btn.disabled = false;
+    btn.textContent = 'Import Backup';
+  }
+}
+
+// ── Export single table as CSV (all rows) ────────────────────────────────────
+async function exportTableCSV() {
+  const sel = document.getElementById('csvTableSelect');
+  const tableName = sel.value;
+  if (!tableName) return showToast('Please select a table first', 'error');
+
+  try {
+    // Fetch first page to get columns and total count
+    const first = await api('GET', `/database/table/${encodeURIComponent(tableName)}?limit=1000&offset=0`);
+    if (!first || !first.rows.length) return showToast('Table is empty', 'error');
+
+    const { columns, total } = first;
+    let allRows = [...first.rows];
+
+    // Paginate to fetch remaining rows if there are more than 1000
+    let offset = 1000;
+    while (offset < total) {
+      const page = await api('GET', `/database/table/${encodeURIComponent(tableName)}?limit=1000&offset=${offset}`);
+      if (!page || !page.rows.length) break;
+      allRows = allRows.concat(page.rows);
+      offset += 1000;
+    }
+
+    // Build CSV
+    const escape = v => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    let csv = columns.map(escape).join(',') + '\n';
+    csv += allRows.map(r => columns.map(c => escape(r[c])).join(',')).join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `${tableName}_export.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${allRows.length.toLocaleString()} rows from ${tableName}`, 'success');
+  } catch(e) {
+    showToast(e.error || 'Export failed', 'error');
+  }
+}
+
+// ── Toast helper ──────────────────────────────────────────────────────────────
+function showToast(msg, type='info') {
+  const t = document.createElement('div');
+  t.style.cssText = `position:fixed;bottom:1.5rem;right:1.5rem;z-index:9999;
+    background:${type==='error'?'var(--red)':type==='info'?'var(--blue)':'var(--g500)'};
+    color:#fff;padding:.75rem 1.25rem;border-radius:var(--radius-sm);
+    font-size:.875rem;font-weight:500;box-shadow:var(--shadow-md);
+    animation:fadeIn .2s ease`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+</script>
+</body>
+</html>
