@@ -274,6 +274,7 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use('/api/daily',          require('./backend/routes/daily'));
     backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
     backendApp.use('/api/backup',         require('./backend/routes/backup'));
+    backendApp.use('/api/database',       require('./backend/routes/database'));
     backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
     backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
     backendApp.use('/api',                require('./backend/routes/reports'));

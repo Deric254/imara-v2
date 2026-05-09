@@ -1092,13 +1092,18 @@ router.post('/notifications', authenticate, async (req, res) => {
 
 router.get('/notifications', authenticate, async (req, res) => {
   try {
-    // Return stock alerts and warnings only — activity/info notifications are suppressed.
-    // This keeps the bell focused on things that require action (stockouts, low stock).
+    // Return all actionable notifications:
+    //   • alert / warn  — stock alerts and warnings (always shown)
+    //   • info category 'invoice' — payment received, invoice events (persistent, shown to owner/admin)
+    // Activity-only info notifications (routine saves) remain suppressed to keep the bell clean.
     res.json(await getDb().prepare(`
       SELECT * FROM notifications
       WHERE (user_id=? OR role_target=?)
-        AND type IN ('alert','warn')
-      ORDER BY created_at DESC LIMIT 100
+        AND (
+          type IN ('alert','warn')
+          OR (type = 'info' AND category = 'invoice')
+        )
+      ORDER BY created_at DESC LIMIT 150
     `).all(req.user.id, req.user.role));
   } catch(e) {
     res.status(500).json({ error: 'Internal server error' });
@@ -1545,52 +1550,103 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
 
-    // Join sales → invoices → invoice_payments to derive payment status and balance
-    const rows = await db.prepare(`
+    // ── One row per sale, no aggregation ─────────────────────────────────────
+    // Every sales row is exported as-is. No collapsing, no merging.
+    // Invoice is resolved per sale via invoice_items: find an invoice that has
+    // a line item matching this sale's piece_type_id + gauge, on the same
+    // invoice_date + customer_name. This works for both single-item sales
+    // (direct sale_id link) and batch sales (where only saleIds[0] carries
+    // the invoice's sale_id — the rest are linked only through invoice_items).
+    // Only entry_date is shown — never created_at (UTC server timestamp).
+
+    // Fetch all individual sales rows in range
+    const sales = await db.prepare(`
       SELECT
+        s.id,
         s.entry_date,
-        pt.name                                                      AS piece_type,
-        s.gauge_source                                               AS gauge,
+        s.piece_type_id,
+        s.gauge_source,
+        s.buyer_name,
         s.quantity,
         s.selling_price,
-        ROUND((s.quantity * s.selling_price)::numeric, 2)           AS line_total,
+        ROUND(s.quantity * s.selling_price, 2) AS line_total,
         s.transport_to_market,
-        s.buyer_name,
-        CASE WHEN s.price_overridden=1 THEN 'Yes' ELSE 'No' END     AS price_overridden,
-        COALESCE(i.total_amount, ROUND((s.quantity * s.selling_price)::numeric,2)) AS invoice_total,
-        COALESCE(i.amount_paid, 0)                                   AS amount_paid,
-        ROUND(COALESCE(i.total_amount - i.amount_paid,
-              s.quantity * s.selling_price)::numeric, 2)             AS balance,
-        CASE
-          WHEN i.id IS NULL                        THEN 'No Invoice'
-          WHEN i.status = 'cancelled'              THEN 'Cancelled'
-          WHEN i.amount_paid >= i.total_amount     THEN 'Fully Paid'
-          WHEN i.amount_paid > 0                   THEN 'Partially Paid'
-          ELSE                                          'Unpaid'
-        END                                                          AS payment_status,
-        u.full_name AS entered_by,
-        s.created_at
+        s.price_overridden,
+        s.entered_by
       FROM sales s
-      JOIN piece_types pt ON s.piece_type_id = pt.id
-      JOIN users u ON s.entered_by = u.id
-      LEFT JOIN invoices i ON i.sale_id = s.id
       WHERE s.entry_date BETWEEN ? AND ?
       ORDER BY s.entry_date DESC, s.id DESC
     `).all(from, to);
 
-    const headers = [
-      'Date','Piece Type','Gauge','Qty','Price/pc','Line Total',
-      'Transport','Customer','Price Overridden',
-      'Invoice Total','Amount Paid','Balance','Payment Status',
-      'Entered By','Created At'
-    ];
-    sendCsv(res, `imara_sales_${from}_to_${to}.csv`, headers,
-      rows.map(r => [
-        r.entry_date, r.piece_type, r.gauge, r.quantity, r.selling_price,
-        r.line_total, r.transport_to_market, r.buyer_name, r.price_overridden,
-        r.invoice_total, r.amount_paid, r.balance, r.payment_status,
-        r.entered_by, r.created_at
-      ]));
+    // Lookup tables — one query each, no per-row DB hits for these
+    const pieceTypes = {};
+    const userNames  = {};
+    for (const p of await db.prepare('SELECT id, name FROM piece_types').all())
+      pieceTypes[p.id] = p.name;
+    for (const u of await db.prepare('SELECT id, full_name FROM users').all())
+      userNames[u.id] = u.full_name;
+
+    // Per-sale invoice lookup via invoice_items.
+    // For batch sales: the invoice has invoice_items rows for each piece_type+gauge.
+    // Joining through invoice_items finds the invoice for every sale row in the batch.
+    const invLookup = db.prepare(`
+      SELECT
+        i.invoice_number,
+        i.total_amount   AS invoice_total,
+        i.amount_paid,
+        i.status         AS invoice_status
+      FROM invoice_items ii
+      JOIN invoices i
+        ON  i.id            = ii.invoice_id
+        AND i.invoice_date  = ?
+        AND i.customer_name = ?
+      WHERE ii.piece_type_id             = ?
+        AND COALESCE(ii.gauge,       '') = COALESCE(?, '')
+      ORDER BY i.id ASC
+      LIMIT 1
+    `);
+
+    const rows = [];
+    for (const s of sales) {
+      const inv      = await invLookup.get(s.entry_date, s.buyer_name, s.piece_type_id, s.gauge_source);
+      const invTotal = inv ? parseFloat(inv.invoice_total) : null;
+      const amtPaid  = inv ? parseFloat(inv.amount_paid)   : 0;
+      const balance  = invTotal !== null
+        ? parseFloat((invTotal - amtPaid).toFixed(2))
+        : parseFloat(s.line_total);
+
+      let paymentStatus;
+      if      (!inv)                                    paymentStatus = 'No Invoice';
+      else if (inv.invoice_status === 'cancelled')      paymentStatus = 'Cancelled';
+      else if (amtPaid >= invTotal)                     paymentStatus = 'Fully Paid';
+      else if (amtPaid > 0)                             paymentStatus = 'Partially Paid';
+      else                                              paymentStatus = 'Unpaid';
+
+      rows.push([
+        s.entry_date,
+        pieceTypes[s.piece_type_id] || '',
+        s.gauge_source || '',
+        s.quantity,
+        s.selling_price,
+        s.line_total,
+        s.transport_to_market,
+        s.buyer_name,
+        s.price_overridden ? 'Yes' : 'No',
+        inv ? inv.invoice_number : '',
+        invTotal !== null ? invTotal : s.line_total,
+        amtPaid,
+        balance,
+        paymentStatus,
+        userNames[s.entered_by] || '',
+      ]);
+    }
+
+    sendCsv(res, `imara_sales_${from}_to_${to}.csv`, [
+      'Date', 'Piece Type', 'Gauge', 'Qty', 'Price/pc', 'Line Total',
+      'Transport', 'Customer', 'Price Overridden',
+      'Invoice #', 'Invoice Total', 'Amount Paid', 'Balance', 'Payment Status',
+      'Entered By',
+    ], rows);
   } catch(e) {
     console.error('Export sales error:', e);
     res.status(500).json({ error: 'Internal server error' });
