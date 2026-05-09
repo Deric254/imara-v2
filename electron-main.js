@@ -1,11 +1,17 @@
 // electron-main.js — IMARA LINKS Desktop App
 // This file lives in the project ROOT and is the Electron entry point.
 
-const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path    = require('path');
 const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
+
+// ── Disable Chromium background network services (safe browsing, component
+//    updater, etc.) that cause noisy SSL handshake errors on restricted networks.
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-component-update');
+app.commandLine.appendSwitch('no-pings');
 
 // ── Environment setup ─────────────────────────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -117,11 +123,17 @@ function initAutoUpdater() {
       mainWindow?.setProgressBar(-1);
       console.error('Auto-updater error:', err?.message || err);
 
+      // 404 = no releases published yet on GitHub; show friendly message not a crash dump
+      const is404 = (err?.message || '').includes('404');
       dialog.showMessageBox(mainWindow, {
-        type: 'error',
-        title: 'Update Check Failed',
-        message: 'IMARA LINKS could not check for updates.',
-        detail: err?.message || 'Please check your internet connection and try again.',
+        type: 'info',
+        title: 'Updates',
+        message: is404
+          ? 'IMARA LINKS is up to date.'
+          : 'Could not check for updates.',
+        detail: is404
+          ? `You are running version ${app.getVersion()}. No newer release has been published yet.`
+          : 'Please check your internet connection and try again.',
       });
     });
 
@@ -167,11 +179,16 @@ function checkForUpdatesManually() {
   updater.checkForUpdates().catch((err) => {
     isCheckingForUpdate = false;
     mainWindow?.setProgressBar(-1);
+    const is404 = (err?.message || '').includes('404');
     dialog.showMessageBox(mainWindow, {
-      type: 'error',
-      title: 'Update Check Failed',
-      message: 'IMARA LINKS could not check for updates.',
-      detail: err?.message || 'Please check your internet connection and try again.',
+      type: 'info',
+      title: 'Updates',
+      message: is404
+        ? 'IMARA LINKS is up to date.'
+        : 'Could not check for updates.',
+      detail: is404
+        ? `You are running version ${app.getVersion()}. No newer release has been published yet.`
+        : 'Please check your internet connection and try again.',
     });
   });
 }
@@ -274,6 +291,7 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use('/api/daily',          require('./backend/routes/daily'));
     backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
     backendApp.use('/api/backup',         require('./backend/routes/backup'));
+    backendApp.use('/api/database',       require('./backend/routes/database'));
     backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
     backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
     backendApp.use('/api',                require('./backend/routes/reports'));
@@ -361,6 +379,47 @@ async function createWindow() {
   }
 
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // ── CSV / file download handler ───────────────────────────────────────────
+  // Electron won't save blob-URL downloads without this. We intercept every
+  // download, auto-accept it to the user's Downloads folder, then open the
+  // folder so the file is easy to find.
+  mainWindow.webContents.session.on('will-download', (_event, item) => {
+    const downloadsPath = app.getPath('downloads');
+    const fs = require('fs');
+    const rawName = item.getFilename();
+    const ext  = path.extname(rawName);
+    const base = path.basename(rawName, ext);
+
+    // Find a unique filename — avoid silently failing on duplicates
+    let filename = rawName;
+    let counter  = 1;
+    while (fs.existsSync(path.join(downloadsPath, filename))) {
+      filename = `${base} (${counter++})${ext}`;
+    }
+    item.setSavePath(path.join(downloadsPath, filename));
+
+    item.once('done', (_e, state) => {
+      if (state === 'completed') {
+        const savePath = item.getSavePath();
+        dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Export Complete',
+          message: `${filename} saved to your Downloads folder.`,
+          buttons: ['Open Folder', 'OK'],
+          defaultId: 1,
+        }).then(result => {
+          if (result.response === 0) shell.showItemInFolder(savePath);
+        });
+      } else {
+        dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          title: 'Export Failed',
+          message: 'The file could not be saved.',
+        });
+      }
+    });
+  });
 
   createMenu();
 }

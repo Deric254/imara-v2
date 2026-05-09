@@ -1,6 +1,6 @@
 {
   "name": "imara-links",
-  "version": "2.0.9",
+  "version": "2.0.7",
   "description": "IMARA LINKS - Local Desktop Application",
   "main": "electron-main.js",
   "private": true,
@@ -13,8 +13,7 @@
   },
   "devDependencies": {
     "electron": "41.3.0",
-    "electron-builder": "^24.9.1",
-    "electron-updater": "^6.1.1"
+    "electron-builder": "^24.9.1"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -26,6 +25,8 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "sqlite3": "^6.0.1"
-  }
+    "sqlite3": "^6.0.1",
+    "electron-updater": "^6.1.1"
+  },
+  "author": "IMARA LINKS"
 }
