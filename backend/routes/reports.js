@@ -3,7 +3,6 @@ const router = require('express').Router();
 const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 
-
 // ── Notification writer — call after any event that should alert the owner ────
 // Safe: never throws, never blocks the main request flow.
 async function writeNotification(db, { userId, roleTarget, type, category, message, title }) {
@@ -1093,18 +1092,13 @@ router.post('/notifications', authenticate, async (req, res) => {
 
 router.get('/notifications', authenticate, async (req, res) => {
   try {
-    // Return all actionable notifications:
-    //   • alert / warn  — stock alerts and warnings (always shown)
-    //   • info category 'invoice' — payment received, invoice events (persistent, shown to owner/admin)
-    // Activity-only info notifications (routine saves) remain suppressed to keep the bell clean.
+    // Return stock alerts and warnings only — activity/info notifications are suppressed.
+    // This keeps the bell focused on things that require action (stockouts, low stock).
     res.json(await getDb().prepare(`
       SELECT * FROM notifications
       WHERE (user_id=? OR role_target=?)
-        AND (
-          type IN ('alert','warn')
-          OR (type = 'info' AND category = 'invoice')
-        )
-      ORDER BY created_at DESC LIMIT 150
+        AND type IN ('alert','warn')
+      ORDER BY created_at DESC LIMIT 100
     `).all(req.user.id, req.user.role));
   } catch(e) {
     res.status(500).json({ error: 'Internal server error' });
@@ -1544,116 +1538,59 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
   }
 });
 
-/* GET /api/export/sales
- *
- * One row per invoice (invoice-centric export).
- * All sale line items belonging to the same invoice are consolidated
- * into a single row.  Sales that have no linked invoice each get their
- * own row (labelled "No Invoice").
- */
+/* GET /api/export/sales */
 router.get('/export/sales', authenticate, requireRole('owner','admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
 
-    // ── lookup tables ────────────────────────────────────────────────────────
-    const pieceTypes = {};
-    const userNames  = {};
-    for (const p of await db.prepare('SELECT id, name FROM piece_types').all())
-      pieceTypes[p.id] = p.name;
-    for (const u of await db.prepare('SELECT id, full_name FROM users').all())
-      userNames[u.id] = u.full_name;
-
-    // ── invoices in the date range ───────────────────────────────────────────
-    const invoices = await db.prepare(`
-      SELECT id, invoice_number, invoice_date, customer_name,
-             total_amount, amount_paid, status, tax_amount, notes
-      FROM invoices
-      WHERE invoice_date BETWEEN ? AND ?
-      ORDER BY invoice_date DESC, id DESC
+    // Join sales → invoices → invoice_payments to derive payment status and balance
+    const rows = await db.prepare(`
+      SELECT
+        s.entry_date,
+        pt.name                                                      AS piece_type,
+        s.gauge_source                                               AS gauge,
+        s.quantity,
+        s.selling_price,
+        ROUND((s.quantity * s.selling_price)::numeric, 2)           AS line_total,
+        s.transport_to_market,
+        s.buyer_name,
+        CASE WHEN s.price_overridden=1 THEN 'Yes' ELSE 'No' END     AS price_overridden,
+        COALESCE(i.total_amount, ROUND((s.quantity * s.selling_price)::numeric,2)) AS invoice_total,
+        COALESCE(i.amount_paid, 0)                                   AS amount_paid,
+        ROUND(COALESCE(i.total_amount - i.amount_paid,
+              s.quantity * s.selling_price)::numeric, 2)             AS balance,
+        CASE
+          WHEN i.id IS NULL                        THEN 'No Invoice'
+          WHEN i.status = 'cancelled'              THEN 'Cancelled'
+          WHEN i.amount_paid >= i.total_amount     THEN 'Fully Paid'
+          WHEN i.amount_paid > 0                   THEN 'Partially Paid'
+          ELSE                                          'Unpaid'
+        END                                                          AS payment_status,
+        u.full_name AS entered_by,
+        s.created_at
+      FROM sales s
+      JOIN piece_types pt ON s.piece_type_id = pt.id
+      JOIN users u ON s.entered_by = u.id
+      LEFT JOIN invoices i ON i.sale_id = s.id
+      WHERE s.entry_date BETWEEN ? AND ?
+      ORDER BY s.entry_date DESC, s.id DESC
     `).all(from, to);
 
-    // ── invoice items ────────────────────────────────────────────────────────
-    const allItems = await db.prepare(`
-      SELECT ii.invoice_id,
-             ii.piece_type_id,
-             COALESCE(ii.gauge,'') AS gauge,
-             ii.quantity,
-             ii.unit_price,
-             ii.line_total
-      FROM invoice_items ii
-    `).all();
-    const itemsByInv = {};
-    for (const it of allItems) {
-      if (!itemsByInv[it.invoice_id]) itemsByInv[it.invoice_id] = [];
-      itemsByInv[it.invoice_id].push(it);
-    }
-
-    // ── payments keyed by invoice_id ─────────────────────────────────────────
-    const allPmts = await db.prepare(`
-      SELECT invoice_id, payment_date, amount, payment_method, notes
-      FROM invoice_payments ORDER BY payment_date ASC, created_at ASC
-    `).all();
-    const pmtsByInv = {};
-    for (const p of allPmts) {
-      if (!pmtsByInv[p.invoice_id]) pmtsByInv[p.invoice_id] = [];
-      pmtsByInv[p.invoice_id].push(p);
-    }
-
-    // ── build CSV rows (one row per invoice, items consolidated) ─────────────
-    function getStatusLabel(inv) {
-      if (inv.status === 'cancelled') return 'Cancelled';
-      const bal = parseFloat(inv.total_amount) - parseFloat(inv.amount_paid);
-      if (bal <= 0.01) return 'Fully Paid';
-      if (parseFloat(inv.amount_paid) > 0) return 'Partial Payment';
-      return 'Unpaid';
-    }
-
     const headers = [
-      'Invoice #', 'Date', 'Customer',
-      'Piece Types', 'Gauges', 'Total Qty',
-      'Tax (KES)', 'Invoice Total (KES)', 'Amount Paid (KES)', 'Balance (KES)',
-      'Payment Status', 'Payment History', 'Notes'
+      'Date','Piece Type','Gauge','Qty','Price/pc','Line Total',
+      'Transport','Customer','Price Overridden',
+      'Invoice Total','Amount Paid','Balance','Payment Status',
+      'Entered By','Created At'
     ];
-
     sendCsv(res, `imara_sales_${from}_to_${to}.csv`, headers,
-      invoices.map(inv => {
-        const items  = itemsByInv[inv.id] || [];
-        const pmts   = pmtsByInv[inv.id]  || [];
-        const total  = parseFloat(inv.total_amount) || 0;
-        const paid   = parseFloat(inv.amount_paid)  || 0;
-        const bal    = parseFloat(Math.max(0, total - paid).toFixed(2));
-
-        const pieceList = items.map(it => pieceTypes[it.piece_type_id] || '').filter(Boolean).join('; ');
-        const gaugeList = [...new Set(items.map(it => it.gauge).filter(Boolean))].join('; ');
-        const totalQty  = items.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0);
-
-        const pmtHistory = pmts.length
-          ? pmts.map(p =>
-              `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}` +
-              (p.notes ? ` (${p.notes})` : '')
-            ).join(' | ')
-          : '';
-
-        return [
-          inv.invoice_number,
-          inv.invoice_date,
-          inv.customer_name,
-          pieceList,
-          gaugeList,
-          totalQty,
-          parseFloat(inv.tax_amount) || 0,
-          total,
-          paid,
-          bal,
-          getStatusLabel(inv),
-          pmtHistory,
-          inv.notes || ''
-        ];
-      })
-    );
-
+      rows.map(r => [
+        r.entry_date, r.piece_type, r.gauge, r.quantity, r.selling_price,
+        r.line_total, r.transport_to_market, r.buyer_name, r.price_overridden,
+        r.invoice_total, r.amount_paid, r.balance, r.payment_status,
+        r.entered_by, r.created_at
+      ]));
   } catch(e) {
     console.error('Export sales error:', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -1762,129 +1699,6 @@ router.get('/export/invoices', authenticate, requireRole('owner','admin'), async
         r.total_amount, r.amount_paid, r.balance, r.created_by, r.notes]));
   } catch(e) {
     console.error('Export invoices error:', e);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-/* ═══════════════════════════════════════════════════════════════════════════
- * GET /api/export/sales-xlsx
- *
- * Invoice-centric Excel export with merged cells:
- *   • One invoice  = one visual group.
- *   • Invoice-level columns are MERGED vertically across all item rows.
- *   • Colour-coded by payment status: green=paid, amber=partial, red=unpaid.
- *   • Sheet 2: per-customer summary totals.
- * ═══════════════════════════════════════════════════════════════════════════ */
-router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), async (req, res) => {
-  try {
-    const db   = getDb();
-    const from = req.query.from || '2000-01-01';
-    const to   = req.query.to   || '2099-12-31';
-
-    // lookup tables
-    const pieceTypes = {};
-    for (const p of await db.prepare('SELECT id, name FROM piece_types').all())
-      pieceTypes[p.id] = p.name;
-    const userNames = {};
-    for (const u of await db.prepare('SELECT id, full_name FROM users').all())
-      userNames[u.id] = u.full_name;
-
-    // invoices in date range
-    const invoices = await db.prepare(`
-      SELECT id, invoice_number, invoice_date, due_date,
-             customer_name, customer_phone,
-             subtotal, discount_amount, tax_amount, total_amount,
-             amount_paid, status, notes, created_by
-      FROM invoices
-      WHERE invoice_date BETWEEN ? AND ?
-      ORDER BY invoice_date DESC, id DESC
-    `).all(from, to);
-
-    // items keyed by invoice_id
-    const allItems = await db.prepare(`
-      SELECT invoice_id, piece_type_id, COALESCE(gauge,'') AS gauge,
-             description, quantity, unit_price, line_total
-      FROM invoice_items ORDER BY id ASC
-    `).all();
-    const itemsByInv = {};
-    for (const it of allItems) {
-      if (!itemsByInv[it.invoice_id]) itemsByInv[it.invoice_id] = [];
-      itemsByInv[it.invoice_id].push(it);
-    }
-
-    // payments keyed by invoice_id
-    const allPmts = await db.prepare(`
-      SELECT invoice_id, payment_date, amount, payment_method, notes
-      FROM invoice_payments ORDER BY payment_date ASC, created_at ASC
-    `).all();
-    const pmtsByInv = {};
-    for (const p of allPmts) {
-      if (!pmtsByInv[p.invoice_id]) pmtsByInv[p.invoice_id] = [];
-      pmtsByInv[p.invoice_id].push(p);
-    }
-
-    function getStatusLabel(inv) {
-      if (inv.status === 'cancelled') return 'Cancelled';
-      const bal = parseFloat(inv.total_amount) - parseFloat(inv.amount_paid);
-      if (bal <= 0.01) return 'Fully Paid';
-      if (parseFloat(inv.amount_paid) > 0) return 'Partial Payment';
-      return 'Unpaid';
-    }
-
-    // one row per item — invoice-level fields repeat on every item row
-    const headers = [
-      'Invoice #', 'Date', 'Due Date', 'Customer', 'Phone',
-      'Piece Type', 'Gauge', 'Qty', 'Unit Price (KES)', 'Line Total (KES)',
-      'Subtotal (KES)', 'Discount (KES)', 'Tax (KES)', 'Invoice Total (KES)',
-      'Amount Paid (KES)', 'Balance (KES)', 'Payment Status',
-      'Payment History', 'Generated By'
-    ];
-
-    const rows = [];
-    for (const inv of invoices) {
-      const items  = itemsByInv[inv.id] || [null];
-      const pmts   = pmtsByInv[inv.id]  || [];
-      const total  = parseFloat(inv.total_amount)  || 0;
-      const paid   = parseFloat(inv.amount_paid)   || 0;
-      const bal    = parseFloat(Math.max(0, total - paid).toFixed(2));
-      const pmtHistory = pmts.length
-        ? pmts.map(p =>
-            `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}` +
-            (p.notes ? ` (${p.notes})` : '')
-          ).join(' | ')
-        : '';
-      const status      = getStatusLabel(inv);
-      const generatedBy = userNames[inv.created_by] || '';
-
-      for (const item of items) {
-        rows.push([
-          inv.invoice_number,
-          inv.invoice_date,
-          inv.due_date || '',
-          inv.customer_name,
-          inv.customer_phone || '',
-          item ? (pieceTypes[item.piece_type_id] || item.description || '') : '',
-          item ? item.gauge      : '',
-          item ? item.quantity   : '',
-          item ? item.unit_price : '',
-          item ? item.line_total : '',
-          parseFloat(inv.subtotal)        || 0,
-          parseFloat(inv.discount_amount) || 0,
-          parseFloat(inv.tax_amount)      || 0,
-          total,
-          paid,
-          bal,
-          status,
-          pmtHistory,
-          generatedBy
-        ]);
-      }
-    }
-
-    sendCsv(res, `imara_sales_${from}_to_${to}.csv`, headers, rows);
-
-  } catch (e) {
-    console.error('Export sales-xlsx error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

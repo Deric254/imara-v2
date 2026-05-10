@@ -22,7 +22,7 @@
 /* ── Charts ─────────────────────────────────────────────────── */
 .chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
 @media(max-width:720px){.chart-pair{grid-template-columns:1fr}}
-.chart-container{position:relative;height:290px;width:100%;overflow:hidden}
+.chart-container{position:relative;height:290px;width:100%;overflow:auto;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
 .chart-container canvas{display:block}
 @media(max-width:768px){.chart-container{height:240px}}
 @media(max-width:480px){.chart-container{height:200px}.chart-pair{gap:.5rem}}
@@ -385,7 +385,13 @@ function setChartViewport(canvasId, { xPoints=0, yPoints=0, circularItems=0 } = 
       : Math.floor(window.innerWidth * 0.45);
   }
 
+  // Smart px-per-point: compress for large datasets so scrolling is comfortable
+  let pxPerPoint = 72;
+  if (xPoints > 60)  pxPerPoint = 40;  // several months
+  if (xPoints > 180) pxPerPoint = 24;  // a year+
+  const targetWidth = xPoints > 0 ? Math.max(viewportWidth, xPoints * pxPerPoint) : viewportWidth;
   let targetHeight = baseHeight;
+
   if (yPoints > 0) targetHeight = Math.max(baseHeight, yPoints * 42);
   if (circularItems > 0) {
     const legendExtra = narrow ? Math.min(circularItems, 8) * 18 : 0;
@@ -393,18 +399,23 @@ function setChartViewport(canvasId, { xPoints=0, yPoints=0, circularItems=0 } = 
     targetHeight = Math.max(baseHeight + legendExtra, baseHeight + overflowExtra);
   }
 
+  // Only override container height when content needs more space (tall bar/circular charts)
+  // For normal charts: leave the CSS height alone — it's correct from the media queries
   if (targetHeight > baseHeight) {
     wrap.style.height = `${Math.min(targetHeight, 720)}px`;
   } else {
-    wrap.style.height = '';
+    wrap.style.height = ''; // let CSS control it (290px / 240px / 200px)
   }
   wrap.style.overflowX = 'hidden';
   wrap.style.overflowY = targetHeight > baseHeight ? 'auto' : 'hidden';
+  // Never set explicit canvas dimensions — let Chart.js responsive:true fill the container
   canvas.style.width = '';
   canvas.style.minWidth = '';
   canvas.style.height = '';
 }
 
+
+const PALETTE = ['#1e9a62','#d97706','#dc2626','#2563eb','#7c3aed',
                  '#0891b2','#ea580c','#be123c','#15803d','#4338ca'];
 
 const BASE_TOOLTIP = {

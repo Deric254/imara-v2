@@ -167,25 +167,15 @@ async function api(method, path, body) {
 
 // ── Streaming download (for CSV/Excel export from API) ───────────────────────
 async function apiDownload(path, filename) {
-  // First check the request succeeds, then trigger a real URL download
-  // so Electron's will-download handler fires and saves to Downloads folder.
-  const testRes = await fetch(API + path, {
+  const res = await fetch(API + path, {
     headers: { 'Authorization': `Bearer ${Store.token}` }
   });
-  if (!testRes.ok) { showToast('Export failed', 'error'); return; }
-
-  // Build a direct URL with the token as a query param so Electron can
-  // fetch it as a navigation (triggering will-download) rather than a blob.
-  const sep = path.includes('?') ? '&' : '?';
-  const downloadUrl = API + path + sep + '_dl=' + encodeURIComponent(filename)
-    + '&token=' + encodeURIComponent(Store.token);
-
-  const a = document.createElement('a');
-  a.href = downloadUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  if (!res.ok) { showToast('Export failed', 'error'); return; }
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function requireAuth(roles) {

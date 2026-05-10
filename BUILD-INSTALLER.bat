@@ -12,11 +12,6 @@ if not exist "node_modules\electron-builder" (
     exit /b 1
 )
 
-REM Disable code-signing (no certificate = no winCodeSign download)
-set CSC_IDENTITY_AUTO_DISCOVERY=false
-set CSC_LINK=
-set CSC_KEY_PASSWORD=
-
 echo Building IMARA LINKS Windows installer...
 echo.
 
