@@ -22,9 +22,21 @@ function openDb() {
     _db = new sqlite3.Database(dbPath, (err) => {
       if (err) reject(err);
       else {
-        _db.run('PRAGMA foreign_keys = ON', (err) => {
-          if (err) reject(err);
-          else resolve(_db);
+        // WAL mode: allows concurrent reads during writes; doesn't block readers.
+        // SYNCHRONOUS=FULL: every committed transaction is flushed to disk before
+        //   returning — guarantees D (Durability) of ACID even on power loss.
+        // FOREIGN_KEYS=ON: enforces referential integrity — guarantees C (Consistency).
+        // TEMP_STORE=MEMORY: temp tables in memory for speed (no durability concern).
+        // CACHE_SIZE: 64MB page cache reduces disk I/O for large aggregations.
+        _db.serialize(() => {
+          _db.run('PRAGMA journal_mode = WAL');
+          _db.run('PRAGMA synchronous = FULL');
+          _db.run('PRAGMA foreign_keys = ON');
+          _db.run('PRAGMA temp_store = MEMORY');
+          _db.run('PRAGMA cache_size = -65536', (err) => {
+            if (err) reject(err);
+            else resolve(_db);
+          });
         });
       }
     });

@@ -1,7 +1,7 @@
 // electron-main.js — IMARA LINKS Desktop App
 // This file lives in the project ROOT and is the Electron entry point.
 
-const { app, BrowserWindow, Menu, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path    = require('path');
 const express = require('express');
 const cors    = require('cors');
@@ -274,6 +274,7 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use('/api/daily',          require('./backend/routes/daily'));
     backendApp.use('/api/reconciliation', require('./backend/routes/reconciliation'));
     backendApp.use('/api/backup',         require('./backend/routes/backup'));
+    backendApp.use('/api/database',       require('./backend/routes/database'));
     backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
     backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
     backendApp.use('/api',                require('./backend/routes/reports'));
@@ -363,6 +364,48 @@ async function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 
   createMenu();
+
+  // ── CSV / file download handler ───────────────────────────────────────────
+  // Electron won't save blob-URL downloads without this. We intercept every
+  // download, auto-accept it to the user's Downloads folder, then open the
+  // folder so the file is easy to find.
+  mainWindow.webContents.session.on('will-download', (_event, item) => {
+    const downloadsPath = app.getPath('downloads');
+    const fs = require('fs');
+    const rawName = item.getFilename();
+    const ext  = path.extname(rawName);
+    const base = path.basename(rawName, ext);
+
+    // Find a unique filename — avoid silently failing on duplicates
+    let filename = rawName;
+    let counter  = 1;
+    while (fs.existsSync(path.join(downloadsPath, filename))) {
+      filename = `${base} (${counter++})${ext}`;
+    }
+    item.setSavePath(path.join(downloadsPath, filename));
+
+    item.once('done', (_e, state) => {
+      if (state === 'completed') {
+        const savePath = item.getSavePath();
+        dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Export Complete',
+          message: `${filename} saved to your Downloads folder.`,
+          buttons: ['Open Folder', 'OK'],
+          defaultId: 1,
+        }).then(result => {
+          if (result.response === 0) shell.showItemInFolder(savePath);
+        });
+      } else {
+        dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          title: 'Export Failed',
+          message: 'The file could not be saved.',
+        });
+      }
+    });
+  });
+
 }
 
 // ── Menu ──────────────────────────────────────────────────────────────────────

@@ -4,9 +4,9 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Reports IMARA LINKS</title>
 <link rel="stylesheet" href="shared.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="chart.umd.min.js"></script>
+<script src="jspdf.umd.min.js"></script>
+<script src="jspdf.plugin.autotable.min.js"></script>
 <style>
 .report-tab { background:none; border:none; padding:.5rem 1rem; font-family:var(--font); font-size:.88rem;
               font-weight:500; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent;
@@ -113,7 +113,7 @@ async function init() {
 <div id="tab-sales" style="display:none">
   <div class="section-header" style="margin-bottom:.75rem">
     <div class="section-title" style="font-size:.9rem">Sales</div>
-    <button class="btn btn-secondary btn-sm" onclick="exportExcel('sales')">📥 Export Excel</button>
+    <button class="btn btn-secondary btn-sm" onclick="exportSalesXlsx()">📥 Export CSV</button>
   </div>
   <div class="table-wrap">
     <table><thead><tr><th>Date</th><th>Piece</th><th>Gauge</th><th>Qty</th><th>Price</th><th>Revenue</th><th>Kgs</th><th>Meters</th><th>Price Source</th><th>By</th>
@@ -633,6 +633,13 @@ function exportExcel(type) {
   const to   = document.getElementById('toDate').value   || today();
   const filename = `imara_${type}_${from}_to_${to}.csv`;
   apiDownload(`/export/${type}?from=${from}&to=${to}`, filename);
+}
+
+function exportSalesXlsx() {
+  const from = document.getElementById('fromDate').value || '2000-01-01';
+  const to   = document.getElementById('toDate').value   || today();
+  const filename = `imara_sales_${from}_to_${to}.csv`;
+  apiDownload(`/export/sales-xlsx?from=${from}&to=${to}`, filename);
 }
 
 // ── Load Gauge KPI tab ────────────────────────────────────────────────────────

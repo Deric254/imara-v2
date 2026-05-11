@@ -1,5 +1,6 @@
 /* shared.css — IMARA LINKS */
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&family=DM+Mono:wght@400;500&display=swap');
+/* Fonts loaded locally — no internet required */
+/* DM Sans → system UI stack | DM Serif Display → Georgia | DM Mono → system mono */
 
 :root {
   --g50:  #f0faf5; --g100: #d6f2e4; --g200: #aae4c8;
@@ -12,9 +13,9 @@
   --shadow: 0 1px 4px rgba(0,0,0,.08), 0 0 0 1px rgba(0,0,0,.04);
   --shadow-md: 0 4px 16px rgba(0,0,0,.10);
   --sidebar-w: 240px;
-  --font: 'DM Sans', sans-serif;
-  --font-display: 'DM Serif Display', serif;
-  --font-mono: 'DM Mono', monospace;
+  --font: 'DM Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-display: 'DM Serif Display', Georgia, 'Times New Roman', serif;
+  --font-mono: 'DM Mono', 'Cascadia Code', 'Consolas', monospace;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
