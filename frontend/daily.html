@@ -155,9 +155,13 @@ function setSalePriceExample(piece) {
 }
 
 pg.innerHTML = `
-<div id="blockedAlert" class="alert alert-err" style="display:none">
-  <span class="alert-icon">⛔</span>
-  <div><strong>Blocked:</strong> Yesterday's data must be entered before today's entry.</div>
+<div id="blockedAlert" style="display:none;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:.85rem 1rem;margin-bottom:1rem;display:none;align-items:flex-start;gap:.75rem">
+  <span style="font-size:1.2rem;line-height:1.4">⚠️</span>
+  <div style="flex:1">
+    <strong style="color:#92400e">Heads up!</strong>
+    <span style="color:#78350f;font-size:.9rem"> Yesterday's data hasn't been entered yet. Please remember to fill it in when you can.</span>
+  </div>
+  <button onclick="dismissDailyWarning()" style="background:none;border:none;cursor:pointer;font-size:1.2rem;color:#92400e;line-height:1;padding:0;flex-shrink:0" title="Dismiss">&times;</button>
 </div>
 
 <div id="mainContent" style="display:none">
@@ -1425,18 +1429,24 @@ async function checkStatus() {
     const s = await api('GET','/daily/status');
     if (s.blocked) {
       document.getElementById('blockedAlert').style.display='flex';
-    } else {
-      document.getElementById('mainContent').style.display='block';
-      await loadRefs();
-      updateDateLabel();
-      loadTabData('purchases');
     }
+    // Always show main content — warning is informational, not a hard block
+    document.getElementById('mainContent').style.display='block';
+    await loadRefs();
+    updateDateLabel();
+    loadTabData('purchases');
   } catch(e){
     document.getElementById('mainContent').style.display='block';
     await loadRefs();
     updateDateLabel();
     loadTabData('purchases');
   }
+}
+
+async function dismissDailyWarning() {
+  document.getElementById('blockedAlert').style.display='none';
+  // Log the dismissal to audit silently
+  try { await api('POST', '/daily/dismiss-warning', {}); } catch(_) {}
 }
 
 checkStatus();

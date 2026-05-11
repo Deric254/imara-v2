@@ -90,11 +90,11 @@ router.patch('/profile', authenticate,
         // FIX: stamp password_changed_at so any existing JWTs are invalidated immediately
         const passwordHash = bcrypt.hashSync(new_password, 12);
         await db.prepare(
-          'UPDATE users SET username=?, full_name=?, phone=?, email=?, password=?, password_changed_at=NOW(), updated_at=NOW() WHERE id=?'
+          'UPDATE users SET username=?, full_name=?, phone=?, email=?, password=?, password_changed_at=datetime(\'now\'), updated_at=datetime(\'now\') WHERE id=?'
         ).run(username, full_name.trim(), phone.trim(), email.trim(), passwordHash, req.user.id);
       } else {
         await db.prepare(
-          'UPDATE users SET username=?, full_name=?, phone=?, email=?, updated_at=NOW() WHERE id=?'
+          'UPDATE users SET username=?, full_name=?, phone=?, email=?, updated_at=datetime(\'now\') WHERE id=?'
         ).run(username, full_name.trim(), phone.trim(), email.trim(), req.user.id);
       }
 
@@ -125,7 +125,7 @@ router.post('/change-password', authenticate,
         return res.status(401).json({ error: 'Current password incorrect' });
 
       // FIX: stamp password_changed_at — invalidates all existing JWT sessions
-      await db.prepare('UPDATE users SET password=?, password_changed_at=NOW(), updated_at=NOW() WHERE id=?')
+      await db.prepare('UPDATE users SET password=?, password_changed_at=datetime(\'now\'), updated_at=datetime(\'now\') WHERE id=?')
         .run(bcrypt.hashSync(req.body.new_password, 12), req.user.id);
       await writeAudit(db, { userId: req.user.id, action: 'PASSWORD_CHANGED', ip: req.ip });
       res.json({ message: 'Password changed successfully. Please log in again with your new password.' });
@@ -177,12 +177,12 @@ router.post('/security-questions/set',
       const a3h = bcrypt.hashSync(a3.trim().toLowerCase(), 10);
       await db.prepare(`
         INSERT INTO security_questions(user_id,q1,a1_hash,q2,a2_hash,q3,a3_hash,updated_at)
-        VALUES(?,?,?,?,?,?,?,NOW())
+        VALUES(?,?,?,?,?,?,?,datetime('now'))
         ON CONFLICT(user_id) DO UPDATE
           SET q1=EXCLUDED.q1, a1_hash=EXCLUDED.a1_hash,
               q2=EXCLUDED.q2, a2_hash=EXCLUDED.a2_hash,
               q3=EXCLUDED.q3, a3_hash=EXCLUDED.a3_hash,
-              updated_at=NOW()
+              updated_at=datetime('now')
       `).run(req.user.id, q1.trim(), a1h, q2.trim(), a2h, q3.trim(), a3h);
       await writeAudit(db, { userId: req.user.id, action: 'SET_SECURITY_QUESTIONS', table: 'security_questions', ip: req.ip });
       res.json({ message: 'Security questions saved successfully.' });
@@ -305,20 +305,13 @@ router.post('/forgot-password/reset',
 
       const newHash = bcrypt.hashSync(req.body.new_password, 12);
 
-      // FIX: single atomic CTE — no broken BEGIN/COMMIT needed
-      await db.prepare(`
-        WITH mark_used AS (
-          UPDATE password_reset_tokens
-          SET used = 1
-          WHERE id = ? AND used = 0
-          RETURNING user_id
-        )
-        UPDATE users
-        SET password = ?,
-            password_changed_at = NOW(),
-            updated_at = NOW()
-        WHERE id = (SELECT user_id FROM mark_used)
-      `).run(row.id, newHash);
+      // SQLite-compatible: two statements (no RETURNING support in SQLite)
+      await db.prepare(
+        'UPDATE password_reset_tokens SET used=1 WHERE id=? AND used=0'
+      ).run(row.id);
+      await db.prepare(
+        "UPDATE users SET password=?, password_changed_at=datetime('now'), updated_at=datetime('now') WHERE id=?"
+      ).run(newHash, row.user_id);
 
       await writeAudit(db, { userId: row.user_id, action: 'PASSWORD_RESET_COMPLETED', ip: req.ip });
       res.json({ message: 'Password reset successfully. You can now log in.' });

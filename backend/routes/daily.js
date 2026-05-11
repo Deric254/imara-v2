@@ -93,6 +93,21 @@ router.get('/status', authenticate, async (req, res) => {
   }
 });
 
+/* POST /api/daily/dismiss-warning — logs audit when operator/knuckler dismisses the missing-data reminder */
+router.post('/dismiss-warning', authenticate, async (req, res) => {
+  try {
+    const db = getDb();
+    await writeAudit(db, {
+      userId: req.user.id,
+      action: 'DISMISSED_MISSING_DATA_REMINDER',
+      ip: req.ip
+    });
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 router.get('/production-cost-inputs', authenticate, async (req, res) => {
   try {
     const db = getDb();
