@@ -132,11 +132,11 @@ router.get('/purchases', authenticate, async (req, res) => {
   try {
     const db = getDb();
     const { date, from, to } = req.query;
-    // FIX: ROUND(float, 2) requires ::numeric cast in PostgreSQL
+    // FIX: ROUND(float, 2) requires  cast in PostgreSQL
     let sql = `SELECT p.*, s.name AS supplier_name, u.full_name AS entered_by_name,
-                 ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost)::numeric, 2) AS total_cost,
+                 ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2) AS total_cost,
                  CASE WHEN p.kgs_bought>0
-                   THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought)::numeric,2)
+                   THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
                    ELSE 0 END AS landed_cost_per_kg
                FROM purchases p
                JOIN suppliers s ON p.supplier_id=s.id
@@ -182,9 +182,9 @@ router.post('/purchases', authenticate, blockProductionStaff,
 
       const row = await db.prepare(`
         SELECT p.*, s.name AS supplier_name, u.full_name AS entered_by_name,
-          ROUND((p.kgs_bought*p.cost_per_kg+p.transport_cost)::numeric,2) AS total_cost,
+          ROUND((p.kgs_bought*p.cost_per_kg+p.transport_cost),2) AS total_cost,
           CASE WHEN p.kgs_bought>0
-            THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought)::numeric,2)
+            THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
             ELSE 0 END AS landed_cost_per_kg
         FROM purchases p
         JOIN suppliers s ON p.supplier_id=s.id
@@ -267,13 +267,13 @@ router.get('/production', authenticate, async (req, res) => {
   try {
     const db = getDb();
     const { date, from, to } = req.query;
-    // FIX: ::numeric cast on all ROUND calls
+    // FIX:  cast on all ROUND calls
     let sql = `SELECT pr.*,
                  u.full_name AS entered_by_name,
                  op.full_name AS operator_name,
                  kn.full_name AS knuckler_name,
-                 ROUND((pr.operator_cost+pr.knuckler_cost)::numeric,2) AS total_labour,
-                 ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation)::numeric,2) AS total_overhead
+                 ROUND((pr.operator_cost+pr.knuckler_cost),2) AS total_labour,
+                 ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
                FROM production pr
                JOIN users u ON pr.entered_by=u.id
                LEFT JOIN users op ON pr.operator_id=op.id
@@ -424,7 +424,7 @@ router.post('/production', authenticate, blockProductionStaff,
 
       const record = await db.prepare(`
         SELECT pr.*, u.full_name AS entered_by_name,
-          ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation)::numeric,2) AS total_overhead
+          ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
         FROM production pr JOIN users u ON pr.entered_by=u.id WHERE pr.id=?`).get(pid);
       const outItems = await db.prepare(
         `SELECT pi.*, pt.name AS piece_name FROM production_items pi
@@ -534,13 +534,13 @@ router.get('/sales', authenticate, async (req, res) => {
   try {
     const db = getDb();
     const { date, from, to } = req.query;
-    // FIX: ::numeric cast on all ROUND calls
+    // FIX:  cast on all ROUND calls
     let sql = `SELECT s.*,
                  pt.name AS piece_name, pt.length_m, pt.weight_kg,
                  u.full_name AS entered_by_name,
-                 ROUND((s.quantity * s.selling_price)::numeric, 2) AS revenue,
-                 ROUND((s.quantity * pt.weight_kg)::numeric, 2) AS kgs_sold,
-                 ROUND((s.quantity * pt.length_m)::numeric, 2) AS meters_sold
+                 ROUND((s.quantity * s.selling_price), 2) AS revenue,
+                 ROUND((s.quantity * pt.weight_kg), 2) AS kgs_sold,
+                 ROUND((s.quantity * pt.length_m), 2) AS meters_sold
                FROM sales s
                JOIN piece_types pt ON s.piece_type_id=pt.id
                JOIN users u ON s.entered_by=u.id`;
@@ -850,9 +850,9 @@ router.post('/sales', authenticate, blockProductionStaff,
       const row = await db.prepare(`
         SELECT s.*, pt.name AS piece_name, pt.length_m, pt.weight_kg,
           u.full_name AS entered_by_name,
-          ROUND((s.quantity*s.selling_price)::numeric,2) AS revenue,
-          ROUND((s.quantity*pt.weight_kg)::numeric,2) AS kgs_sold,
-          ROUND((s.quantity*pt.length_m)::numeric,2) AS meters_sold
+          ROUND((s.quantity*s.selling_price),2) AS revenue,
+          ROUND((s.quantity*pt.weight_kg),2) AS kgs_sold,
+          ROUND((s.quantity*pt.length_m),2) AS meters_sold
         FROM sales s
         JOIN piece_types pt ON s.piece_type_id=pt.id
         JOIN users u ON s.entered_by=u.id
@@ -1036,9 +1036,9 @@ router.get('/gauge-kpi', authenticate, async (req, res) => {
     // Wire purchased per gauge
     const purchased = await db.prepare(`
       SELECT gauge,
-             ROUND(SUM(kgs_bought)::numeric,2)                        AS kgs_bought,
-             ROUND(SUM(kgs_bought * cost_per_kg)::numeric,2)          AS wire_cost,
-             ROUND(SUM(transport_cost)::numeric,2)                    AS transport_cost,
+             ROUND(SUM(kgs_bought),2)                        AS kgs_bought,
+             ROUND(SUM(kgs_bought * cost_per_kg),2)          AS wire_cost,
+             ROUND(SUM(transport_cost),2)                    AS transport_cost,
              COUNT(*)                                                   AS purchase_count
       FROM purchases
       WHERE entry_date BETWEEN ? AND ? AND gauge != ''
@@ -1048,7 +1048,7 @@ router.get('/gauge-kpi', authenticate, async (req, res) => {
     // Wire used in production per gauge
     const produced = await db.prepare(`
       SELECT pr.gauge,
-             ROUND(SUM(pr.kgs_used)::numeric,2)                       AS kgs_used,
+             ROUND(SUM(pr.kgs_used),2)                       AS kgs_used,
              COALESCE(SUM(pi.pieces_produced),0)                       AS pieces_produced,
              COUNT(DISTINCT pr.id)                                      AS run_count
       FROM production pr
@@ -1061,8 +1061,8 @@ router.get('/gauge-kpi', authenticate, async (req, res) => {
     const sold = await db.prepare(`
       SELECT gauge_source                                               AS gauge,
              SUM(quantity)                                             AS pieces_sold,
-             ROUND(SUM(quantity * selling_price)::numeric,2)           AS revenue,
-             ROUND(AVG(selling_price)::numeric,2)                      AS avg_price,
+             ROUND(SUM(quantity * selling_price),2)           AS revenue,
+             ROUND(AVG(selling_price),2)                      AS avg_price,
              COUNT(DISTINCT buyer_name)                                 AS unique_customers,
              COUNT(*)                                                   AS sale_count
       FROM sales

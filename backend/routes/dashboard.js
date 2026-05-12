@@ -102,7 +102,7 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
                    COALESCE(SUM(p.amount), 0) AS paid
             FROM rent_months rm
             LEFT JOIN payments p ON p.category = 'rent'
-              AND (p.rent_month = rm.month OR (p.rent_month IS NULL AND LEFT(p.payment_date, 7) = rm.month))
+              AND (p.rent_month = rm.month OR (p.rent_month IS NULL AND SUBSTR(p.payment_date, 1, 7) = rm.month))
             GROUP BY rm.id, rm.amount_due
           `).all();
           const rentOut = Math.max(0, rentRows.reduce((s, r) => s + Math.max(0, r.amount_due - r.paid), 0));

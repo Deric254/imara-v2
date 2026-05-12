@@ -484,7 +484,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
 
     // FIX: cash-basis — only revenue actually received in this period
     const best = await db.prepare(`
-      SELECT pt.name, ROUND(COALESCE(SUM(ip_agg.amount),0)::numeric,2) AS revenue
+      SELECT pt.name, ROUND(COALESCE(SUM(ip_agg.amount),0),2) AS revenue
       FROM (
         SELECT invoice_id, SUM(amount) AS amount
         FROM invoice_payments ip_inner
@@ -509,7 +509,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
         COALESCE(NULLIF(i.customer_name,''), 'Anonymous') AS customer_name,
         COUNT(DISTINCT i.id)                               AS transaction_count,
         COALESCE(SUM(ii_qty.qty), 0)                       AS total_pieces,
-        ROUND(COALESCE(SUM(ip.amount),0)::numeric, 2)      AS total_revenue
+        ROUND(COALESCE(SUM(ip.amount),0), 2)      AS total_revenue
       FROM (
         SELECT invoice_id, SUM(amount) AS amount
         FROM invoice_payments ip_inner
@@ -541,7 +541,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
         CAST(SUM(ii.quantity) AS INTEGER)         AS total_pieces,
         ROUND(SUM(
           ip.amount * (ii.line_total / NULLIF(i.subtotal, 0))
-        )::numeric, 2)                            AS total_revenue
+        ), 2)                            AS total_revenue
       FROM (
         SELECT invoice_id, SUM(amount) AS amount
         FROM invoice_payments ip_inner
@@ -654,22 +654,22 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
     // 3 bulk queries in parallel — one per data series
     const [revRows, kgPRows, kgBRows] = await Promise.all([
       db.prepare(`
-        SELECT LEFT(ip.payment_date, 10) AS d, COALESCE(SUM(ip.amount),0) AS v
+        SELECT SUBSTR(ip.payment_date, 1, 10) AS d, COALESCE(SUM(ip.amount),0) AS v
         FROM invoice_payments ip
         JOIN invoices i ON ip.invoice_id = i.id
-        WHERE LEFT(ip.payment_date,10) BETWEEN ? AND ?
+        WHERE SUBSTR(ip.payment_date, 1, 10) BETWEEN ? AND ?
           AND i.status != 'cancelled'
-        GROUP BY LEFT(ip.payment_date, 10)
+        GROUP BY SUBSTR(ip.payment_date, 1, 10)
       `).all(fromDate, toDate),
       db.prepare(`
-        SELECT LEFT(entry_date, 10) AS d, COALESCE(SUM(kgs_used),0) AS v
-        FROM production WHERE LEFT(entry_date,10) BETWEEN ? AND ?
-        GROUP BY LEFT(entry_date, 10)
+        SELECT SUBSTR(entry_date, 1, 10) AS d, COALESCE(SUM(kgs_used),0) AS v
+        FROM production WHERE SUBSTR(entry_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY SUBSTR(entry_date, 1, 10)
       `).all(fromDate, toDate),
       db.prepare(`
-        SELECT LEFT(entry_date, 10) AS d, COALESCE(SUM(kgs_bought),0) AS v
-        FROM purchases WHERE LEFT(entry_date,10) BETWEEN ? AND ?
-        GROUP BY LEFT(entry_date, 10)
+        SELECT SUBSTR(entry_date, 1, 10) AS d, COALESCE(SUM(kgs_bought),0) AS v
+        FROM purchases WHERE SUBSTR(entry_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY SUBSTR(entry_date, 1, 10)
       `).all(fromDate, toDate),
     ]);
 
@@ -1239,8 +1239,8 @@ router.get('/sales-by-piece', authenticate, requireRole('owner','admin'), async 
         CAST(SUM(ii.quantity) AS INTEGER)                                  AS total_pieces,
         ROUND(SUM(
           ip_agg.paid_in_period * (ii.line_total / NULLIF(i.subtotal, 0))
-        )::numeric, 2)                                                     AS total_revenue,
-        ROUND(AVG(ii.unit_price)::numeric, 2)                              AS avg_price
+        ), 2)                                                     AS total_revenue,
+        ROUND(AVG(ii.unit_price), 2)                              AS avg_price
       FROM (
         SELECT invoice_id, SUM(amount) AS paid_in_period
         FROM invoice_payments ip_inner
@@ -1469,11 +1469,11 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
     const purchases = await db.prepare(`
       SELECT p.id, p.entry_date, p.supplier_id, s.name AS supplier, p.gauge,
              p.kgs_bought, p.cost_per_kg,
-             ROUND((p.kgs_bought * p.cost_per_kg)::numeric, 2)                   AS wire_cost,
+             ROUND((p.kgs_bought * p.cost_per_kg), 2)                   AS wire_cost,
              p.transport_cost,
-             ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost)::numeric, 2) AS total_cost,
+             ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2) AS total_cost,
              ROUND(((p.kgs_bought * p.cost_per_kg + p.transport_cost)
-                    / NULLIF(p.kgs_bought, 0))::numeric, 2)                        AS landed_per_kg,
+                    / NULLIF(p.kgs_bought, 0)), 2)                        AS landed_per_kg,
              u.full_name AS entered_by, p.created_at
       FROM purchases p
       JOIN suppliers s ON p.supplier_id = s.id
@@ -1484,7 +1484,7 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
 
     // Fetch all-time supplier payments (needed to compute true running balance)
     const allPayments = await db.prepare(`
-      SELECT payee_supplier_id, ROUND(SUM(amount)::numeric, 2) AS total_paid
+      SELECT payee_supplier_id, ROUND(SUM(amount), 2) AS total_paid
       FROM payments
       WHERE category = 'supplier'
       GROUP BY payee_supplier_id
@@ -1495,7 +1495,7 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
     // Also fetch all-time purchases per supplier to compute correct FIFO allocation
     const allPurchases = await db.prepare(`
       SELECT id, supplier_id, entry_date,
-             ROUND((kgs_bought * cost_per_kg + transport_cost)::numeric, 2) AS total_cost
+             ROUND((kgs_bought * cost_per_kg + transport_cost), 2) AS total_cost
       FROM purchases
       ORDER BY entry_date ASC, id ASC
     `).all();
@@ -1748,8 +1748,8 @@ router.get('/export/invoices', authenticate, requireRole('owner','admin'), async
                ELSE i.status
              END                                                        AS payment_status,
              i.subtotal, i.discount_amount, i.tax_amount, i.total_amount,
-             ROUND(i.amount_paid::numeric, 2)                          AS amount_paid,
-             ROUND((i.total_amount - i.amount_paid)::numeric, 2)       AS balance,
+             ROUND(i.amount_paid, 2)                          AS amount_paid,
+             ROUND((i.total_amount - i.amount_paid), 2)       AS balance,
              u.full_name AS created_by, i.notes
       FROM invoices i JOIN users u ON i.created_by = u.id
       WHERE i.invoice_date BETWEEN ? AND ?

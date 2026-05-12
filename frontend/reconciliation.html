@@ -511,10 +511,14 @@ function renderGrandBanner() {
   el.className = 'grand-value ' + (grand <= 0 ? 'ok' : grand > 100000 ? 'bad' : 'warn');
   const periodEl = document.getElementById('grandPeriodValue');
   if (periodEl) periodEl.textContent = 'KES ' + fmt(period, 2);
-  document.getElementById('gWages').textContent    = 'KES ' + fmt(s.wages.balance, 2);
-  document.getElementById('gSupplier').textContent = 'KES ' + fmt(s.suppliers.balance, 2);
-  document.getElementById('gRent').textContent     = 'KES ' + fmt(s.rent.balance, 2);
-  document.getElementById('gSack').textContent     = 'KES ' + fmt(s.sack.balance, 2);
+  // Clamp period balances to 0 for the "outstanding" banner — a negative value
+  // means the period filter captured more payments than accruals (e.g. you paid
+  // March wages in April and filtered for April), which is valid data but should
+  // never display as a negative outstanding amount in this summary strip.
+  document.getElementById('gWages').textContent    = 'KES ' + fmt(Math.max(0, s.wages.balance), 2);
+  document.getElementById('gSupplier').textContent = 'KES ' + fmt(Math.max(0, s.suppliers.balance), 2);
+  document.getElementById('gRent').textContent     = 'KES ' + fmt(Math.max(0, s.rent.balance), 2);
+  document.getElementById('gSack').textContent     = 'KES ' + fmt(Math.max(0, s.sack.balance), 2);
 }
 
 function renderWages() {
@@ -523,7 +527,7 @@ function renderWages() {
   let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
     <div class="kpi"><div class="kpi-label">Accrued</div><div class="kpi-value mono">${fmt(w.total_accrued,2)}</div><div class="kpi-sub">KES earned</div></div>
     <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(w.total_paid,2)}</div><div class="kpi-sub">KES settled</div></div>
-    <div class="kpi ${w.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(w.balance,2)}</div><div class="kpi-sub">KES owed</div></div>
+    <div class="kpi ${w.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,w.balance),2)}</div><div class="kpi-sub">KES owed</div></div>
   </div>`;
   for (const wk of w.workers) {
     const ta = wk.accrued_operator + wk.accrued_knuckler;
@@ -538,7 +542,7 @@ function renderWages() {
           ${wk.accrued_knuckler>0?`Kn: KES ${fmt(wk.accrued_knuckler,2)} accrued / KES ${fmt(wk.paid_knuckler,2)} paid`:''}
         </div></div>
       <div class="liability-amounts">
-        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${bal>0?'red':'green'}">KES ${fmt(bal,2)}</div></div>
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${bal>0?'red':'green'}">KES ${fmt(Math.max(0,bal),2)}</div></div>
         ${bal>0?`<div style="display:flex;flex-direction:column;gap:.3rem">
           ${wk.accrued_operator>0&&wk.balance_operator>0?`<button class="settle-btn" onclick="openPayModal('wages_operator',${wk.user_id},null,null,${wk.balance_operator})">Pay Op</button>`:''}
           ${wk.accrued_knuckler>0&&wk.balance_knuckler>0?`<button class="settle-btn" onclick="openPayModal('wages_knuckler',${wk.user_id},null,null,${wk.balance_knuckler})">Pay Kn</button>`:''}
@@ -555,7 +559,7 @@ function renderSuppliers() {
   let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
     <div class="kpi"><div class="kpi-label">Total Billed</div><div class="kpi-value mono">${fmt(s.total_billed,2)}</div></div>
     <div class="kpi"><div class="kpi-label">Total Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(s.total_paid,2)}</div></div>
-    <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(s.balance,2)}</div></div>
+    <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,s.balance),2)}</div></div>
   </div>`;
   for (const sup of s.breakdown) {
     const cls = sup.balance<=0?'settled':sup.balance<sup.total_billed?'partial':'overdue';
@@ -563,7 +567,7 @@ function renderSuppliers() {
       <div><div class="liability-name">${escHtml(sup.supplier_name)}</div>
         <div class="liability-meta">Billed: KES ${fmt(sup.total_billed,2)} &middot; Paid: KES ${fmt(sup.total_paid,2)}</div></div>
       <div class="liability-amounts">
-        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${sup.balance>0?'red':'green'}">KES ${fmt(sup.balance,2)}</div></div>
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${sup.balance>0?'red':'green'}">KES ${fmt(Math.max(0,sup.balance),2)}</div></div>
         ${sup.balance>0?`<button class="settle-btn" onclick="openPayModal('supplier',null,${sup.supplier_id},null,${sup.balance})">Pay</button>`:`<span class="badge badge-green">✓ Settled</span>`}
       </div>
     </div></div>`;
@@ -576,7 +580,7 @@ function renderRent() {
   let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
     <div class="kpi"><div class="kpi-label">Total Due</div><div class="kpi-value mono">${fmt(r.total_accrued,2)}</div></div>
     <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(r.total_paid,2)}</div></div>
-    <div class="kpi ${r.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(r.balance,2)}</div></div>
+    <div class="kpi ${r.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,r.balance),2)}</div></div>
   </div>`;
   if (!r.months.length) {
     html += `<div class="card" style="color:var(--muted);text-align:center;padding:2rem">No rent months. Click Add Month.</div>`;
@@ -624,12 +628,12 @@ function renderSack() {
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
       <div class="kpi"><div class="kpi-label">Accrued</div><div class="kpi-value mono">${fmt(s.accrued,2)}</div></div>
       <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(s.paid,2)}</div></div>
-      <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(s.balance,2)}</div></div>
+      <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,s.balance),2)}</div></div>
     </div>
     <div class="liability-card ${s.balance<=0?'settled':'overdue'}"><div class="liability-row">
       <div><div class="liability-name">Sack Costs</div><div class="liability-meta">From all production runs</div></div>
       <div class="liability-amounts">
-        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${s.balance>0?'red':'green'}">KES ${fmt(s.balance,2)}</div></div>
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${s.balance>0?'red':'green'}">KES ${fmt(Math.max(0,s.balance),2)}</div></div>
         ${s.balance>0?`<button class="settle-btn" onclick="openPayModal('sack',null,null,null,${s.balance})">Record Payment</button>`:`<span class="badge badge-green">✓ Settled</span>`}
       </div>
     </div></div>`;
@@ -711,10 +715,10 @@ async function loadReconStatement() {
         <hr class="inv-divider">
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-bottom:1.5rem">
           <div class="kpi"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${cur} ${fmt(summary.grand_total_outstanding,2)}</div></div>
-          <div class="kpi"><div class="kpi-label">Wages Due</div><div class="kpi-value mono">${cur} ${fmt(summary.wages.balance,2)}</div></div>
-          <div class="kpi"><div class="kpi-label">Suppliers Due</div><div class="kpi-value mono">${cur} ${fmt(summary.suppliers.balance,2)}</div></div>
-          <div class="kpi"><div class="kpi-label">Rent Due</div><div class="kpi-value mono">${cur} ${fmt(summary.rent.balance,2)}</div></div>
-          <div class="kpi"><div class="kpi-label">Sack Due</div><div class="kpi-value mono">${cur} ${fmt(summary.sack.balance,2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Wages Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.wages.balance),2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Suppliers Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.suppliers.balance),2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Rent Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.rent.balance),2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Sack Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.sack.balance),2)}</div></div>
         </div>
         <div class="inv-notes-block" style="margin-bottom:1rem">
           <label>Summary</label>
@@ -723,10 +727,10 @@ async function loadReconStatement() {
         <table class="inv-items-table" style="margin-bottom:1.25rem">
           <thead><tr><th>Category</th><th style="text-align:right">Accrued / Billed</th><th style="text-align:right">Paid</th><th style="text-align:right">Balance</th></tr></thead>
           <tbody>
-            <tr><td>Wages</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.wages.total_accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.wages.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(summary.wages.balance,2)}</td></tr>
-            <tr><td>Suppliers</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_billed,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(summary.suppliers.balance,2)}</td></tr>
-            <tr><td>Rent</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(summary.rent.balance,2)}</td></tr>
-            <tr><td>Sack Costs</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(summary.sack.balance,2)}</td></tr>
+            <tr><td>Wages</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.wages.total_accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.wages.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.wages.balance),2)}</td></tr>
+            <tr><td>Suppliers</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_billed,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.suppliers.balance),2)}</td></tr>
+            <tr><td>Rent</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.rent.balance),2)}</td></tr>
+            <tr><td>Sack Costs</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.sack.balance),2)}</td></tr>
           </tbody>
         </table>
         <div class="inv-party-label">Payments In Period</div>

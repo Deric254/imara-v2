@@ -129,8 +129,8 @@ router.get('/summary/stats', ...OWNER_ADMIN, async (req, res) => {
     const topCustomers = await db.prepare(`
       SELECT customer_name,
              COUNT(*) AS invoice_count,
-             ROUND(SUM(total_amount)::numeric,2) AS total_billed,
-             ROUND(SUM(amount_paid)::numeric,2)  AS total_paid
+             ROUND(SUM(total_amount),2) AS total_billed,
+             ROUND(SUM(amount_paid),2)  AS total_paid
       FROM invoices
       WHERE invoice_date BETWEEN ? AND ? AND status != 'cancelled'
       GROUP BY customer_name ORDER BY total_billed DESC LIMIT 10
