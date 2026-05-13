@@ -1083,6 +1083,12 @@ function recalcInvTotals() {
   if (s) s.textContent = `KES ${fmt(subtotal,2)}`;
   if (d) d.textContent = `- KES ${fmt(disc,2)}`;
   if (t) t.textContent = `KES ${fmt(total,2)}`;
+  // Keep amount_paid capped at invoice total to prevent overpayment
+  const paidEl = document.getElementById('inv_paid');
+  if (paidEl) {
+    paidEl.max = total;
+    if (parseFloat(paidEl.value) > total) paidEl.value = total.toFixed(2);
+  }
 }
 
 function getInvItems() {

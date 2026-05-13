@@ -297,6 +297,21 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       }
     }
 
+    // SAFEGUARD: prevent sack overpayment beyond total accrued sack cost
+    if (category === 'sack') {
+      const sackAccrued    = await db.prepare(`SELECT COALESCE(SUM(sack_cost), 0) AS total FROM production`).get();
+      const sackAlreadyPaid = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = 'sack'`).get();
+      const totalAccrued   = parseFloat(sackAccrued.total)     || 0;
+      const totalPaid      = parseFloat(sackAlreadyPaid.total) || 0;
+      const remaining      = parseFloat((totalAccrued - totalPaid).toFixed(2));
+      const paying         = parseFloat(amount);
+      if (paying > remaining + 0.005) {
+        return res.status(400).json({
+          error: `Overpayment not allowed. Outstanding sack balance is ${remaining.toFixed(2)}. You are trying to pay ${paying.toFixed(2)}.`
+        });
+      }
+    }
+
     // FIX: RETURNING id, store rent_month on payment
     const result = await db.prepare(`
       INSERT INTO payments(payment_date,category,payee_user_id,payee_supplier_id,payee_name,amount,notes,recorded_by,rent_month)

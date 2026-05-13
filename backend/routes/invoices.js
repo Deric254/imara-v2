@@ -215,7 +215,12 @@ router.post('/', ...OWNER_ADMIN,
 
       const taxPct = parseFloat((await db.prepare("SELECT value FROM config WHERE key='invoice_tax_pct'").get())?.value || 0);
       const totals = computeTotals(items, discount_pct, taxPct);
-      
+
+      // SAFEGUARD: amount_paid can never exceed the invoice total
+      if (num(amount_paid) > totals.total_amount + 0.005) {
+        return res.status(400).json({ error: `Overpayment not allowed. Amount paid (${num(amount_paid).toFixed(2)}) cannot exceed invoice total (${totals.total_amount.toFixed(2)}).` });
+      }
+
       // Status is auto-calculated: if amount_paid >= total_amount → "paid", else "partial_payment"
       const autoStatus = calculateInvoiceStatus(amount_paid, totals.total_amount, null);
 
@@ -313,6 +318,21 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     if (items && !items.length) return res.status(400).json({ error: 'At least one item required' });
 
     const taxPct = parseFloat((await db.prepare("SELECT value FROM config WHERE key='invoice_tax_pct'").get())?.value || 0);
+
+    // SAFEGUARD: validate before entering transaction — amount_paid must not exceed new total
+    if (items) {
+      const preCheckTotals = computeTotals(items, discount_pct, taxPct);
+      const preCheckPaid   = amount_paid != null ? num(amount_paid) : num(old.amount_paid);
+      if (preCheckPaid > preCheckTotals.total_amount + 0.005) {
+        return res.status(400).json({ error: `Overpayment not allowed. Amount paid (${preCheckPaid.toFixed(2)}) would exceed the new invoice total (${preCheckTotals.total_amount.toFixed(2)}). Reduce amount_paid first.` });
+      }
+    } else {
+      // Status-only / payment-only path
+      const preCheckPaid = amount_paid != null ? num(amount_paid) : num(old.amount_paid);
+      if (preCheckPaid > num(old.total_amount) + 0.005) {
+        return res.status(400).json({ error: `Overpayment not allowed. Amount paid (${preCheckPaid.toFixed(2)}) cannot exceed invoice total (${num(old.total_amount).toFixed(2)}).` });
+      }
+    }
 
     await db.transaction(async () => {
       if (items) {
