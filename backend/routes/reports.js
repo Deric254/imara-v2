@@ -1525,7 +1525,7 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
     );
     const headers = [
       'Date','Supplier','Gauge','Kgs Bought','Cost/kg','Wire Cost','Transport',
-      'Total Cost','Landed/kg','Amount Paid (FIFO)','Balance','Payment Status',
+      'Total Cost','Landed/kg','Amount Paid','Balance','Payment Status',
       'Entered By','Created At'
     ];
     sendCsv(res, `imara_purchases_${from}_to_${to}.csv`, headers,
