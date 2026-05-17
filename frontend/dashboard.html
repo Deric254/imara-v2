@@ -6,6 +6,8 @@
 <link rel="stylesheet" href="shared.css">
 <script src="chart.umd.min.js"></script>
 <script src="chartjs-plugin-datalabels.min.js"></script>
+<script src="hammer.min.js"></script>
+<script src="chartjs-plugin-zoom.min.js"></script>
 <style>
 /* ── Period bar ─────────────────────────────────────────────── */
 .period-bar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}
@@ -214,7 +216,7 @@ const pg = renderLayout('dashboard.html');
 /* ═══════════════════════════════════════════════════════════════
    CHART HELPERS
 ═══════════════════════════════════════════════════════════════ */
-Chart.register(ChartDataLabels);
+Chart.register(ChartDataLabels, ChartZoom);
 const chartRegistry = new Map();
 
 /* ── Loading helpers ─────────────────────────────────────────── */
@@ -383,11 +385,7 @@ function setChartViewport(canvasId, { xPoints=0, yPoints=0, circularItems=0 } = 
       : Math.floor(window.innerWidth * 0.45);
   }
 
-  // Smart px-per-point: compress for large datasets so scrolling is comfortable
-  let pxPerPoint = 72;
-  if (xPoints > 60)  pxPerPoint = 40;  // several months
-  if (xPoints > 180) pxPerPoint = 24;  // a year+
-  const targetWidth = xPoints > 0 ? Math.max(viewportWidth, xPoints * pxPerPoint) : viewportWidth;
+  // Width is fixed to the container — zoom/pan handles X-axis navigation
   let targetHeight = baseHeight;
 
   if (yPoints > 0) targetHeight = Math.max(baseHeight, yPoints * 42);
@@ -466,6 +464,15 @@ function cartesianOpts(extra={}, dataPoints=0) {
       legend: { display: false },
       datalabels: { display: false },
       tooltip: { ...BASE_TOOLTIP },
+      zoom: {
+        pan: { enabled: true, mode: 'x', modifierKey: null },
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          mode: 'x'
+        },
+        limits: { x: { min: 'original', max: 'original' } }
+      },
       ...(extraPlugins || {}),
     },
     scales: { x: smartX, ...BASE_SCALES, ...(extraScales || {}) },
@@ -960,7 +967,7 @@ async function loadDash(){
     /* Top Customers — horizontal bar */
     destroyChart('bestCustomersChart');
     const custData=d.analytics?.best_customers || [];
-    setChartViewport('bestCustomersChart', { yPoints: custData.length });
+    setChartViewport('bestCustomersChart');
     chartRegistry.set('bestCustomersChart', new Chart(document.getElementById('bestCustomersChart'),{
       type:'bar',
       data:{
@@ -975,7 +982,12 @@ async function loadDash(){
           tooltip:{ callbacks:{ label: ctx=>{
             const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + numVal(item), 0);
             return [`Revenue: ${smartKES(ctx.parsed.x)}`,`Share: ${((ctx.parsed.x/tot)*100).toFixed(1)}%`];
-          }}}
+          }}},
+          zoom: {
+            pan:  { enabled: true, mode: 'y', modifierKey: null },
+            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'y' },
+            limits: { y: { min: 'original', max: 'original' } }
+          }
         },
         scales:{
           x:{...BASE_SCALES.x, grid:{color:'#f1f5f9',borderDash:[2,2]}, ticks:{...BASE_SCALES.x.ticks, callback:v=>smartVal(v)}},
