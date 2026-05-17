@@ -879,6 +879,47 @@ const ALLOWED_KEYS = [
   'invoice_prefix','invoice_tax_pct',   // used by invoices.js for number generation & tax
 ];
 
+// ── GET /api/db-stats — DB file size and table record counts for system health ──
+router.get('/db-stats', authenticate, requireRole('owner','admin'), async (_req, res) => {
+  try {
+    const db = getDb();
+    const fs = require('fs');
+    const path = require('path');
+    const dbPath = process.env.SQLITE_PATH || path.join(__dirname, '../db/imara.db');
+    let fileSizeBytes = 0;
+    try { fileSizeBytes = fs.statSync(dbPath).size; } catch(e) {}
+
+    const tables = ['audit_log','password_reset_tokens','notifications',
+                    'daily_purchases','daily_production','daily_sales',
+                    'invoices','reconciliation_payments','users'];
+    const counts = {};
+    for (const t of tables) {
+      try {
+        const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get();
+        counts[t] = row?.n ?? 0;
+      } catch(e) { counts[t] = null; }
+    }
+
+    // Oldest business record
+    let oldestRecord = null;
+    try {
+      const r = await db.prepare(
+        `SELECT MIN(entry_date) AS oldest FROM (
+           SELECT entry_date FROM daily_purchases
+           UNION ALL SELECT entry_date FROM daily_production
+           UNION ALL SELECT entry_date FROM daily_sales
+         )`
+      ).get();
+      oldestRecord = r?.oldest || null;
+    } catch(e) {}
+
+    res.json({ file_size_bytes: fileSizeBytes, counts, oldest_record: oldestRecord });
+  } catch(e) {
+    console.error('db-stats error:', e);
+    res.status(500).json({ error: 'Failed to load DB stats' });
+  }
+});
+
 router.get('/config', authenticate, async (_req, res) => {
   try {
     const db   = getDb();

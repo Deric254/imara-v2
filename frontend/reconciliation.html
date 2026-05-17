@@ -166,11 +166,11 @@ async function init() {
 
 <!-- Tabs -->
 <div class="recon-tabs">
-  <button class="recon-tab active" onclick="switchTab('wages',this)">💰 Wages</button>
-  <button class="recon-tab" onclick="switchTab('suppliers',this)">📦 Suppliers</button>
-  <button class="recon-tab" onclick="switchTab('rent',this)">🏠 Rent</button>
-  <button class="recon-tab" onclick="switchTab('sack',this)">🛍 Sack</button>
-  <button class="recon-tab" onclick="switchTab('history',this)">📋 History</button>
+  <button class="recon-tab active" onclick="switchTab('wages',this)">Wages</button>
+  <button class="recon-tab" onclick="switchTab('suppliers',this)">Suppliers</button>
+  <button class="recon-tab" onclick="switchTab('rent',this)">Rent</button>
+  <button class="recon-tab" onclick="switchTab('sack',this)">Sack</button>
+  <button class="recon-tab" onclick="switchTab('history',this)">History</button>
 </div>
 
 <!-- WAGES -->
@@ -223,9 +223,9 @@ async function init() {
   </div>
   <div class="table-wrap">
     <table><thead><tr>
-      <th>Date</th><th>Category</th><th>Payee</th><th>Amount</th><th>Notes</th><th>By</th><th></th>
+      <th>Date</th><th>Category</th><th>Payee</th><th>Amount</th><th>Running Total</th><th>Notes</th><th>By</th><th></th>
     </tr></thead>
-    <tbody id="historyTable"><tr class="loading-row"><td colspan="7"><div class="spinner"></div></td></tr></tbody>
+    <tbody id="historyTable"><tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr></tbody>
     </table>
   </div>
 </div>
@@ -510,7 +510,16 @@ function renderGrandBanner() {
   el.textContent = 'KES ' + fmt(grand, 2);
   el.className = 'grand-value ' + (grand <= 0 ? 'ok' : grand > 100000 ? 'bad' : 'warn');
   const periodEl = document.getElementById('grandPeriodValue');
-  if (periodEl) periodEl.textContent = 'KES ' + fmt(period, 2);
+  if (periodEl) {
+    if (period < 0) {
+      // Negative means more was paid this period than was accrued — settling old debts
+      periodEl.textContent = 'KES ' + fmt(Math.abs(period), 2) + ' net paid out (more paid than accrued — clearing older debts)';
+      periodEl.style.color = '#86efac'; // light green — this is a good thing
+    } else {
+      periodEl.textContent = 'KES ' + fmt(period, 2) + ' net owed this period';
+      periodEl.style.color = '';
+    }
+  }
   // Clamp period balances to 0 for the "outstanding" banner — a negative value
   // means the period filter captured more payments than accruals (e.g. you paid
   // March wages in April and filtered for April), which is valid data but should
@@ -524,10 +533,11 @@ function renderGrandBanner() {
 function renderWages() {
   const w = _summary.wages, el = document.getElementById('wagesList');
   if (!w.workers.length) { el.innerHTML = `<div class="card" style="color:var(--muted);text-align:center;padding:2rem">No wages in this period.</div>`; return; }
+  const overpaid = w.total_paid > w.total_accrued;
   let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
-    <div class="kpi"><div class="kpi-label">Accrued</div><div class="kpi-value mono">${fmt(w.total_accrued,2)}</div><div class="kpi-sub">KES earned</div></div>
-    <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(w.total_paid,2)}</div><div class="kpi-sub">KES settled</div></div>
-    <div class="kpi ${w.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,w.balance),2)}</div><div class="kpi-sub">KES owed</div></div>
+    <div class="kpi"><div class="kpi-label">Accrued This Period</div><div class="kpi-value mono">${fmt(w.total_accrued,2)}</div><div class="kpi-sub">Wages earned by workers</div></div>
+    <div class="kpi"><div class="kpi-label">Paid This Period</div><div class="kpi-value mono" style="color:#16a34a">${fmt(w.total_paid,2)}</div><div class="kpi-sub">Cash paid out${overpaid?' (incl. older debts)':''}</div></div>
+    <div class="kpi ${!overpaid && w.balance>0?'danger':''}"><div class="kpi-label">${overpaid?'Period Net':'Outstanding'}</div><div class="kpi-value mono" style="font-size:${overpaid?'.85':'1.25'}rem;margin-top:${overpaid?'.3':'0'}rem">${overpaid?`<span style="color:var(--g600)">KES ${fmt(w.total_paid-w.total_accrued,2)} extra paid — clearing old balance</span>`:fmt(Math.max(0,w.balance),2)}</div></div>
   </div>`;
   for (const wk of w.workers) {
     const ta = wk.accrued_operator + wk.accrued_knuckler;
@@ -556,11 +566,33 @@ function renderWages() {
 function renderSuppliers() {
   const s = _summary.suppliers, el = document.getElementById('suppliersList');
   if (!s.breakdown.length) { el.innerHTML = `<div class="card" style="color:var(--muted);text-align:center;padding:2rem">No purchases in this period.</div>`; return; }
-  let html = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
-    <div class="kpi"><div class="kpi-label">Total Billed</div><div class="kpi-value mono">${fmt(s.total_billed,2)}</div></div>
-    <div class="kpi"><div class="kpi-label">Total Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(s.total_paid,2)}</div></div>
-    <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,s.balance),2)}</div></div>
-  </div>`;
+  const overpaid = s.total_paid > s.total_billed;
+  const netLabel = overpaid
+    ? `<span style="color:var(--g600);font-size:.75rem;font-weight:400">KES ${fmt(s.total_paid - s.total_billed,2)} more paid than billed — settling older debts</span>`
+    : `<span style="color:var(--red);font-size:.75rem;font-weight:400">KES ${fmt(s.total_billed - s.total_paid,2)} still owed to suppliers</span>`;
+  let html = `
+    <div style="background:var(--g50);border:1px solid var(--border);border-radius:var(--radius);padding:.6rem 1rem;margin-bottom:1rem;font-size:.8rem;color:var(--muted);line-height:1.5">
+      <strong style="color:var(--ink)">How to read this:</strong>
+      <em>Billed</em> = value of goods received this period (accrual).
+      <em>Paid</em> = cash paid to suppliers this period (may include settling older debts).
+      All-time outstanding is shown in the banner above.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
+      <div class="kpi">
+        <div class="kpi-label">Billed This Period</div>
+        <div class="kpi-value mono">${fmt(s.total_billed,2)}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.15rem">Value of goods received</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Paid This Period</div>
+        <div class="kpi-value mono" style="color:#16a34a">${fmt(s.total_paid,2)}</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.15rem">Cash paid out to suppliers</div>
+      </div>
+      <div class="kpi ${!overpaid && s.balance>0?'danger':''}">
+        <div class="kpi-label">Period Net</div>
+        <div class="kpi-value mono" style="font-size:1rem;margin-top:.25rem">${netLabel}</div>
+      </div>
+    </div>`;
   for (const sup of s.breakdown) {
     const cls = sup.balance<=0?'settled':sup.balance<sup.total_billed?'partial':'overdue';
     html += `<div class="liability-card ${cls}"><div class="liability-row">
@@ -1189,29 +1221,32 @@ async function loadHistory() {
   const tb   = document.getElementById('historyTable');
   const btn  = document.getElementById('historyExportBtn');
   if (!tb) return;
-  tb.innerHTML = '<tr class="loading-row"><td colspan="7"><div class="spinner"></div></td></tr>';
+  tb.innerHTML = '<tr class="loading-row"><td colspan="8"><div class="spinner"></div></td></tr>';
   if (btn) btn.style.display = 'none';
   try {
     const rows = await api('GET', `/reconciliation/payments?from=${from}&to=${to}`);
     if (!rows) return;
     window._lastHistoryData = rows;
-    if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" class="empty"><div class="empty-text">No payments in this period</div></td></tr>'; return; }
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-text">No payments in this period</div></td></tr>'; return; }
     if (btn) btn.style.display = 'inline-flex';
     const catLabel = { wages_operator:'Op Wages', wages_knuckler:'Kn Wages', supplier:'Supplier', rent:'Rent', sack:'Sack', other:'Other' };
     const catBadge = { wages_operator:'badge-blue', wages_knuckler:'badge-blue', supplier:'badge-amber', rent:'badge-green', sack:'badge-gray', other:'badge-gray' };
+    let running = 0;
     tb.innerHTML = rows.map(r => {
+      running += parseFloat(r.amount) || 0;
       const payee = r.payee_user_name || r.payee_supplier_name || r.payee_name || '—';
       return `<tr>
         <td class="mono" style="white-space:nowrap">${r.payment_date}</td>
         <td><span class="badge ${catBadge[r.category]||'badge-gray'}" style="font-size:.7rem">${catLabel[r.category]||r.category}</span></td>
         <td>${escHtml(payee)}</td>
         <td class="mono"><strong>KES ${fmt(r.amount,2)}</strong></td>
+        <td class="mono" style="color:var(--g600);font-size:.82rem">KES ${fmt(running,2)}</td>
         <td style="font-size:.8rem;color:var(--muted)">${escHtml(r.notes||'')}</td>
         <td style="font-size:.78rem">${escHtml(r.recorded_by_name||'')}</td>
         <td><button class="btn btn-danger btn-sm" onclick="deletePayment(${r.id})">✕</button></td>
       </tr>`;
     }).join('');
-  } catch(e) { tb.innerHTML = '<tr><td colspan="7" class="empty"><div class="empty-text">Failed to load</div></td></tr>'; }
+  } catch(e) { tb.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-text">Failed to load</div></td></tr>'; }
 }
 
 async function deletePayment(id) {

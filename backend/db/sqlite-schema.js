@@ -460,6 +460,35 @@ async function initDb() {
   }
 
   console.log(`✅  IMARA LINKS DB ready (SQLite3 Local) — Database: ${dbPath}`);
+
+  // ── Startup hygiene — runs silently on every boot ────────────────────────────
+  // 1. Delete expired password reset tokens (they're useless after expiry)
+  try {
+    const tokenCleanup = await db.prepare(
+      "DELETE FROM password_reset_tokens WHERE expires_at < datetime('now')"
+    ).run();
+    if (tokenCleanup.changes > 0)
+      console.log(`🧹  Cleaned ${tokenCleanup.changes} expired reset token(s)`);
+  } catch(e) { console.warn('Token cleanup skipped:', e.message); }
+
+  // 2. Trim audit_log: keep last 180 days, delete older rows
+  // The audit viewer already caps at 5000 rows so older rows are never shown anyway
+  try {
+    const auditCleanup = await db.prepare(
+      "DELETE FROM audit_log WHERE logged_at < datetime('now', '-180 days')"
+    ).run();
+    if (auditCleanup.changes > 0)
+      console.log(`🧹  Trimmed ${auditCleanup.changes} old audit log row(s) (>180 days)`);
+  } catch(e) { console.warn('Audit trim skipped:', e.message); }
+
+  // 3. Delete read notifications older than 30 days (unread ones are always kept)
+  try {
+    const notifCleanup = await db.prepare(
+      "DELETE FROM notifications WHERE read=1 AND created_at < datetime('now', '-30 days')"
+    ).run();
+    if (notifCleanup.changes > 0)
+      console.log(`🧹  Cleaned ${notifCleanup.changes} old read notification(s)`);
+  } catch(e) { console.warn('Notification cleanup skipped:', e.message); }
 }
 
 module.exports = { getDb, initDb, openDb, dbPath, enqueue: () => {}, importDb: () => false };

@@ -78,10 +78,10 @@ async function init() {
 </div>
 
 <div style="display:flex;gap:.5rem;margin-bottom:1rem;border-bottom:2px solid var(--border)">
-  <button class="report-tab active" onclick="showTab('purchases',this)">📦 Purchases</button>
-  <button class="report-tab" onclick="showTab('production',this)">⚙ Production</button>
-  <button class="report-tab" onclick="showTab('sales',this)">💰 Sales</button>
-  <button class="report-tab" onclick="showTab('gauge',this)">📊 Gauge KPI</button>
+  <button class="report-tab active" onclick="showTab('purchases',this)">Purchases</button>
+  <button class="report-tab" onclick="showTab('production',this)">Production</button>
+  <button class="report-tab" onclick="showTab('sales',this)">Sales</button>
+  <button class="report-tab" onclick="showTab('gauge',this)">Gauge KPI</button>
 </div>
 
 <div id="tab-purchases">
@@ -144,6 +144,7 @@ function showTab(name, btn) {
   document.querySelectorAll('.report-tab').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (name === 'gauge') loadGaugeKpi();
+  try { sessionStorage.setItem('reports_activeTab', name); } catch(e) {}
 }
 
 function preset(days) {
@@ -770,7 +771,17 @@ async function loadGaugeKpi() {
 // Patch showTab to load gauge data on demand
 const _origShowTab = typeof showTab !== 'undefined' ? showTab : null;
 
-init().then(() => preset(30));
+init().then(() => {
+  preset(30);
+  // Restore last active tab (after data loads so the tab content shows)
+  setTimeout(() => {
+    const savedTab = sessionStorage.getItem('reports_activeTab');
+    if (savedTab && ['purchases','production','sales','gauge'].includes(savedTab)) {
+      const btn = document.querySelector(`.report-tab[onclick*="'${savedTab}'"]`);
+      showTab(savedTab, btn);
+    }
+  }, 100);
+});
 </script>
 </body>
 </html>

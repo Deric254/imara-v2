@@ -21,8 +21,13 @@
 
 /* ── Charts ─────────────────────────────────────────────────── */
 .chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+.chart-pair>.card{min-width:0;overflow:hidden}
 @media(max-width:720px){.chart-pair{grid-template-columns:1fr}}
 .chart-container{position:relative;height:290px;width:100%;overflow:auto;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+.chart-reset-btn{position:absolute;top:6px;right:6px;background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.2rem .55rem;font-size:.72rem;font-weight:600;color:var(--muted);cursor:pointer;font-family:var(--font);display:none;z-index:10;transition:all .15s}
+.chart-reset-btn:hover{background:var(--g50);color:var(--g700);border-color:var(--g400)}
+.chart-reset-btn.visible{display:block}
+.chart-wrap-rel{position:relative}
 .chart-container canvas{display:block}
 @media(max-width:768px){.chart-container{height:240px}}
 @media(max-width:480px){.chart-container{height:200px}.chart-pair{gap:.5rem}}
@@ -219,6 +224,14 @@ const pg = renderLayout('dashboard.html');
 Chart.register(ChartDataLabels, ChartZoom);
 const chartRegistry = new Map();
 
+/* Reset zoom on a named chart and hide the reset button */
+function resetChartZoom(id) {
+  const chart = chartRegistry.get(id);
+  if (chart && chart.resetZoom) chart.resetZoom();
+  const btn = document.getElementById(id + 'Reset');
+  if (btn) btn.classList.remove('visible');
+}
+
 /* ── Loading helpers ─────────────────────────────────────────── */
 function showSkeletonKpis() {
   const el = document.getElementById('kpiGrid');
@@ -269,7 +282,13 @@ function hideAllChartLoaders() {
 
 function destroyChart(id) {
   const c = chartRegistry.get(id);
-  if (c) { try { c.destroy(); } catch(e){} chartRegistry.delete(id); }
+  if (c) {
+    try { if (c.resetZoom) c.resetZoom(); } catch(e){}
+    try { c.destroy(); } catch(e){}
+    chartRegistry.delete(id);
+  }
+  const resetBtn = document.getElementById(id + 'Reset');
+  if (resetBtn) resetBtn.classList.remove('visible');
   // Also clear any "no data" overlay left from a previous load
   const canvas = document.getElementById(id);
   if (canvas) {
@@ -465,11 +484,23 @@ function cartesianOpts(extra={}, dataPoints=0) {
       datalabels: { display: false },
       tooltip: { ...BASE_TOOLTIP },
       zoom: {
-        pan: { enabled: true, mode: 'x', modifierKey: null },
+        pan: {
+          enabled: true, mode: 'x', modifierKey: null,
+          onPanComplete({ chart }) {
+            const id = chart.canvas?.id;
+            const btn = id ? document.getElementById(id + 'Reset') : null;
+            if (btn) btn.classList.add('visible');
+          }
+        },
         zoom: {
           wheel: { enabled: true },
           pinch: { enabled: true },
-          mode: 'x'
+          mode: 'x',
+          onZoomComplete({ chart }) {
+            const id = chart.canvas?.id;
+            const btn = id ? document.getElementById(id + 'Reset') : null;
+            if (btn) btn.classList.add('visible');
+          }
         },
         limits: { x: { min: 'original', max: 'original' } }
       },
@@ -552,10 +583,10 @@ if (user.role === 'admin') {
 <div class="card" style="margin-bottom:1.5rem">
   <div class="card-title">Module Health</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;margin-top:.75rem">
-    ${[['👥','User Management','userMod'],['📊','Daily Entry','dailyMod'],['📦','Inventory','invMod'],
-       ['📈','Reports','reportsMod'],['⚙','Configuration','configMod'],['🔐','Authentication','authMod']
-    ].map(([ic,lb,id])=>`<div class="module-health-card">
-      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem"><span>${ic}</span><div style="font-weight:600">${lb}</div></div>
+    ${[['User Management','userMod'],['Daily Entry','dailyMod'],['Inventory','invMod'],
+       ['Reports','reportsMod'],['Configuration','configMod'],['Authentication','authMod']
+    ].map(([lb,id])=>`<div class="module-health-card">
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem"><div style="font-weight:600">${lb}</div></div>
       <div style="display:flex;justify-content:space-between;align-items:center">
         <span style="font-weight:500;font-size:.85rem;color:var(--g600)" id="${id}">✓ Operational</span>
         <span style="font-size:.75rem;color:var(--muted)">Live</span>
@@ -578,10 +609,10 @@ if (user.role === 'admin') {
 <div class="card" style="margin-bottom:1.5rem">
   <div class="card-title">Support Actions</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin-top:.75rem">
-    <a href="users.html"  class="btn btn-primary"   style="justify-content:center">👥 Manage Users</a>
-    <button class="btn btn-secondary" onclick="showPasswordReset()" style="justify-content:center">🔑 Reset Password</button>
-    <a href="audit.html"  class="btn btn-secondary" style="justify-content:center">📋 Audit Log</a>
-    <button class="btn btn-secondary" onclick="loadAdminDashboard()" style="justify-content:center">🔄 Refresh</button>
+    <a href="users.html"  class="btn btn-primary"   style="justify-content:center">Manage Users</a>
+    <button class="btn btn-secondary" onclick="showPasswordReset()" style="justify-content:center">Reset Password</button>
+    <a href="audit.html"  class="btn btn-secondary" style="justify-content:center">Audit Log</a>
+    <button class="btn btn-secondary" onclick="loadAdminDashboard()" style="justify-content:center">↺ Refresh</button>
   </div>
 </div>
 <div id="passwordResetModal" class="admin-modal" style="display:none">
@@ -634,9 +665,9 @@ if (user.role === 'admin') {
   <div class="kpi-grid" id="kpiGrid"></div>
   <div class="chart-pair">
     <div class="card"><div class="card-title">Revenue Trend</div>
-      <div class="chart-container"><canvas id="revenueChart"></canvas></div></div>
+      <div class="chart-wrap-rel"><button class="chart-reset-btn" id="revenueChartReset" onclick="resetChartZoom('revenueChart')">↺ Reset</button><div class="chart-container"><canvas id="revenueChart"></canvas></div></div></div>
     <div class="card"><div class="card-title">Production — kg Wire Used</div>
-      <div class="chart-container"><canvas id="prodChart"></canvas></div></div>
+      <div class="chart-wrap-rel"><button class="chart-reset-btn" id="prodChartReset" onclick="resetChartZoom('prodChart')">↺ Reset</button><div class="chart-container"><canvas id="prodChart"></canvas></div></div></div>
   </div>
   <div class="chart-pair">
     <div class="card"><div class="card-title">Top Customers</div>
@@ -689,7 +720,7 @@ if (user.role === 'admin') {
 ═══════════════════════════════════════════════════════════════ */
 async function loadAdminDashboard() {
   try {
-    const users = await api('GET','/users').catch(()=>[]);
+    const users = await api('GET','/users').catch(()=>{ showToast('Failed to load users list','error'); return []; });
     const cnt = users.filter(u=>u.active===1).length;
     const au = document.getElementById('activeUsers');
     const as = document.getElementById('activeSessions');
@@ -701,7 +732,7 @@ async function loadAdminDashboard() {
       catch(e){ const d=document.getElementById(el); if(d){d.textContent='⚠ Error';d.style.color='var(--amber)';} }
     }
 
-    const audit = await api('GET','/audit?limit=10').catch(()=>[]);
+    const audit = await api('GET','/audit?limit=10').catch(()=>{ showToast('Failed to load audit log','error'); return []; });
     const ra = document.getElementById('recentActivity');
     if (ra) ra.innerHTML = audit.length
       ? audit.map(e=>`<div style="padding:.5rem 0;border-bottom:1px solid var(--border);font-size:.85rem">
@@ -759,17 +790,16 @@ async function loadWorkerDashboard(){
 function applyPreset(days, btn) {
   document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
-  // Use local date parts to avoid timezone-shift on toISOString()
+  // localDateStr is defined in the owner boot block below — shared util
   function localDateStr(d) {
-    const y  = d.getFullYear();
-    const m  = String(d.getMonth()+1).padStart(2,'0');
-    const dd = String(d.getDate()).padStart(2,'0');
-    return `${y}-${m}-${dd}`;
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
   const toD   = new Date();
   const fromD = days===0 ? new Date() : new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-days);
   document.getElementById('toDate').value   = localDateStr(toD);
   document.getElementById('fromDate').value = localDateStr(fromD);
+  sessionStorage.setItem('dash_fromDate', localDateStr(fromD));
+  sessionStorage.setItem('dash_toDate',   localDateStr(toD));
   loadDash();
 }
 
@@ -821,6 +851,20 @@ async function loadDash(){
     // just stop here silently so we don't crash into "Failed to load dashboard data".
     if (!d || !inv || !wp || !sp || !rb) return;
 
+    // Check for zero-data period (all KPIs are zero, no trends)
+    const hasData = d.kpis && (d.kpis.total_revenue > 0 || d.kpis.total_purchases > 0 || d.kpis.total_production > 0);
+    if (!hasData && (!d.trends || d.trends.length === 0)) {
+      document.getElementById('kpiGrid').innerHTML = `
+        <div style="grid-column:1/-1;text-align:center;padding:2.5rem 1rem;color:var(--muted)">
+          <div style="font-size:2rem;margin-bottom:.5rem">📭</div>
+          <div style="font-size:1rem;font-weight:500;color:var(--ink);margin-bottom:.25rem">No data for this period</div>
+          <div style="font-size:.85rem">No sales, purchases or production entries found between <strong>${from}</strong> and <strong>${to}</strong>.</div>
+          <div style="font-size:.8rem;margin-top:.5rem">Try a wider date range or check the Daily Entry page.</div>
+        </div>`;
+      hideAllChartLoaders();
+      PageProgress.done();
+      return;
+    }
     const k=d.kpis, raw=inv.raw_material;
 
     hideAllChartLoaders();
@@ -1294,11 +1338,24 @@ if (user.role==='admin') {
   function _localDateStr(d) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
-  const toD=new Date(), fromD=new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-7);
-  document.getElementById('toDate').value   = _localDateStr(toD);
-  document.getElementById('fromDate').value = _localDateStr(fromD);
-  document.getElementById('fromDate').addEventListener('change',()=>document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active')));
-  document.getElementById('toDate').addEventListener('change',  ()=>document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active')));
+  // Restore last-used period from sessionStorage, fallback to 7 days
+  const _savedFrom = sessionStorage.getItem('dash_fromDate');
+  const _savedTo   = sessionStorage.getItem('dash_toDate');
+  const toD = new Date();
+  const fromD = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-7);
+  document.getElementById('toDate').value   = _savedTo   || _localDateStr(toD);
+  document.getElementById('fromDate').value = _savedFrom || _localDateStr(fromD);
+  if (_savedFrom || _savedTo) {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+  }
+  document.getElementById('fromDate').addEventListener('change', () => {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+    sessionStorage.setItem('dash_fromDate', document.getElementById('fromDate').value);
+  });
+  document.getElementById('toDate').addEventListener('change', () => {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+    sessionStorage.setItem('dash_toDate', document.getElementById('toDate').value);
+  });
   loadDash();
 } else {
   loadWorkerDashboard();

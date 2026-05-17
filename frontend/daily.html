@@ -177,9 +177,9 @@ pg.innerHTML = `
   </div>
 
   <div class="tab-bar">
-    <button class="tab active" onclick="switchTab('purchases')">📦 Purchases</button>
-    <button class="tab" onclick="switchTab('production')">⚙ Production</button>
-    <button class="tab" onclick="switchTab('sales')">💰 Sales</button>
+    <button class="tab active" onclick="switchTab('purchases')">Purchases</button>
+    <button class="tab" onclick="switchTab('production')">Production</button>
+    <button class="tab" onclick="switchTab('sales')">Sales</button>
   </div>
 
   <!-- PURCHASES -->
@@ -1450,6 +1450,16 @@ async function dismissDailyWarning() {
 }
 
 checkStatus();
+
+// ── Ctrl+Enter submits the active tab's form ───────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    if (_activeTab === 'purchases')  { submitPurchase();   return; }
+    if (_activeTab === 'production') { submitProduction();  return; }
+    if (_activeTab === 'sales')      { submitSale();        return; }
+  }
+});
 </script>
 </body>
 </html>

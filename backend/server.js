@@ -9,6 +9,25 @@ const rateLimit = require('express-rate-limit');
 // db/index.js selects SQLite or Neon based on DATABASE_TYPE env var
 const { initDb } = require('./db');
 
+// ── Safety guard: refuse to start with the default placeholder secret ─────────
+const KNOWN_UNSAFE_SECRETS = [
+  'your-secret-key-change-this-in-production-12345',
+  'change-this-to-a-long-random-secret-string',
+  'secret',
+  'changeme',
+];
+if (process.env.NODE_ENV === 'production' && KNOWN_UNSAFE_SECRETS.includes(process.env.JWT_SECRET)) {
+  console.error('\n\n❌  FATAL: JWT_SECRET is set to a known default placeholder.');
+  console.error('    This is a critical security risk in production.');
+  console.error('    Set a strong random JWT_SECRET in your .env file and restart.\n');
+  process.exit(1);
+}
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 16) {
+  console.error('\n\n❌  FATAL: JWT_SECRET is missing or too short (minimum 16 characters).');
+  console.error('    Set a strong random JWT_SECRET in your .env file and restart.\n');
+  process.exit(1);
+}
+
 const app = express();
 
 // ── Security ──────────────────────────────────────────────────────────────────
