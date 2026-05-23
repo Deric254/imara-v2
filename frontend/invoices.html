@@ -300,8 +300,8 @@ async function viewInvoice(id) {
       <tr>
         <td>${escHtml(it.description)}${it.gauge?` <span style="font-size:.74rem;color:#6b7280">(Gauge ${escHtml(it.gauge)})</span>`:''}</td>
         <td style="text-align:center">${it.quantity}</td>
-        <td style="text-align:right">${cur()} ${fmtM(it.unit_price)}</td>
-        <td style="text-align:right;font-weight:600">${cur()} ${fmtM(it.line_total)}</td>
+        <td style="text-align:right">${fmtM(it.unit_price)}</td>
+        <td style="text-align:right;font-weight:600">${fmtM(it.line_total)}</td>
       </tr>`).join('');
 
     const footerMsg = `Welcome again &mdash; ${escHtml(slogan)}`;
@@ -347,8 +347,8 @@ async function viewInvoice(id) {
           <thead><tr>
             <th style="width:50%">Description</th>
             <th style="text-align:center;width:10%">Qty</th>
-            <th style="text-align:right;width:20%">Unit Price</th>
-            <th style="text-align:right;width:20%">Total</th>
+            <th style="text-align:right;width:20%">Unit Price (KES)</th>
+            <th style="text-align:right;width:20%">Total (KES)</th>
           </tr></thead>
           <tbody>${itemRows}</tbody>
         </table>
@@ -498,8 +498,8 @@ function _pdfInvoice(inv, bizName, slogan) {
   const colDesc = margin + 1, colQty = margin + 43, colPrice = margin + 58, colTotal = W - margin - 1;
   doc.text('DESCRIPTION', colDesc, y + 3.8);
   doc.text('QTY', colQty, y + 3.8, {align:'center'});
-  doc.text('UNIT', colPrice, y + 3.8, {align:'right'});
-  doc.text('TOTAL', colTotal, y + 3.8, {align:'right'});
+  doc.text('UNIT (KES)', colPrice, y + 3.8, {align:'right'});
+  doc.text('TOTAL (KES)', colTotal, y + 3.8, {align:'right'});
   y += 6.5;
 
   // Items rows
@@ -510,9 +510,9 @@ function _pdfInvoice(inv, bizName, slogan) {
     const desc = it.description + (it.gauge ? ` (G${it.gauge})` : '');
     doc.text(desc.substring(0,28), colDesc, y + 3.2);
     doc.text(String(it.quantity), colQty, y + 3.2, {align:'center'});
-    doc.text(`${c} ${fmtM(it.unit_price)}`, colPrice, y + 3.2, {align:'right'});
+    doc.text(`${fmtM(it.unit_price)}`, colPrice, y + 3.2, {align:'right'});
     doc.setFont('helvetica','bold');
-    doc.text(`${c} ${fmtM(it.line_total)}`, colTotal, y + 3.2, {align:'right'});
+    doc.text(`${fmtM(it.line_total)}`, colTotal, y + 3.2, {align:'right'});
     doc.setFont('helvetica','normal');
     y += 5.5;
   });
@@ -707,8 +707,8 @@ function _buildReceiptDoc(inv) {
   const c1 = ml + 6, c2 = ml + 95, c3 = ml + 120, c4 = ml + 145, c5 = ml + cw - 1;
   doc.text('DESCRIPTION',   c1, y + 5.2);
   doc.text('QTY',           c2, y + 5.2, { align: 'center' });
-  doc.text('UNIT PRICE',    c3 + 10, y + 5.2, { align: 'right' });
-  doc.text('TOTAL',         c5, y + 5.2, { align: 'right' });
+  doc.text('UNIT PRICE (KES)',    c3 + 10, y + 5.2, { align: 'right' });
+  doc.text('TOTAL (KES)',         c5, y + 5.2, { align: 'right' });
   y += 9;
 
   // Rows
@@ -720,9 +720,9 @@ function _buildReceiptDoc(inv) {
     doc.text(desc, c1, y + 5.2);
     doc.text(String(it.quantity), c2, y + 5.2, { align: 'center' });
     doc.setTextColor(80, 80, 80);
-    doc.text(`${cur()} ${fmtM(it.unit_price)}`, c3 + 10, y + 5.2, { align: 'right' });
+    doc.text(`${fmtM(it.unit_price)}`, c3 + 10, y + 5.2, { align: 'right' });
     doc.setFont('helvetica', 'bold'); doc.setTextColor(10, 10, 10);
-    doc.text(`${cur()} ${fmtM(it.line_total)}`, c5, y + 5.2, { align: 'right' });
+    doc.text(`${fmtM(it.line_total)}`, c5, y + 5.2, { align: 'right' });
     y += 8;
   });
 
@@ -825,8 +825,8 @@ function _buildReceiptHtml(inv) {
     <tr style="${i%2===0?'background:#f9fafb':''}">
       <td style="padding:4px 6px;font-size:.82rem">${escHtml(it.description)}${it.gauge?` <span style="color:#6b7280;font-size:.72rem">(G${escHtml(it.gauge)})</span>`:''}</td>
       <td style="padding:4px 6px;text-align:center;font-size:.82rem">${it.quantity}</td>
-      <td style="padding:4px 6px;text-align:right;font-size:.82rem">${c} ${fmtM(it.unit_price)}</td>
-      <td style="padding:4px 6px;text-align:right;font-weight:700;font-size:.82rem">${c} ${fmtM(it.line_total)}</td>
+      <td style="padding:4px 6px;text-align:right;font-size:.82rem">${fmtM(it.unit_price)}</td>
+      <td style="padding:4px 6px;text-align:right;font-weight:700;font-size:.82rem">${fmtM(it.line_total)}</td>
     </tr>`).join('');
 
   return `
@@ -863,8 +863,8 @@ function _buildReceiptHtml(inv) {
         <tr style="background:#083d28;color:#fff">
           <th style="padding:4px 6px;text-align:left;font-size:.7rem;font-weight:700">ITEM</th>
           <th style="padding:4px 6px;text-align:center;font-size:.7rem;font-weight:700">QTY</th>
-          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">PRICE</th>
-          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">TOTAL</th>
+          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">PRICE (KES)</th>
+          <th style="padding:4px 6px;text-align:right;font-size:.7rem;font-weight:700">TOTAL (KES)</th>
         </tr>
       </thead>
       <tbody>${itemRows}</tbody>
@@ -1201,8 +1201,8 @@ function showForm(inv) {
       <table class="items-tbl">
         <thead><tr>
           <th>Description</th><th>Gauge</th>
-          <th style="text-align:right">Qty</th><th style="text-align:right">Unit Price</th>
-          <th style="text-align:right">Total</th><th></th>
+          <th style="text-align:right">Qty</th><th style="text-align:right">Unit Price (KES)</th>
+          <th style="text-align:right">Total (KES)</th><th></th>
         </tr></thead>
         <tbody id="itemsBody"></tbody>
       </table>
