@@ -27,4 +27,4 @@ nsis:
 publish:
   provider: github
   owner: Deric254
-  repo: imara
+  repo: imara-v2
