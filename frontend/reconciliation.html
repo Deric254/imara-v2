@@ -159,8 +159,9 @@ async function init() {
   <div style="display:flex;gap:2rem;flex-wrap:wrap">
     <div><div class="grand-label">Wages Due</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gWages">—</div></div>
     <div><div class="grand-label">Supplier Bills</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gSupplier">—</div></div>
-    <div><div class="grand-label">Rent Due</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gRent">—</div></div>
+    <div><div class="grand-label">Outstanding Rent Balance</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gRent">—</div></div>
     <div><div class="grand-label">Sack Costs</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gSack">—</div></div>
+    <div><div class="grand-label">Transport</div><div style="font-family:var(--font-mono);font-size:1.1rem;color:#fff" id="gTransport">—</div></div>
   </div>
 </div>
 
@@ -170,6 +171,7 @@ async function init() {
   <button class="recon-tab" onclick="switchTab('suppliers',this)">Suppliers</button>
   <button class="recon-tab" onclick="switchTab('rent',this)">Rent</button>
   <button class="recon-tab" onclick="switchTab('sack',this)">Sack</button>
+  <button class="recon-tab" onclick="switchTab('transport',this)">Transport</button>
   <button class="recon-tab" onclick="switchTab('history',this)">History</button>
 </div>
 
@@ -194,7 +196,7 @@ async function init() {
 <!-- RENT -->
 <div class="recon-section" id="sec-rent">
   <div class="section-header" style="margin-bottom:1rem">
-    <div class="section-title" style="font-size:.95rem">Monthly Rent</div>
+    <div class="section-title" style="font-size:.95rem">Rent Payable — Monthly</div>
     <div style="display:flex;gap:.5rem">
       <button class="btn btn-secondary btn-sm" onclick="openAddRentMonth()">+ Add Month</button>
       <button class="settle-btn" onclick="openPayModal('rent')">+ Mark Paid</button>
@@ -210,6 +212,15 @@ async function init() {
     <button class="settle-btn" onclick="openPayModal('sack')">+ Record Sack Payment</button>
   </div>
   <div id="sackDetail"><div style="color:var(--muted);font-size:.85rem">Loading…</div></div>
+</div>
+
+<!-- TRANSPORT TO MARKET -->
+<div class="recon-section" id="sec-transport">
+  <div class="section-header" style="margin-bottom:1rem">
+    <div class="section-title" style="font-size:.95rem">Transport to Market</div>
+    <button class="settle-btn" onclick="openPayModal('transport_to_market')">+ Record Transport Payment</button>
+  </div>
+  <div id="transportDetail"><div style="color:var(--muted);font-size:.85rem">Loading…</div></div>
 </div>
 
 <!-- HISTORY -->
@@ -247,6 +258,7 @@ async function init() {
           <option value="supplier">Supplier Payment</option>
           <option value="rent">Rent</option>
           <option value="sack">Sack Costs</option>
+          <option value="transport_to_market">Transport to Market</option>
           <option value="other">Other</option>
         </select>
       </div>
@@ -445,7 +457,7 @@ async function loadAll() {
   const skelHtml = `<div style="display:flex;flex-direction:column;gap:.5rem">
     ${Array(3).fill('<div style="height:72px;border-radius:8px;background:linear-gradient(90deg,#d6f2e4 25%,#f0faf5 50%,#d6f2e4 75%);background-size:800px 100%;animation:shimmer 1.4s infinite linear"></div>').join('')}
   </div>`;
-  ['wagesList','suppliersList','rentList','sackDetail'].forEach(id => {
+  ['wagesList','suppliersList','rentList','sackDetail','transportDetail'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = skelHtml;
   });
@@ -487,14 +499,14 @@ async function loadAll() {
     }
     // ─────────────────────────────────────────────────────────────────────
 
-    renderGrandBanner(); renderWages(); renderSuppliers(); renderRent(); renderSack();
+    renderGrandBanner(); renderWages(); renderSuppliers(); renderRent(); renderSack(); renderTransport();
     PageProgress.done();
   } catch(e) {
     console.error('Recon load error:', e);
     const msg = e?.error || e?.message || 'Network error';
     PageProgress.error();
     showToast('Failed to load reconciliation data: ' + msg, 'error');
-    ['wagesList','suppliersList','rentList','sackDetail'].forEach(id => {
+    ['wagesList','suppliersList','rentList','sackDetail','transportDetail'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = `<div style="color:var(--red);padding:.75rem;background:#fee2e2;border-radius:8px;font-size:.85rem">⚠ ${msg}</div>`;
     });
@@ -528,6 +540,51 @@ function renderGrandBanner() {
   document.getElementById('gSupplier').textContent = 'KES ' + fmt(Math.max(0, s.suppliers.balance), 2);
   document.getElementById('gRent').textContent     = 'KES ' + fmt(Math.max(0, s.rent.balance), 2);
   document.getElementById('gSack').textContent     = 'KES ' + fmt(Math.max(0, s.sack.balance), 2);
+  document.getElementById('gTransport').textContent = 'KES ' + fmt(Math.max(0, (s.transport_to_market||{balance:0}).balance), 2);
+}
+
+function renderTransport() {
+  const t  = _summary.transport_to_market || { accrued: 0, paid: 0, balance: 0 };
+  const el = document.getElementById('transportDetail');
+  const overpaid = t.paid > t.accrued;
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
+      <div class="kpi">
+        <div class="kpi-label">Accrued This Period</div>
+        <div class="kpi-value mono">${fmt(t.accrued,2)}</div>
+        <div class="kpi-sub">Transport saved on sales</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Paid This Period</div>
+        <div class="kpi-value mono" style="color:#16a34a">${fmt(t.paid,2)}</div>
+        <div class="kpi-sub">Cash paid out${overpaid?' (incl. older debts)':''}</div>
+      </div>
+      <div class="kpi ${!overpaid && t.balance>0?'danger':''}">
+        <div class="kpi-label">${overpaid?'Period Net':'Outstanding'}</div>
+        <div class="kpi-value mono">
+          ${overpaid
+            ? `<span style="color:var(--g600);font-size:.85rem">KES ${fmt(t.paid-t.accrued,2)} extra — clearing old balance</span>`
+            : fmt(Math.max(0,t.balance),2)}
+        </div>
+      </div>
+    </div>
+    <div class="liability-card ${t.balance<=0?'settled':t.paid>0?'partial':'overdue'}" style="margin-bottom:.75rem">
+      <div class="liability-row">
+        <div>
+          <div class="liability-name">Transport to Market</div>
+          <div class="liability-meta">Total accrued from sales: KES ${fmt(t.accrued,2)} &middot; Paid: KES ${fmt(t.paid,2)}</div>
+        </div>
+        <div class="liability-amounts">
+          <div class="amt-block">
+            <div class="amt-label">Balance</div>
+            <div class="amt-value ${t.balance>0?'red':'green'}">KES ${fmt(Math.max(0,t.balance),2)}</div>
+          </div>
+          ${t.balance>0
+            ? `<button class="settle-btn" onclick="openPayModal('transport_to_market',null,null,null,${t.balance})">Record Payment</button>`
+            : `<span class="badge badge-green">✓ Settled</span>`}
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderWages() {
@@ -749,8 +806,9 @@ async function loadReconStatement() {
           <div class="kpi"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${cur} ${fmt(summary.grand_total_outstanding,2)}</div></div>
           <div class="kpi"><div class="kpi-label">Wages Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.wages.balance),2)}</div></div>
           <div class="kpi"><div class="kpi-label">Suppliers Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.suppliers.balance),2)}</div></div>
-          <div class="kpi"><div class="kpi-label">Rent Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.rent.balance),2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Outstanding Rent Balance</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.rent.balance),2)}</div></div>
           <div class="kpi"><div class="kpi-label">Sack Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,summary.sack.balance),2)}</div></div>
+          <div class="kpi"><div class="kpi-label">Transport Due</div><div class="kpi-value mono">${cur} ${fmt(Math.max(0,(summary.transport_to_market||{balance:0}).balance),2)}</div></div>
         </div>
         <div class="inv-notes-block" style="margin-bottom:1rem">
           <label>Summary</label>
@@ -763,6 +821,7 @@ async function loadReconStatement() {
             <tr><td>Suppliers</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_billed,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.suppliers.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.suppliers.balance),2)}</td></tr>
             <tr><td>Rent</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.rent.total_paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.rent.balance),2)}</td></tr>
             <tr><td>Sack Costs</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.sack.balance),2)}</td></tr>
+            <tr><td>Transport to Market</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt((summary.transport_to_market||{accrued:0}).accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt((summary.transport_to_market||{paid:0}).paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,(summary.transport_to_market||{balance:0}).balance),2)}</td></tr>
           </tbody>
         </table>
         <div class="inv-party-label">Payments In Period</div>
@@ -1229,8 +1288,8 @@ async function loadHistory() {
     window._lastHistoryData = rows;
     if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="empty"><div class="empty-text">No payments in this period</div></td></tr>'; return; }
     if (btn) btn.style.display = 'inline-flex';
-    const catLabel = { wages_operator:'Op Wages', wages_knuckler:'Kn Wages', supplier:'Supplier', rent:'Rent', sack:'Sack', other:'Other' };
-    const catBadge = { wages_operator:'badge-blue', wages_knuckler:'badge-blue', supplier:'badge-amber', rent:'badge-green', sack:'badge-gray', other:'badge-gray' };
+    const catLabel = { wages_operator:'Op Wages', wages_knuckler:'Kn Wages', supplier:'Supplier', rent:'Rent', sack:'Sack', transport_to_market:'Transport', other:'Other' };
+    const catBadge = { wages_operator:'badge-blue', wages_knuckler:'badge-blue', supplier:'badge-amber', rent:'badge-green', sack:'badge-gray', transport_to_market:'badge-blue', other:'badge-gray' };
     let running = 0;
     tb.innerHTML = rows.map(r => {
       running += parseFloat(r.amount) || 0;
@@ -1258,7 +1317,7 @@ async function deletePayment(id) {
 function exportHistoryCSV() {
   const data = window._lastHistoryData;
   if (!data?.length) return;
-  const catLabel = { wages_operator:'Op Wages', wages_knuckler:'Kn Wages', supplier:'Supplier', rent:'Rent', sack:'Sack', other:'Other' };
+  const catLabel = { wages_operator:'Op Wages', wages_knuckler:'Kn Wages', supplier:'Supplier', rent:'Rent', sack:'Sack', transport_to_market:'Transport', other:'Other' };
   const headers = ['Date','Category','Payee','Amount (KES)','Notes','Recorded By'];
   const rows = data.map(r => [r.payment_date, catLabel[r.category]||r.category,
     r.payee_user_name||r.payee_supplier_name||r.payee_name||'—', r.amount, r.notes||'', r.recorded_by_name||'']);
@@ -1308,7 +1367,7 @@ function onCatChange() {
   document.getElementById('pm_worker_wrap').style.display    = ['wages_operator','wages_knuckler'].includes(cat)?'block':'none';
   document.getElementById('pm_supplier_wrap').style.display  = cat==='supplier'?'block':'none';
   document.getElementById('pm_rentmonth_wrap').style.display = cat==='rent'?'block':'none';
-  document.getElementById('pm_payee_wrap').style.display     = ['sack','other'].includes(cat)?'block':'none';
+  document.getElementById('pm_payee_wrap').style.display     = ['sack','other','transport_to_market'].includes(cat)?'block':'none';
 }
 
 function closePayModal() { document.getElementById('payModal').style.display='none'; }
@@ -1334,7 +1393,7 @@ async function savePayment() {
     body.rent_month = document.getElementById('pm_rentmonth').value;
     if (!body.rent_month) return showErr('pm_err','Select a rent month');
   }
-  if (['sack','other'].includes(category)) body.payee_name = document.getElementById('pm_payee').value.trim();
+  if (['sack','other','transport_to_market'].includes(category)) body.payee_name = document.getElementById('pm_payee').value.trim();
   if (_paymentSavingR) return;
   _paymentSavingR = true;
   const btn = document.getElementById('pm_save');

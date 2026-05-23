@@ -1,18 +1,27 @@
-// routes/reports.js
+// routes/reports.js — IMARA LINKS
+// Harmonization Plan fully applied:
+//   §2  Snapshot accounting — transactions store history, reports read transactions
+//   §3  Transport default = config rate * quantity, saved on sales.transport_to_market at insert time
+//   §4  Cost of Sales = wire + labour + sacks + market transport (rent excluded)
+//   §6  Rent months are source of truth; payments matched by rent_month column
+//   §7  Rent Expense (accrued, period-prorated) ≠ Rent Payable (outstanding balance)
+//   §8  Dashboard payables use rent_month matching, not payment_date range
+//   §9  Net Profit remains period-based: revenue − cost_of_sales − rent_expense
+//   §11 Transport detail rows join to sales.transport_to_market — never hardcoded 0
+//   §12 Historical values never recalculated from current config
+
 const router = require('express').Router();
 const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 
 
-// ── Notification writer — call after any event that should alert the owner ────
-// Safe: never throws, never blocks the main request flow.
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function writeNotification(db, { userId, roleTarget, type, category, message, title }) {
   try {
-    // Explicitly write created_at as a UTC ISO string (ends in 'Z') so browsers
-    // parse it unambiguously. SQLite's CURRENT_TIMESTAMP default stores without the
-    // 'Z' suffix, which causes some browsers to treat it as local time instead of UTC,
-    // making relative-time display ("3h ago") wrong.
-    const now = new Date().toISOString(); // e.g. "2025-05-02T10:30:00.000Z"
+    const now = new Date().toISOString();
     await db.prepare(
       `INSERT INTO notifications(user_id, role_target, type, category, title, message, read, created_at)
        VALUES(?, ?, ?, ?, ?, ?, 0, ?)`
@@ -25,15 +34,15 @@ async function writeNotification(db, { userId, roleTarget, type, category, messa
       message    || '',
       now
     );
-  } catch(_) { /* never block the caller */ }
+  } catch (_) { /* never block the caller */ }
 }
 
-// ── Check and write stock notifications after any production or sales write ───
 async function checkAndNotifyStock(db, enteredBy) {
   try {
-    const threshold = parseFloat((await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100);
+    const threshold = parseFloat(
+      (await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100
+    );
 
-    // Helper: only write if same title wasn't written in the last 60 minutes
     async function writeIfNew(type, title, message) {
       const recent = await db.prepare(`
         SELECT id FROM notifications
@@ -47,7 +56,7 @@ async function checkAndNotifyStock(db, enteredBy) {
       }
     }
 
-    // Raw material check — per gauge (aggregate check misses gauge-specific stock-outs)
+    // Per-gauge raw material stock check
     const gaugeStocks = await db.prepare(`
       SELECT
         COALESCE(p.gauge, '') AS gauge,
@@ -59,11 +68,10 @@ async function checkAndNotifyStock(db, enteredBy) {
       GROUP BY COALESCE(p.gauge, '')
     `).all().catch(() => null);
 
-    // Fall back to aggregate check if the per-gauge query fails (e.g. no data)
     if (gaugeStocks && gaugeStocks.length > 0) {
       for (const gs of gaugeStocks) {
         const remaining = parseFloat(gs.bought) - parseFloat(gs.used);
-        const label = gs.gauge ? `Wire (${gs.gauge})` : 'Wire';
+        const label     = gs.gauge ? `Wire (${gs.gauge})` : 'Wire';
         if (remaining <= 0) {
           await writeIfNew('alert', `${label} Stock — OUT`,
             `${label} stock is depleted (${remaining.toFixed(1)} kg). Production for this gauge is now blocked. Restock immediately.`);
@@ -73,7 +81,6 @@ async function checkAndNotifyStock(db, enteredBy) {
         }
       }
     } else {
-      // Aggregate fallback
       const raw = await db.prepare(`
         SELECT COALESCE(SUM(kgs_bought),0) AS bought, COALESCE(SUM(kgs_used),0) AS used
         FROM (SELECT kgs_bought, 0 AS kgs_used FROM purchases
@@ -89,7 +96,7 @@ async function checkAndNotifyStock(db, enteredBy) {
       }
     }
 
-    // Finished goods check — per piece-type AND gauge (aggregating across gauges can mask real stock-outs)
+    // Finished goods per piece-type and gauge
     const low = await db.prepare(`
       WITH produced AS (
         SELECT pi.piece_type_id, COALESCE(pr.gauge,'') AS gauge, COALESCE(SUM(pi.pieces_produced),0) AS qty
@@ -116,39 +123,28 @@ async function checkAndNotifyStock(db, enteredBy) {
         AND (COALESCE(p.qty,0) - COALESCE(s.qty,0)) < 5
         AND (COALESCE(p.qty,0) - COALESCE(s.qty,0)) >= 0
     `).all();
+
     for (const item of low) {
-      const avail = parseInt(item.available) || 0;
+      const avail      = parseInt(item.available) || 0;
       const gaugeLabel = item.gauge ? ` (${item.gauge})` : '';
-      const itemLabel = `${item.name}${gaugeLabel}`;
+      const itemLabel  = `${item.name}${gaugeLabel}`;
       if (avail === 0) {
-        await writeIfNew('alert', `Stock-Out: ${itemLabel}`,
-          `${itemLabel} is completely out of stock.`);
+        await writeIfNew('alert', `Stock-Out: ${itemLabel}`, `${itemLabel} is completely out of stock.`);
       } else {
-        await writeIfNew('warn', `Low Stock: ${itemLabel}`,
+        await writeIfNew('warn',  `Low Stock: ${itemLabel}`,
           `${itemLabel} has only ${avail} piece${avail === 1 ? '' : 's'} remaining.`);
       }
     }
-  } catch(_) {}
-}
-
-
-async function getLandingCost(db, pt) {
-  const getCfg = async key => parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
-  // Use weighted landed wire cost (includes transport) for accuracy
-  const wireCostPerKg = await getWeightedWireCostPerKg(db);
-  const operator  = await getCfg('operator_cost');
-  const knuckler  = await getCfg('knuckler_cost');
-  const sack      = await getCfg('sack_cost');
-  return (wireCostPerKg * pt.weight_kg) + operator + knuckler + (sack * 2);
+  } catch (_) {}
 }
 
 async function getCfgNumber(db, key) {
   return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
 }
 
+// Weighted average landed wire cost per kg across all purchases up to toDate.
+// When toDate is omitted, uses all purchases (for live/current views).
 async function getWeightedWireCostPerKg(db, toDate) {
-  // Use landed cost: (kgs_bought * cost_per_kg + transport_cost) / kgs_bought
-  // This matches the daily.js formula so wire cost is consistent across all modules.
   const sql = `
     SELECT
       COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost), 0) AS total_landed_cost,
@@ -156,11 +152,30 @@ async function getWeightedWireCostPerKg(db, toDate) {
     FROM purchases
     ${toDate ? 'WHERE entry_date <= ?' : ''}
   `;
-  const totals = toDate ? await db.prepare(sql).get(toDate) : await db.prepare(sql).get();
+  const totals = toDate
+    ? await db.prepare(sql).get(toDate)
+    : await db.prepare(sql).get();
   if (totals.total_kgs > 0) return totals.total_landed_cost / totals.total_kgs;
   return getCfgNumber(db, 'cost_per_kg');
 }
 
+async function getLandingCost(db, pt) {
+  const wireCostPerKg = await getWeightedWireCostPerKg(db);
+  const operator      = await getCfgNumber(db, 'operator_cost');
+  const knuckler      = await getCfgNumber(db, 'knuckler_cost');
+  const sack          = await getCfgNumber(db, 'sack_cost');
+  return (wireCostPerKg * pt.weight_kg) + operator + knuckler + (sack * 2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORE P&L SUMMARY
+// Revenue  = cash received on invoice_payments in the period
+// Cost     = cost of goods sold in the period — uses sales.entry_date (accrual for cost)
+// transport_to_market is read from the SAVED sale snapshot (§2, §3, §11, §12).
+// It is never recalculated from config here. Config only sets the default at
+// insert time (in daily.js). Once saved, the value is permanent.
+// Cost of Sales = wire + labour + sacks + market transport (rent excluded — §4).
+// ─────────────────────────────────────────────────────────────────────────────
 async function getSalesCostSummary(db, fromDate, toDate) {
   const wireCostPerKg          = await getWeightedWireCostPerKg(db, toDate);
   const operatorRate           = await getCfgNumber(db, 'operator_cost');
@@ -168,9 +183,9 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   const sackRate               = await getCfgNumber(db, 'sack_cost');
   const conversionCostPerPiece = operatorRate + knucklerRate + (sackRate * 2);
 
-  // CASH-BASIS: revenue = money actually received from customers in this period
+  // CASH-BASIS: revenue = money actually received in this period
   const cashReceived = await db.prepare(`
-    SELECT COALESCE(SUM(ip.amount),0) AS total
+    SELECT COALESCE(SUM(ip.amount), 0) AS total
     FROM invoice_payments ip
     JOIN invoices i ON ip.invoice_id = i.id
     WHERE ip.payment_date BETWEEN ? AND ?
@@ -178,12 +193,9 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   `).get(fromDate, toDate);
   const revenue = parseFloat(cashReceived.total) || 0;
 
-  // COST OF PRODUCTION — ACCRUAL BASIS (fixed at time of sale, NEVER changes with payments)
-  // Rule: production cost is what it cost to make the goods we SOLD (invoiced) in this period.
-  // It does not scale with how much the customer has paid — production already happened.
-  // Example: Sold item for 1000, cost 500 → cost is ALWAYS 500 whether paid 400 or 1000.
-  //
-  // We look at sales (not invoice_payments) in this date range for cost calculation.
+  // COST OF SALES — accrual, fixed at time of sale.
+  // transport_to_market: read from the SAVED sales row (§11, §12).
+  // This is the single source of truth — never derived from current config.
   const costRows = await db.prepare(`
     SELECT
       s.quantity,
@@ -204,32 +216,36 @@ async function getSalesCostSummary(db, fromDate, toDate) {
     transportCost += transport;
   }
 
-  const wireCost       = kgsSold * wireCostPerKg;
-  const conversionCost = piecesSold * conversionCostPerPiece;
-  const directCosts    = wireCost + conversionCost + transportCost;
-
-  // Net profit = cash received (revenue) minus full production cost of sold goods.
-  // When invoice is partial: revenue is low, cost is fixed → net profit is lower. Correct.
-  // When invoice is fully paid: revenue rises to full, cost stays same → profit normalises.
+  const wireCost    = kgsSold * wireCostPerKg;
+  const convCost    = piecesSold * conversionCostPerPiece;
+  const directCosts = wireCost + convCost + transportCost; // §4 — no rent
   const grossProfit = revenue - directCosts;
 
   return {
-    revenue, pieces_sold: piecesSold, kgs_sold: kgsSold,
+    revenue,
+    pieces_sold:               piecesSold,
+    kgs_sold:                  kgsSold,
     weighted_wire_cost_per_kg: wireCostPerKg,
-    operator_rate: operatorRate, knuckler_rate: knucklerRate, sack_rate: sackRate,
+    operator_rate:             operatorRate,
+    knuckler_rate:             knucklerRate,
+    sack_rate:                 sackRate,
     conversion_cost_per_piece: conversionCostPerPiece,
-    wire_cost: wireCost, conversion_cost: conversionCost,
-    transport_to_market_cost: transportCost, direct_costs: directCosts, gross_profit: grossProfit,
+    wire_cost:                 wireCost,
+    conversion_cost:           convCost,
+    transport_to_market_cost:  transportCost,
+    direct_costs:              directCosts,
+    gross_profit:              grossProfit,
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DATE UTILITIES
+// ─────────────────────────────────────────────────────────────────────────────
 function toUtcDateParts(value) {
   const [year, month, day] = String(value).split('-').map(Number);
   return new Date(Date.UTC(year, (month || 1) - 1, day || 1));
 }
 
-// Safe UTC date string — avoids timezone-shift bugs that toISOString() causes
-// in non-UTC environments (e.g. Nairobi UTC+3).  Always returns 'YYYY-MM-DD'.
 function utcDateStr(d) {
   const y  = d.getUTCFullYear();
   const m  = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -241,9 +257,27 @@ function daysInMonth(year, monthIndex) {
   return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RENT EXPENSE — obligation incurred, period-prorated (§7, §9)
+//
+// Rule: rent expense = rent_months.amount_due prorated over the overlap between
+// the selected date range and each month the owner has explicitly added.
+//
+// Source of truth: rent_months table — rows the owner creates in reconciliation.
+// No row = no rent for that month. The system never assumes, never auto-creates.
+// Payment status is irrelevant here — obligation is incurred when the month
+// is added, not when cash is paid.
+//
+// Proration: daily_rate = amount_due / days_in_month
+//            rent_expense = daily_rate × overlap_days_in_range
+//
+// This is consistent with reconciliation which also reads rent_months.amount_due.
+// ─────────────────────────────────────────────────────────────────────────────
 async function getAccruedRentForRange(db, fromDate, toDate) {
-  const from   = toUtcDateParts(fromDate);
-  const to     = toUtcDateParts(toDate);
+  const from = toUtcDateParts(fromDate);
+  const to   = toUtcDateParts(toDate);
+
+  // Only months the owner has explicitly added — no fallback, no assumptions
   const months = await db.prepare(`
     SELECT month, amount_due FROM rent_months
     WHERE month BETWEEN ? AND ?
@@ -259,17 +293,49 @@ async function getAccruedRentForRange(db, fromDate, toDate) {
     const overlapStart = from > monthStart ? from : monthStart;
     const overlapEnd   = to   < monthEnd   ? to   : monthEnd;
     if (overlapStart > overlapEnd) continue;
-    const overlapDays  = Math.floor((overlapEnd - overlapStart) / 86400000) + 1;
-    const dailyRent    = (parseFloat(row.amount_due) || 0) / daysInMonth(year, month - 1);
+    const overlapDays = Math.floor((overlapEnd - overlapStart) / 86400000) + 1;
+    const dailyRent   = (parseFloat(row.amount_due) || 0) / daysInMonth(year, month - 1);
     rent += dailyRent * overlapDays;
   }
   return rent;
 }
 
-// ── Inventory ─────────────────────────────────────────────────────────────────
-router.get('/inventory', authenticate, requireRole('owner','admin'), async (_req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// RENT PAYABLE — outstanding balance per rent_month (§6, §7, §8)
+// Answers: "What do we still owe for rent months in this period?"
+//
+// Payments are matched by payments.rent_month column — NOT by payment_date.
+// This means a June payment for May rent correctly reduces May's payable balance.
+// Legacy fallback: payments with rent_month IS NULL fall back to
+// SUBSTR(payment_date,1,7) matching so old records still work.
+//
+// This is the ONLY correct way to compute rent outstanding. Using payment_date
+// range (the old broken approach) would miss late payments entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getRentPayable(db, fromYYYYMM, toYYYYMM) {
+  const rows = await db.prepare(`
+    SELECT rm.amount_due,
+           COALESCE(SUM(p.amount), 0) AS paid
+    FROM rent_months rm
+    LEFT JOIN payments p ON p.category = 'rent'
+      AND (p.rent_month = rm.month
+           OR (p.rent_month IS NULL AND SUBSTR(p.payment_date, 1, 7) = rm.month))
+    WHERE rm.month BETWEEN ? AND ?
+    GROUP BY rm.id, rm.amount_due
+  `).all(fromYYYYMM, toYYYYMM);
+  return Math.max(0,
+    rows.reduce((s, r) => s + Math.max(0, parseFloat(r.amount_due) - parseFloat(r.paid)), 0)
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/inventory — Owner/Admin full inventory
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/inventory', authenticate, requireRole('owner', 'admin'), async (_req, res) => {
   try {
-    const db          = getDb();
+    const db = getDb();
+
     const totalBought = (await db.prepare('SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases').get()).v;
     const totalUsed   = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0)   AS v FROM production').get()).v;
 
@@ -280,16 +346,18 @@ router.get('/inventory', authenticate, requireRole('owner','admin'), async (_req
 
     const usageEfficiency = totalUsed > 0
       ? parseFloat(((expectedUsed / totalUsed) * 100).toFixed(1)) : 0;
-    const rawStock  = totalBought - totalUsed;
-    const threshold = parseFloat((await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100);
 
-    // GROUP BY pt.id is fine — pt.id is PK so it functionally determines all pt.* columns
+    const rawStock  = totalBought - totalUsed;
+    const threshold = parseFloat(
+      (await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100
+    );
+
     const pieceTypes = await db.prepare(`
       SELECT pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price,
              COALESCE(SUM(pi.pieces_produced),0) AS total_produced
       FROM piece_types pt
-      LEFT JOIN production_items pi ON pi.piece_type_id=pt.id
-      WHERE pt.active=1
+      LEFT JOIN production_items pi ON pi.piece_type_id = pt.id
+      WHERE pt.active = 1
       GROUP BY pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price
     `).all();
 
@@ -303,66 +371,55 @@ router.get('/inventory', authenticate, requireRole('owner','admin'), async (_req
         total_sold:       sold,
         available_pieces: avail,
         available_kgs:    parseFloat((avail * (r.weight_kg || 0)).toFixed(2)),
-        available_meters:   parseFloat((avail * (r.length_m || 0)).toFixed(2)),
+        available_meters: parseFloat((avail * (r.length_m  || 0)).toFixed(2)),
         stock_value:      parseFloat((Math.max(0, avail) * r.default_price).toFixed(2)),
         landing_cost:     parseFloat(landingCost.toFixed(2)),
         suggested_price:  parseFloat((landingCost * 1.3).toFixed(2)),
       });
     }
 
-    // Calculate proper stock turnover metrics (period-based)
-    const totalSoldPieces = finished.reduce((sum, item) => sum + item.total_sold, 0);
-    const totalAvailablePieces = finished.reduce((sum, item) => sum + item.available_pieces, 0);
-    const totalStockValue = finished.reduce((sum, item) => sum + item.stock_value, 0);
-    
-    // Get recent sales for proper turnover calculation (last 90 days)
+    const totalSoldPieces      = finished.reduce((s, i) => s + i.total_sold, 0);
+    const totalAvailablePieces = finished.reduce((s, i) => s + i.available_pieces, 0);
+    const totalStockValue      = finished.reduce((s, i) => s + i.stock_value, 0);
+
     const recentNow  = new Date();
-    const recentDate = utcDateStr(new Date(Date.UTC(recentNow.getUTCFullYear(), recentNow.getUTCMonth(), recentNow.getUTCDate() - 90)));
+    const recentDate = utcDateStr(new Date(Date.UTC(
+      recentNow.getUTCFullYear(), recentNow.getUTCMonth(), recentNow.getUTCDate() - 90
+    )));
     const recentSales = await db.prepare(`
-      SELECT s.piece_type_id, SUM(s.quantity) as recent_sold, pt.default_price
+      SELECT s.piece_type_id, SUM(s.quantity) AS recent_sold, pt.default_price
       FROM sales s
       JOIN piece_types pt ON s.piece_type_id = pt.id
       WHERE s.entry_date >= ?
       GROUP BY s.piece_type_id, pt.default_price
     `).all(recentDate);
-    
-    // Calculate recent sold value
-    let recentSoldValue = 0;
+
+    let recentSoldValue  = 0;
     let recentSoldPieces = 0;
     for (const sale of recentSales) {
       const item = finished.find(f => f.id === sale.piece_type_id);
       if (item) {
-        recentSoldValue += sale.recent_sold * item.default_price;
+        recentSoldValue  += sale.recent_sold * item.default_price;
         recentSoldPieces += sale.recent_sold;
       }
     }
-    
-    // Stock turnover ratio (times per year based on recent 90-day performance)
+
     let stockTurnoverRatio = 0;
-    let stockTurnoverDays = 0;
-    let turnoverTrend = 'stable';
-    
+    let stockTurnoverDays  = 0;
+    let turnoverTrend      = 'stable';
+
     if (totalStockValue > 0 && recentSoldValue > 0) {
-      // Annualize recent 90-day sales
       const annualizedSoldValue = (recentSoldValue / 90) * 365;
       stockTurnoverRatio = parseFloat((annualizedSoldValue / totalStockValue).toFixed(2));
-      
-      // Estimate days of inventory on hand (365 / turnover ratio)
-      if (stockTurnoverRatio > 0) {
-        stockTurnoverDays = Math.round(365 / stockTurnoverRatio);
-      }
-      
-      // Determine trend
-      if (stockTurnoverRatio >= 4) turnoverTrend = 'fast';
+      if (stockTurnoverRatio > 0) stockTurnoverDays = Math.round(365 / stockTurnoverRatio);
+      if      (stockTurnoverRatio >= 4) turnoverTrend = 'fast';
       else if (stockTurnoverRatio >= 2) turnoverTrend = 'good';
       else if (stockTurnoverRatio >= 1) turnoverTrend = 'slow';
-      else turnoverTrend = 'very_slow';
+      else                              turnoverTrend = 'very_slow';
     }
-    
-    // Calculate average days to sell (based on recent sales)
+
     let avgDaysToSell = 0;
     if (recentSoldPieces > 0 && totalAvailablePieces > 0) {
-      // If current sales rate continues, how long to sell current stock?
       const dailySellRate = recentSoldPieces / 90;
       avgDaysToSell = Math.round(totalAvailablePieces / dailySellRate);
     }
@@ -380,48 +437,52 @@ router.get('/inventory', authenticate, requireRole('owner','admin'), async (_req
       },
       finished_goods:    finished,
       total_stock_value: parseFloat(totalStockValue.toFixed(2)),
-      // New stock turnover metrics
       stock_turnover: {
-        ratio: stockTurnoverRatio,
-        days_on_hand: stockTurnoverDays,
-        total_sold_pieces: totalSoldPieces,
-        total_available_pieces: totalAvailablePieces,
-        recent_sold_pieces_90days: recentSoldPieces,
-        recent_sold_value_90days: parseFloat(recentSoldValue.toFixed(2)),
+        ratio:                          stockTurnoverRatio,
+        days_on_hand:                   stockTurnoverDays,
+        total_sold_pieces:              totalSoldPieces,
+        total_available_pieces:         totalAvailablePieces,
+        recent_sold_pieces_90days:      recentSoldPieces,
+        recent_sold_value_90days:       parseFloat(recentSoldValue.toFixed(2)),
         avg_days_to_sell_current_stock: avgDaysToSell,
-        turnover_trend: turnoverTrend,
-        calculation_period: '90_days_annualized'
-      }
+        turnover_trend:                 turnoverTrend,
+        calculation_period:             '90_days_annualized',
+      },
     });
-  } catch(e) {
-    console.error('GET inventory error:', e);
+  } catch (e) {
+    console.error('GET /inventory error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Production Staff Inventory ────────────────────────────────────────────────────────
-router.get('/inventory/worker', authenticate, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/inventory/worker — Production staff inventory (read-only, no pricing)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/inventory/worker', authenticate, async (_req, res) => {
   try {
-    const db          = getDb();
-    const totalBought = (await db.prepare('SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases').get()).v;
-    const totalUsed   = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0)   AS v FROM production').get()).v;
+    const db = getDb();
 
+    const totalBought  = (await db.prepare('SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases').get()).v;
+    const totalUsed    = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0)   AS v FROM production').get()).v;
     const expectedUsed = (await db.prepare(`
       SELECT SUM(pi.pieces_produced * pt.weight_kg) AS v
       FROM production_items pi JOIN piece_types pt ON pi.piece_type_id = pt.id
     `).get())?.v || 0;
+
     const usageEfficiency = totalUsed > 0
       ? parseFloat(((expectedUsed / totalUsed) * 100).toFixed(1)) : 0;
     const rawStock  = totalBought - totalUsed;
-    const threshold = parseFloat((await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100);
+    const threshold = parseFloat(
+      (await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100
+    );
 
     const pieceTypes = await db.prepare(`
-      SELECT pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price,
+      SELECT pt.id, pt.name, pt.length_m, pt.weight_kg,
              COALESCE(SUM(pi.pieces_produced),0) AS total_produced
       FROM piece_types pt
-      LEFT JOIN production_items pi ON pi.piece_type_id=pt.id
-      WHERE pt.active=1
-      GROUP BY pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price
+      LEFT JOIN production_items pi ON pi.piece_type_id = pt.id
+      WHERE pt.active = 1
+      GROUP BY pt.id, pt.name, pt.length_m, pt.weight_kg
     `).all();
 
     const finished = [];
@@ -429,10 +490,11 @@ router.get('/inventory/worker', authenticate, async (req, res) => {
       const sold  = (await db.prepare('SELECT COALESCE(SUM(quantity),0) AS v FROM sales WHERE piece_type_id=?').get(r.id)).v;
       const avail = r.total_produced - sold;
       finished.push({
-        id: r.id, name: r.name,
+        id:               r.id,
+        name:             r.name,
         available_pieces: avail,
         available_kgs:    parseFloat((avail * (r.weight_kg || 0)).toFixed(2)),
-        available_meters:   parseFloat((avail * (r.length_m || 0)).toFixed(2)),
+        available_meters: parseFloat((avail * (r.length_m  || 0)).toFixed(2)),
       });
     }
 
@@ -449,20 +511,24 @@ router.get('/inventory/worker', authenticate, async (req, res) => {
       },
       finished_goods: finished,
     });
-  } catch(e) {
-    console.error('GET inventory/production-staff error:', e);
+  } catch (e) {
+    console.error('GET /inventory/worker error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Dashboard ─────────────────────────────────────────────────────────────────
-router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req, res) => {
-  // ACID: Start database transaction for consistency
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/dashboard — Main analytics dashboard
+//
+// Revenue  : cash-basis (invoice_payments received in period)
+// Cost     : accrual-basis cost of goods sold in period
+// Net Profit: revenue − cost_of_sales − period_rent_expense (§9)
+// Payables : rent_month matching so dashboard ≡ reconciliation (§8)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   const db = getDb();
-  
   try {
     const days = Math.min(Math.max(parseInt(req.query.period || 30), 1), 365);
-    const granularity = req.query.granularity || 'auto'; // auto, day, week, month, quarter
 
     let fromDate, toDate;
     if (req.query.from && req.query.to) {
@@ -471,18 +537,21 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
     } else {
       const now = new Date();
       toDate   = utcDateStr(now);
-      fromDate = utcDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days)));
+      fromDate = utcDateStr(new Date(Date.UTC(
+        now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days
+      )));
     }
 
-    // ACID: All reads within single transaction for consistency
     const salesSummary = await getSalesCostSummary(db, fromDate, toDate);
-    const rentCost     = await getAccruedRentForRange(db, fromDate, toDate);
-    const grossProfit  = salesSummary.gross_profit;              // revenue - direct costs (wire+labour+transport)
-    const netProfit    = grossProfit - rentCost;                 // gross minus period rent (the true bottom line)
-    const grossMargin  = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
-    const netMargin    = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
+    // Rent Expense — prorated for P&L only (§7, §9).
+    // This is NOT the same as rent payable — see getRentPayable below.
+    const rentCost    = await getAccruedRentForRange(db, fromDate, toDate);
+    const grossProfit = salesSummary.gross_profit;           // revenue − cost_of_sales
+    const netProfit   = grossProfit - rentCost;              // − period rent expense
+    const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
+    const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
-    // FIX: cash-basis — only revenue actually received in this period
+    // Best piece by cash received
     const best = await db.prepare(`
       SELECT pt.name, ROUND(COALESCE(SUM(ip_agg.amount),0),2) AS revenue
       FROM (
@@ -500,16 +569,13 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       ORDER BY revenue DESC LIMIT 1
     `).get(fromDate, toDate);
 
-    // Best customers analytics — cash-basis: only money actually received.
-    // FIX: revenue is summed at invoice level (ip.amount is already per-invoice aggregate).
-    // pieces are summed via a separate LEFT JOIN subquery so the revenue column is never
-    // multiplied by the number of invoice line items.
+    // Best customers — cash-basis
     const bestCustomers = await db.prepare(`
       SELECT
         COALESCE(NULLIF(i.customer_name,''), 'Anonymous') AS customer_name,
         COUNT(DISTINCT i.id)                               AS transaction_count,
         COALESCE(SUM(ii_qty.qty), 0)                       AS total_pieces,
-        ROUND(COALESCE(SUM(ip.amount),0), 2)      AS total_revenue
+        ROUND(COALESCE(SUM(ip.amount),0), 2)               AS total_revenue
       FROM (
         SELECT invoice_id, SUM(amount) AS amount
         FROM invoice_payments ip_inner
@@ -521,8 +587,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       JOIN invoices i ON i.id = ip.invoice_id
       LEFT JOIN (
         SELECT invoice_id, SUM(quantity) AS qty
-        FROM invoice_items
-        GROUP BY invoice_id
+        FROM invoice_items GROUP BY invoice_id
       ) ii_qty ON ii_qty.invoice_id = i.id
       WHERE i.customer_name IS NOT NULL AND i.customer_name != ''
       GROUP BY i.customer_name
@@ -530,10 +595,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       LIMIT 10
     `).all(fromDate, toDate);
 
-    // Gauge breakdown analytics — cash-basis, item-level split
-    // When one invoice has multiple gauge items (e.g. G12 + G16), the payment received
-    // is split proportionally by each line item's share of the invoice subtotal.
-    // This prevents all revenue from a multi-gauge invoice being attributed to one gauge.
+    // Gauge breakdown — cash-basis, proportional line-item split
     const gaugeBreakdown = await db.prepare(`
       SELECT
         COALESCE(NULLIF(ii.gauge,''), 'Unknown') AS gauge_source,
@@ -541,7 +603,7 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
         CAST(SUM(ii.quantity) AS INTEGER)         AS total_pieces,
         ROUND(SUM(
           ip.amount * (ii.line_total / NULLIF(i.subtotal, 0))
-        ), 2)                            AS total_revenue
+        ), 2)                                     AS total_revenue
       FROM (
         SELECT invoice_id, SUM(amount) AS amount
         FROM invoice_payments ip_inner
@@ -561,97 +623,60 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
     const rawBought = (await db.prepare('SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases').get()).v;
     const rawUsed   = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0)   AS v FROM production').get()).v;
     const rawStock  = rawBought - rawUsed;
-    const threshold = parseFloat((await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100);
-    const prodVol   = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0) AS v FROM production WHERE entry_date BETWEEN ? AND ?').get(fromDate, toDate)).v;
+    const threshold = parseFloat(
+      (await db.prepare("SELECT value FROM config WHERE key='stock_threshold'").get())?.value || 100
+    );
+    const prodVol   = (await db.prepare(
+      'SELECT COALESCE(SUM(kgs_used),0) AS v FROM production WHERE entry_date BETWEEN ? AND ?'
+    ).get(fromDate, toDate)).v;
 
-    const diffDays = Math.round((new Date(Date.UTC(...toDate.split('-').map(Number).map((v,i)=>i===1?v-1:v))) - new Date(Date.UTC(...fromDate.split('-').map(Number).map((v,i)=>i===1?v-1:v)))) / 86400000) + 1;
-
-    // Intelligent trend calculation based on granularity
-    const trends = [];
-    
-    // Determine optimal granularity
-    let step, labelFormat, dateGrouping;
-    if (diffDays <= 7) {
-      step = 1; // Daily
-      labelFormat = 'MM/dd';
-      dateGrouping = 'DATE(entry_date)';
-    } else if (diffDays <= 31) {
-      step = Math.max(1, Math.floor(diffDays / 15)); // Grouped daily
-      labelFormat = 'MM/dd';
-      dateGrouping = 'DATE(entry_date)';
-    } else if (diffDays <= 90) {
-      step = 7; // Weekly
-      labelFormat = 'MM/dd';
-      dateGrouping = "DATE_TRUNC('week', entry_date)";
-    } else if (diffDays <= 365) {
-      step = 30; // Monthly
-      labelFormat = 'MMM';
-      dateGrouping = "DATE_TRUNC('month', entry_date)";
-    } else {
-      step = 90; // Quarterly
-      labelFormat = 'MMM yy';
-      dateGrouping = "DATE_TRUNC('quarter', entry_date)";
-    }
-
-    // Build date-bucket boundaries once, then fetch all raw rows in 3 parallel queries.
-    // IMPORTANT: use Date.UTC throughout so Nairobi (UTC+3) and other non-UTC servers
-    // don't shift dates by one day when converting back to strings.
-    // Buckets are CALENDAR-ALIGNED: monthly snaps to month-start, weekly snaps to Monday.
-    const buckets = [];
+    // Trend buckets
     const [sy, sm, sd] = fromDate.split('-').map(Number);
     const [ey, em, ed] = toDate.split('-').map(Number);
     const utcStart = new Date(Date.UTC(sy, sm - 1, sd));
     const utcEnd   = new Date(Date.UTC(ey, em - 1, ed));
+    const diffDays = Math.round((utcEnd - utcStart) / 86400000) + 1;
 
+    let step;
+    if      (diffDays <= 7)   step = 1;
+    else if (diffDays <= 31)  step = Math.max(1, Math.floor(diffDays / 15));
+    else if (diffDays <= 90)  step = 7;
+    else if (diffDays <= 365) step = 30;
+    else                      step = 90;
+
+    const buckets = [];
     if (step >= 28) {
-      // Monthly: snap to calendar month boundaries
-      let cur = new Date(Date.UTC(sy, sm - 1, 1)); // first day of start month
-      // If fromDate is not the 1st, start from that month still
+      let cur = new Date(Date.UTC(sy, sm - 1, 1));
       while (cur <= utcEnd) {
-        const ds = utcDateStr(cur);
-        // End = last day of this calendar month, clamped to utcEnd
+        const ds       = utcDateStr(cur);
         const monthEnd = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0));
-        const de = utcDateStr(new Date(Math.min(monthEnd.getTime(), utcEnd.getTime())));
-        // Only include bucket if it overlaps with [fromDate, toDate]
-        if (de >= fromDate) {
-          const effectiveDs = ds < fromDate ? fromDate : ds;
-          buckets.push({ ds: effectiveDs, de });
-        }
+        const de       = utcDateStr(new Date(Math.min(monthEnd.getTime(), utcEnd.getTime())));
+        if (de >= fromDate) buckets.push({ ds: ds < fromDate ? fromDate : ds, de });
         cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
       }
     } else if (step === 7) {
-      // Weekly: snap to Monday
       let cur = new Date(utcStart);
-      // Snap back to the Monday of the start week
-      const dayOfWeek = cur.getUTCDay(); // 0=Sun,1=Mon,...
-      const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-      cur.setUTCDate(cur.getUTCDate() + daysToMonday);
+      const dow = cur.getUTCDay();
+      cur.setUTCDate(cur.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
       while (cur <= utcEnd) {
-        const ds = utcDateStr(cur);
+        const ds      = utcDateStr(cur);
         const weekEnd = new Date(cur.getTime() + 6 * 86400000);
-        const de = utcDateStr(new Date(Math.min(weekEnd.getTime(), utcEnd.getTime())));
-        if (de >= fromDate) {
-          const effectiveDs = ds < fromDate ? fromDate : ds;
-          buckets.push({ ds: effectiveDs, de });
-        }
+        const de      = utcDateStr(new Date(Math.min(weekEnd.getTime(), utcEnd.getTime())));
+        if (de >= fromDate) buckets.push({ ds: ds < fromDate ? fromDate : ds, de });
         cur.setUTCDate(cur.getUTCDate() + 7);
       }
     } else if (step > 1) {
-      // Grouped daily (e.g., step=2 or 3 for 31-day range)
       for (let d = new Date(utcStart); d <= utcEnd; d.setUTCDate(d.getUTCDate() + step)) {
         const ds = utcDateStr(d);
         const de = utcDateStr(new Date(Math.min(d.getTime() + (step - 1) * 86400000, utcEnd.getTime())));
         buckets.push({ ds, de });
       }
     } else {
-      // Daily: one bucket per day
       for (let d = new Date(utcStart); d <= utcEnd; d.setUTCDate(d.getUTCDate() + 1)) {
-        const ds = utcDateStr(d);
-        buckets.push({ ds, de: ds });
+        buckets.push({ ds: utcDateStr(d), de: utcDateStr(d) });
       }
     }
 
-    // 3 bulk queries in parallel — one per data series
     const [revRows, kgPRows, kgBRows] = await Promise.all([
       db.prepare(`
         SELECT SUBSTR(ip.payment_date, 1, 10) AS d, COALESCE(SUM(ip.amount),0) AS v
@@ -673,14 +698,14 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       `).all(fromDate, toDate),
     ]);
 
-    const revMap  = Object.fromEntries(revRows.map(r  => [String(r.d), parseFloat(r.v) || 0]));
-    const kgPMap  = Object.fromEntries(kgPRows.map(r  => [String(r.d), parseFloat(r.v) || 0]));
-    const kgBMap  = Object.fromEntries(kgBRows.map(r  => [String(r.d), parseFloat(r.v) || 0]));
+    const revMap = Object.fromEntries(revRows.map(r => [String(r.d), parseFloat(r.v) || 0]));
+    const kgPMap = Object.fromEntries(kgPRows.map(r => [String(r.d), parseFloat(r.v) || 0]));
+    const kgBMap = Object.fromEntries(kgBRows.map(r => [String(r.d), parseFloat(r.v) || 0]));
 
-    // Aggregate into buckets
+    const trends = [];
     for (const { ds, de } of buckets) {
       let rev = 0, kgP = 0, kgB = 0;
-      const [bs, bm, bd2] = ds.split('-').map(Number);
+      const [bs, bm, bd2]   = ds.split('-').map(Number);
       const [es2, em2, ed2] = de.split('-').map(Number);
       const bStart = new Date(Date.UTC(bs, bm - 1, bd2));
       const bEnd   = new Date(Date.UTC(es2, em2 - 1, ed2));
@@ -693,16 +718,9 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       trends.push({
         date: ds,
         date_label: (() => {
-          const d0 = new Date(Date.UTC(...ds.split('-').map(Number).map((v,i)=>i===1?v-1:v)));
-          if (step >= 28) {
-            // Monthly: show "Apr 2026" or just "Apr" if within same year
-            return d0.toLocaleDateString('en-US', { month: 'short', year: diffDays > 365 ? '2-digit' : undefined, timeZone: 'UTC' });
-          } else if (step === 7) {
-            // Weekly: show "Apr 7" (week start)
-            return d0.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-          } else {
-            return d0.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-          }
+          const d0 = new Date(Date.UTC(...ds.split('-').map(Number).map((v, i) => i === 1 ? v - 1 : v)));
+          if (step >= 28) return d0.toLocaleDateString('en-US', { month: 'short', year: diffDays > 365 ? '2-digit' : undefined, timeZone: 'UTC' });
+          return d0.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
         })(),
         revenue:       parseFloat(rev.toFixed(2)),
         kgs_produced:  parseFloat(kgP.toFixed(2)),
@@ -710,13 +728,113 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       });
     }
 
+    // ── Period payables summary (§8) ─────────────────────────────────────────
+    // Rent Payable uses getRentPayable (rent_month matching) so dashboard and
+    // reconciliation always show the same rent outstanding balance.
+    const summary = await (async () => {
+      // Open receivables created in period
+      const invRow = await db.prepare(`
+        SELECT
+          COUNT(*)                                                   AS count,
+          COALESCE(SUM(total_amount), 0)                            AS total_amount,
+          COALESCE(SUM(amount_paid), 0)                             AS paid_amount,
+          COALESCE(SUM(total_amount - amount_paid), 0)              AS outstanding_amount,
+          COUNT(*) FILTER(WHERE status = 'partial_payment')         AS partial_count
+        FROM invoices
+        WHERE invoice_date BETWEEN ? AND ?
+          AND status NOT IN ('paid', 'cancelled')
+          AND total_amount > amount_paid
+      `).get(fromDate, toDate);
+
+      // Supplier outstanding (period-filtered)
+      const supplierBilled = await db.prepare(`
+        SELECT COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost), 0) AS total
+        FROM purchases WHERE entry_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const supplierPaid = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM payments WHERE category = 'supplier' AND payment_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const supplierOutstanding = Math.max(0,
+        parseFloat(supplierBilled.total) - parseFloat(supplierPaid.total)
+      );
+
+      // Wages outstanding (period-filtered)
+      const wageBilled = await db.prepare(`
+        SELECT COALESCE(SUM(operator_cost + knuckler_cost), 0) AS total
+        FROM production WHERE entry_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const wagePaid = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM payments WHERE category IN ('wages_operator', 'wages_knuckler')
+          AND payment_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const wagesOutstanding = Math.max(0,
+        parseFloat(wageBilled.total) - parseFloat(wagePaid.total)
+      );
+
+      // Rent Payable — §6, §8.
+      // rent_month matching: a June payment for May rent still reduces May's balance.
+      // This matches what the reconciliation page shows — dashboard and reconciliation agree.
+      const rentOutstanding = await getRentPayable(db, fromDate.slice(0, 7), toDate.slice(0, 7));
+
+      // Transport to market outstanding (period-filtered)
+      // Accrued = transport saved on sales in period. Paid = transport_to_market payments in period.
+      const transportBilled = await db.prepare(`
+        SELECT COALESCE(SUM(transport_to_market), 0) AS total
+        FROM sales WHERE entry_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const transportPaid = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM payments WHERE category = 'transport_to_market' AND payment_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const transportOutstanding = Math.max(0,
+        parseFloat(transportBilled.total) - parseFloat(transportPaid.total)
+      );
+
+      // Sack outstanding (period-filtered)
+      const sackBilled = await db.prepare(`
+        SELECT COALESCE(SUM(sack_cost), 0) AS total
+        FROM production WHERE entry_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const sackPaid = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM payments WHERE category = 'sack' AND payment_date BETWEEN ? AND ?
+      `).get(fromDate, toDate);
+      const sackOutstanding = Math.max(0,
+        parseFloat(sackBilled.total) - parseFloat(sackPaid.total)
+      );
+
+      const totalOutstanding = parseFloat(
+        (supplierOutstanding + wagesOutstanding + rentOutstanding + sackOutstanding + transportOutstanding).toFixed(2)
+      );
+
+      return {
+        invoices: {
+          count:              parseInt(invRow.count)                || 0,
+          total_amount:       parseFloat(invRow.total_amount)       || 0,
+          paid_amount:        parseFloat(invRow.paid_amount)        || 0,
+          outstanding_amount: parseFloat(invRow.outstanding_amount) || 0,
+          partial_count:      parseInt(invRow.partial_count)        || 0,
+        },
+        purchases: {
+          supplier_outstanding:   supplierOutstanding,
+          wages_outstanding:      wagesOutstanding,
+          rent_outstanding:       rentOutstanding,
+          sack_outstanding:       sackOutstanding,
+          transport_outstanding:  transportOutstanding,
+          outstanding_payable:    totalOutstanding,
+        },
+      };
+    })();
+
     res.json({
       period_days: days, from: fromDate, to: toDate,
       granularity: {
-        unit: diffDays <= 7 ? 'day' : diffDays <= 31 ? 'day' : diffDays <= 90 ? 'week' : diffDays <= 365 ? 'month' : 'quarter',
-        step: step,
-        label: diffDays <= 7 ? 'Daily' : diffDays <= 31 ? 'Daily' : diffDays <= 90 ? 'Weekly' : diffDays <= 365 ? 'Monthly' : 'Quarterly',
-        total_points: trends.length
+        unit:         diffDays <= 7 ? 'day' : diffDays <= 31 ? 'day' : diffDays <= 90 ? 'week' : diffDays <= 365 ? 'month' : 'quarter',
+        step,
+        label:        diffDays <= 7 ? 'Daily' : diffDays <= 31 ? 'Daily' : diffDays <= 90 ? 'Weekly' : diffDays <= 365 ? 'Monthly' : 'Quarterly',
+        total_points: trends.length,
       },
       kpis: {
         total_revenue:             parseFloat(salesSummary.revenue.toFixed(2)),
@@ -745,245 +863,126 @@ router.get('/dashboard', authenticate, requireRole('owner','admin'), async (req,
       },
       trends,
       analytics: {
-        best_customers: bestCustomers,
+        best_customers:  bestCustomers,
         gauge_breakdown: gaugeBreakdown,
       },
-      // ── Owner Dashboard KPI additions ─────────────────────────────────────
-      // All figures are PERIOD-FILTERED to fromDate/toDate for slicer accuracy
-      summary: await (async () => {
-        // Receivables: invoices created in this period that still have an outstanding balance
-        const invRow = await db.prepare(`
-          SELECT
-            COUNT(*)                                               AS count,
-            COALESCE(SUM(total_amount), 0)                        AS total_amount,
-            COALESCE(SUM(amount_paid), 0)                         AS paid_amount,
-            COALESCE(SUM(total_amount - amount_paid), 0)          AS outstanding_amount,
-            COUNT(*) FILTER(WHERE status = 'partial_payment')     AS partial_count
-          FROM invoices
-          WHERE invoice_date BETWEEN ? AND ?
-            AND status NOT IN ('paid', 'cancelled')
-            AND total_amount > amount_paid
-        `).get(fromDate, toDate);
-
-        // Payables: costs INCURRED in this period minus payments made in this period
-        // 1. Supplier wire: purchases entered in period vs supplier payments made in period
-        const supplierBilled = await db.prepare(`
-          SELECT COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost), 0) AS total
-          FROM purchases WHERE entry_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const supplierPaid = await db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category = 'supplier' AND payment_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const supplierOutstanding = Math.max(0,
-          parseFloat(supplierBilled.total) - parseFloat(supplierPaid.total)
-        );
-
-        // 2. Wages: labour costs from production entries in period vs wage payments in period
-        const wageBilled = await db.prepare(`
-          SELECT COALESCE(SUM(operator_cost + knuckler_cost), 0) AS total
-          FROM production WHERE entry_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const wagePaid = await db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category IN ('wages_operator', 'wages_knuckler')
-            AND payment_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const wagesOutstanding = Math.max(0,
-          parseFloat(wageBilled.total) - parseFloat(wagePaid.total)
-        );
-
-        // 3. Rent: accrued rent for period vs rent payments made in period
-        const rentDue = await db.prepare(`
-          SELECT COALESCE(SUM(amount_due), 0) AS total
-          FROM rent_months WHERE month BETWEEN ? AND ?
-        `).get(fromDate.slice(0,7), toDate.slice(0,7));
-        const rentPaid = await db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category = 'rent' AND payment_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const rentOutstanding = Math.max(0,
-          parseFloat(rentDue.total) - parseFloat(rentPaid.total)
-        );
-
-        // 4. Sack costs: from production in period vs sack payments in period
-        const sackBilled = await db.prepare(`
-          SELECT COALESCE(SUM(sack_cost), 0) AS total
-          FROM production WHERE entry_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const sackPaid = await db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category = 'sack' AND payment_date BETWEEN ? AND ?
-        `).get(fromDate, toDate);
-        const sackOutstanding = Math.max(0,
-          parseFloat(sackBilled.total) - parseFloat(sackPaid.total)
-        );
-
-        const totalOutstanding = parseFloat(
-          (supplierOutstanding + wagesOutstanding + rentOutstanding + sackOutstanding).toFixed(2)
-        );
-
-        return {
-          invoices: {
-            count:              parseInt(invRow.count)               || 0,
-            total_amount:       parseFloat(invRow.total_amount)      || 0,
-            paid_amount:        parseFloat(invRow.paid_amount)       || 0,
-            outstanding_amount: parseFloat(invRow.outstanding_amount) || 0,
-            partial_count:      parseInt(invRow.partial_count)       || 0,
-          },
-          purchases: {
-            supplier_outstanding: supplierOutstanding,
-            wages_outstanding:    wagesOutstanding,
-            rent_outstanding:     rentOutstanding,
-            sack_outstanding:     sackOutstanding,
-            outstanding_payable:  totalOutstanding,
-          },
-        };
-      })(),
+      summary,
     });
-  } catch(e) {
-    console.error('GET dashboard error:', e);
+  } catch (e) {
+    console.error('GET /dashboard error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Production Staff Summary ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/worker-summary — Production staff personal KPIs
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/worker-summary', authenticate, async (req, res) => {
   try {
     const db   = getDb();
     const days = Math.min(parseInt(req.query.period || 30), 365);
     const now  = new Date();
-    const from = utcDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days)));
+    const from = utcDateStr(new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days
+    )));
 
-    const myPurchases  = await db.prepare('SELECT COUNT(*) as c, COALESCE(SUM(kgs_bought),0) as kgs FROM purchases  WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
-    const myProduction = await db.prepare('SELECT COUNT(*) as c, COALESCE(SUM(kgs_used),0)   as kgs FROM production WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
-    const mySales      = await db.prepare('SELECT COUNT(*) as c, COALESCE(SUM(quantity*selling_price),0) as rev FROM sales WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
+    const myPurchases  = await db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(kgs_bought),0) AS kgs FROM purchases  WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
+    const myProduction = await db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(kgs_used),0)   AS kgs FROM production WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
+    const mySales      = await db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(quantity*selling_price),0) AS rev FROM sales WHERE entered_by=? AND entry_date>=?').get(req.user.id, from);
 
     res.json({
       period_days:   days,
-      my_purchases:  { count: myPurchases.c,  total_kgs:     parseFloat((myPurchases.kgs||0).toFixed(2)) },
-      my_production: { count: myProduction.c, total_kgs:     parseFloat((myProduction.kgs||0).toFixed(2)) },
-      my_sales:      { count: mySales.c,      total_revenue: parseFloat((mySales.rev||0).toFixed(2)) },
+      my_purchases:  { count: myPurchases.c,  total_kgs:     parseFloat((myPurchases.kgs  || 0).toFixed(2)) },
+      my_production: { count: myProduction.c, total_kgs:     parseFloat((myProduction.kgs || 0).toFixed(2)) },
+      my_sales:      { count: mySales.c,      total_revenue: parseFloat((mySales.rev      || 0).toFixed(2)) },
     });
-  } catch(e) {
-    console.error('GET production-staff-summary error:', e);
+  } catch (e) {
+    console.error('GET /worker-summary error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG — GET and PUT
+// Config sets DEFAULTS only. It must never rewrite saved transaction values.
+// Changing transport_to_market in config only affects NEW sales (§12).
+// ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_KEYS = [
-  'cost_per_kg','transport_cost','transport_to_market','operator_cost','knuckler_cost',
-  'sack_cost','rent_allocation','stock_threshold','wire_gauges',
-  'business_name','business_slogan','currency',
-  'invoice_prefix','invoice_tax_pct',   // used by invoices.js for number generation & tax
+  'cost_per_kg', 'transport_cost', 'transport_to_market', 'operator_cost',
+  'knuckler_cost', 'sack_cost', 'rent_allocation', 'stock_threshold', 'wire_gauges',
+  'business_name', 'business_slogan', 'currency', 'invoice_prefix', 'invoice_tax_pct',
+  'show_rent_dashboard',
 ];
-
-// ── GET /api/db-stats — DB file size and table record counts for system health ──
-router.get('/db-stats', authenticate, requireRole('owner','admin'), async (_req, res) => {
-  try {
-    const db = getDb();
-    const fs = require('fs');
-    const path = require('path');
-    const dbPath = process.env.SQLITE_PATH || path.join(__dirname, '../db/imara.db');
-    let fileSizeBytes = 0;
-    try { fileSizeBytes = fs.statSync(dbPath).size; } catch(e) {}
-
-    const tables = ['audit_log','password_reset_tokens','notifications',
-                    'daily_purchases','daily_production','daily_sales',
-                    'invoices','reconciliation_payments','users'];
-    const counts = {};
-    for (const t of tables) {
-      try {
-        const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get();
-        counts[t] = row?.n ?? 0;
-      } catch(e) { counts[t] = null; }
-    }
-
-    // Oldest business record
-    let oldestRecord = null;
-    try {
-      const r = await db.prepare(
-        `SELECT MIN(entry_date) AS oldest FROM (
-           SELECT entry_date FROM daily_purchases
-           UNION ALL SELECT entry_date FROM daily_production
-           UNION ALL SELECT entry_date FROM daily_sales
-         )`
-      ).get();
-      oldestRecord = r?.oldest || null;
-    } catch(e) {}
-
-    res.json({ file_size_bytes: fileSizeBytes, counts, oldest_record: oldestRecord });
-  } catch(e) {
-    console.error('db-stats error:', e);
-    res.status(500).json({ error: 'Failed to load DB stats' });
-  }
-});
 
 router.get('/config', authenticate, async (_req, res) => {
   try {
-    const db   = getDb();
-    const rows = await db.prepare('SELECT key,value FROM config').all();
+    const rows = await getDb().prepare('SELECT key, value FROM config').all();
     const cfg  = {};
     for (const r of rows) cfg[r.key] = r.value;
     res.json(cfg);
-  } catch(e) {
-    console.error('GET config error:', e);
+  } catch (e) {
+    console.error('GET /config error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-router.put('/config', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.put('/config', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db = getDb();
     for (const [key, value] of Object.entries(req.body)) {
       if (!ALLOWED_KEYS.includes(key)) continue;
       await db.prepare(
-        "INSERT INTO config(key,value,updated_by,updated_at) VALUES(?,?,?,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=NOW()"
+        `INSERT INTO config(key, value, updated_by, updated_at)
+         VALUES(?, ?, ?, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET
+           value      = excluded.value,
+           updated_by = excluded.updated_by,
+           updated_at = excluded.updated_at`
       ).run(key, String(value), req.user.id);
-      await writeAudit(db, { userId: req.user.id, action: 'CONFIG_UPDATE', table: 'config', newVals: { key, value }, ip: req.ip });
+      await writeAudit(db, {
+        userId: req.user.id, action: 'CONFIG_UPDATE',
+        table: 'config', newVals: { key, value }, ip: req.ip,
+      });
     }
-    const rows = await db.prepare('SELECT key,value FROM config').all();
+    const rows = await db.prepare('SELECT key, value FROM config').all();
     const cfg  = {};
     for (const r of rows) cfg[r.key] = r.value;
     res.json({ message: 'Config updated', config: cfg });
-  } catch(e) {
-    console.error('PUT config error:', e);
+  } catch (e) {
+    console.error('PUT /config error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Piece types ───────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// PIECE TYPES
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/piece-types', authenticate, async (_req, res) => {
   try {
     res.json(await getDb().prepare('SELECT * FROM piece_types WHERE active=1 ORDER BY name').all());
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-router.post('/piece-types', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.post('/piece-types', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { name, length_m, weight_kg, default_price } = req.body;
     if (!name || !length_m || !weight_kg)
       return res.status(400).json({ error: 'name, length_m, weight_kg required' });
-    if (parseFloat(length_m) <= 0) return res.status(400).json({ error: 'length_m must be > 0' });
+    if (parseFloat(length_m)  <= 0) return res.status(400).json({ error: 'length_m must be > 0' });
     if (parseFloat(weight_kg) <= 0) return res.status(400).json({ error: 'weight_kg must be > 0' });
-
     const db    = getDb();
     const price = parseFloat(default_price) || 0;
-    // FIX: RETURNING id
     const r = await db.prepare(
-      'INSERT INTO piece_types(name,length_m,weight_kg,default_price) VALUES(?,?,?,?) RETURNING id'
+      'INSERT INTO piece_types(name, length_m, weight_kg, default_price) VALUES(?,?,?,?) RETURNING id'
     ).run(name, length_m, weight_kg, price);
     res.status(201).json({ id: r.lastInsertRowid, name, length_m, weight_kg, default_price: price, active: 1 });
-  } catch(e) {
-    if (e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Piece type name already exists' });
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Piece type name already exists' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-router.put('/piece-types/:id', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.put('/piece-types/:id', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { name, length_m, weight_kg, default_price } = req.body;
     if (!name || !length_m || !weight_kg)
@@ -991,124 +990,154 @@ router.put('/piece-types/:id', authenticate, requireRole('owner','admin'), async
     const db       = getDb();
     const existing = await db.prepare('SELECT id FROM piece_types WHERE id=?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Piece type not found' });
-
     const price = parseFloat(default_price) || 0;
-    await db.prepare('UPDATE piece_types SET name=?,length_m=?,weight_kg=?,default_price=? WHERE id=?')
+    await db.prepare('UPDATE piece_types SET name=?, length_m=?, weight_kg=?, default_price=? WHERE id=?')
       .run(name, length_m, weight_kg, price, req.params.id);
     res.json({ message: 'Updated', id: req.params.id, name, length_m, weight_kg, default_price: price });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-router.delete('/piece-types/:id', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.delete('/piece-types/:id', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db      = getDb();
     const pieceId = parseInt(req.params.id, 10);
     const existing = await db.prepare('SELECT * FROM piece_types WHERE id=?').get(pieceId);
     if (!existing) return res.status(404).json({ error: 'Piece type not found' });
-
-    const usedInProduction = (await db.prepare('SELECT COUNT(*) as c FROM production_items WHERE piece_type_id=?').get(pieceId)).c;
-    const usedInSales      = (await db.prepare('SELECT COUNT(*) as c FROM sales WHERE piece_type_id=?').get(pieceId)).c;
-    if (usedInProduction > 0 || usedInSales > 0)
+    const usedInProd  = (await db.prepare('SELECT COUNT(*) AS c FROM production_items WHERE piece_type_id=?').get(pieceId)).c;
+    const usedInSales = (await db.prepare('SELECT COUNT(*) AS c FROM sales           WHERE piece_type_id=?').get(pieceId)).c;
+    if (usedInProd > 0 || usedInSales > 0)
       return res.status(400).json({ error: 'Piece type cannot be deleted because it is already used in system records' });
-
     await db.prepare('DELETE FROM piece_types WHERE id=?').run(pieceId);
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_PIECE_TYPE', table: 'piece_types', recordId: pieceId, oldVals: existing, ip: req.ip });
     res.json({ message: 'Piece type deleted' });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-// ── Suppliers ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPPLIERS
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/suppliers', authenticate, async (_req, res) => {
   try {
     res.json(await getDb().prepare('SELECT * FROM suppliers WHERE active=1 ORDER BY name').all());
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-router.post('/suppliers', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.post('/suppliers', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { name } = req.body;
-    if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
+    if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
     const db        = getDb();
     const cleanName = name.trim();
     const existing  = await db.prepare('SELECT * FROM suppliers WHERE name=?').get(cleanName);
-
     if (existing && existing.active)  return res.status(409).json({ error: 'Supplier already exists' });
     if (existing && !existing.active) {
       await db.prepare('UPDATE suppliers SET active=1 WHERE id=?').run(existing.id);
       return res.status(200).json({ id: existing.id, name: cleanName, active: 1, restored: true });
     }
-
-    // FIX: RETURNING id
     const r = await db.prepare('INSERT INTO suppliers(name) VALUES(?) RETURNING id').run(cleanName);
     res.status(201).json({ id: r.lastInsertRowid, name: cleanName, active: 1 });
-  } catch(e) {
-    if (e.message && e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Supplier already exists' });
+  } catch (e) {
+    if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Supplier already exists' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-router.delete('/suppliers/:id', authenticate, requireRole('owner','admin'), async (req, res) => {
+router.delete('/suppliers/:id', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     await getDb().prepare('UPDATE suppliers SET active=0 WHERE id=?').run(req.params.id);
     res.json({ message: 'Supplier deactivated' });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-// ── Production Staff List ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// WORKERS
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/workers', authenticate, async (_req, res) => {
   try {
     res.json(await getDb().prepare(
-      "SELECT id,full_name,role FROM users WHERE active=1 AND role IN ('knuckler','operator','admin','owner') ORDER BY full_name"
+      "SELECT id, full_name, role FROM users WHERE active=1 AND role IN ('knuckler','operator','admin','owner') ORDER BY full_name"
     ).all());
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DB STATS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/db-stats', authenticate, requireRole('owner', 'admin'), async (_req, res) => {
+  try {
+    const db   = getDb();
+    const fs   = require('fs');
+    const path = require('path');
+    const dbPath = process.env.SQLITE_PATH || path.join(__dirname, '../db/imara.db');
+    let fileSizeBytes = 0;
+    try { fileSizeBytes = fs.statSync(dbPath).size; } catch (_) {}
+
+    const tables = [
+      'audit_log', 'password_reset_tokens', 'notifications',
+      'invoices', 'users', 'purchases', 'production', 'sales', 'payments',
+    ];
+    const counts = {};
+    for (const t of tables) {
+      try {
+        const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get();
+        counts[t] = row?.n ?? 0;
+      } catch (_) { counts[t] = null; }
+    }
+
+    let oldestRecord = null;
+    try {
+      const r = await db.prepare(`
+        SELECT MIN(entry_date) AS oldest FROM (
+          SELECT entry_date FROM purchases
+          UNION ALL SELECT entry_date FROM production
+          UNION ALL SELECT entry_date FROM sales
+        )
+      `).get();
+      oldestRecord = r?.oldest || null;
+    } catch (_) {}
+
+    res.json({ file_size_bytes: fileSizeBytes, counts, oldest_record: oldestRecord });
+  } catch (e) {
+    console.error('db-stats error:', e);
+    res.status(500).json({ error: 'Failed to load DB stats' });
   }
 });
 
-// ── Audit log ─────────────────────────────────────────────────────────────────
-router.get('/audit', authenticate, requireRole('owner','admin'), async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/audit', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { from, to, limit = 500 } = req.query;
-    let sql = `SELECT al.*, u.username, u.full_name as user_name FROM audit_log al LEFT JOIN users u ON al.user_id=u.id`;
+    let sql = `SELECT al.*, u.username, u.full_name AS user_name
+               FROM audit_log al LEFT JOIN users u ON al.user_id = u.id`;
     const params = [], conds = [];
     if (from) { conds.push('al.logged_at >= ?'); params.push(from); }
     if (to)   { conds.push('al.logged_at <= ?'); params.push(to + 'T23:59:59'); }
     if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
-    sql += ` ORDER BY al.logged_at DESC LIMIT ${Math.min(parseInt(limit)||500, 5000)}`;
+    sql += ` ORDER BY al.logged_at DESC LIMIT ${Math.min(parseInt(limit) || 500, 5000)}`;
     res.json(await getDb().prepare(sql).all(...params));
-  } catch(e) {
-    console.error('GET audit error:', e);
+  } catch (e) {
+    console.error('GET /audit error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Notifications ─────────────────────────────────────────────────────────────
-// POST /notifications — only stock-critical alerts are accepted from the frontend.
-// Activity notifications (production saved, sale saved, etc.) are intentionally
-// suppressed here — they are too noisy. Only alert/warn from automated stock checks matter.
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────────────────────
 router.post('/notifications', authenticate, async (req, res) => {
   try {
     const { type, category, title, message, roleTarget } = req.body;
     if (!title || !message) return res.status(400).json({ error: 'title and message required' });
 
-    // Silently drop routine activity notifications — only stock alerts should appear in the bell.
-    // Categories that are suppressed: production, sales, purchase, payment, activity, info.
     const SUPPRESSED_CATEGORIES = ['production', 'sales', 'purchase', 'payment', 'activity'];
     const SUPPRESSED_TYPES      = ['info'];
     if (SUPPRESSED_CATEGORIES.includes(category) || SUPPRESSED_TYPES.includes(type)) {
-      return res.json({ ok: true }); // accepted but not stored
+      return res.json({ ok: true });
     }
 
     const db = getDb();
-    // Deduplicate: don't write if same title was written in last 5 minutes
     const recent = await db.prepare(`
       SELECT id FROM notifications
       WHERE (user_id=? OR role_target=?)
@@ -1118,84 +1147,66 @@ router.post('/notifications', authenticate, async (req, res) => {
     `).get(req.user.id, roleTarget || 'owner', title);
     if (!recent) {
       await writeNotification(db, {
-        userId: req.user.id,
+        userId:     req.user.id,
         roleTarget: roleTarget || null,
-        type: type || 'warn',
-        category: category || type || 'alert',
+        type:       type     || 'warn',
+        category:   category || type || 'alert',
         title,
         message,
       });
     }
     res.json({ ok: true });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
 router.get('/notifications', authenticate, async (req, res) => {
   try {
-    // Return all actionable notifications:
-    //   • alert / warn  — stock alerts and warnings (always shown)
-    //   • info category 'invoice' — payment received, invoice events (persistent, shown to owner/admin)
-    // Activity-only info notifications (routine saves) remain suppressed to keep the bell clean.
     res.json(await getDb().prepare(`
       SELECT * FROM notifications
       WHERE (user_id=? OR role_target=?)
         AND (
-          type IN ('alert','warn')
+          type IN ('alert', 'warn')
           OR (type = 'info' AND category = 'invoice')
         )
       ORDER BY created_at DESC LIMIT 150
     `).all(req.user.id, req.user.role));
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-// Mark ALL notifications read — must be declared BEFORE /:id/read so Express doesn't treat 'mark-all-read' as an id
 router.patch('/notifications/mark-all-read', authenticate, async (req, res) => {
   try {
     await getDb().prepare(
       'UPDATE notifications SET read=1 WHERE (user_id=? OR role_target=?) AND read=0'
     ).run(req.user.id, req.user.role);
     res.json({ message: 'All marked read' });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-// Mark a single notification read — scoped to current user only
 router.patch('/notifications/:id/read', authenticate, async (req, res) => {
   try {
     await getDb().prepare(
       'UPDATE notifications SET read=1 WHERE id=? AND (user_id=? OR role_target=?)'
     ).run(req.params.id, req.user.id, req.user.role);
     res.json({ message: 'Marked read' });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-// DELETE /notifications/read — clear all read notifications for current user
 router.delete('/notifications/read', authenticate, async (req, res) => {
   try {
     await getDb().prepare(
       'DELETE FROM notifications WHERE (user_id=? OR role_target=?) AND read=1'
     ).run(req.user.id, req.user.role);
     res.json({ message: 'Read notifications cleared' });
-  } catch(e) {
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
-
-
-// ── Production Staff Analytics ─────────────────────────────────────────────────────
-router.get('/worker-production', authenticate, requireRole('owner','admin'), async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// WORKER PRODUCTION ANALYTICS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/worker-production', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db = getDb();
     const { from, to } = req.query;
-    
     let fromDate = from, toDate = to;
     if (!fromDate || !toDate) {
       const now = new Date();
@@ -1203,14 +1214,13 @@ router.get('/worker-production', authenticate, requireRole('owner','admin'), asy
       fromDate = utcDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)));
     }
 
-    // Get production by operators — pieces produced, plus cash revenue received for those production sessions
     const operatorData = await db.prepare(`
       SELECT
-        COALESCE(u.full_name, 'Unknown Operator')  AS worker_name,
-        'operator'                                  AS role,
-        COUNT(DISTINCT p.id)                        AS production_days,
-        SUM(pi.pieces_produced)                     AS total_pieces,
-        SUM(pi.pieces_produced * pt.weight_kg)      AS total_kgs
+        COALESCE(u.full_name, 'Unknown Operator') AS worker_name,
+        'operator'                                 AS role,
+        COUNT(DISTINCT p.id)                       AS production_days,
+        SUM(pi.pieces_produced)                    AS total_pieces,
+        SUM(pi.pieces_produced * pt.weight_kg)     AS total_kgs
       FROM production p
       JOIN production_items pi ON p.id = pi.production_id
       JOIN piece_types pt ON pi.piece_type_id = pt.id
@@ -1221,7 +1231,6 @@ router.get('/worker-production', authenticate, requireRole('owner','admin'), asy
       ORDER BY total_pieces DESC
     `).all(fromDate, toDate);
 
-    // Get production by knucklers
     const knucklerData = await db.prepare(`
       SELECT
         COALESCE(u.full_name, 'Unknown Knuckler') AS worker_name,
@@ -1240,28 +1249,29 @@ router.get('/worker-production', authenticate, requireRole('owner','admin'), asy
     `).all(fromDate, toDate);
 
     res.json({
-      period: { from: fromDate, to: toDate },
+      period:    { from: fromDate, to: toDate },
       operators: operatorData,
       knucklers: knucklerData,
       summary: {
         total_operators: operatorData.length,
         total_knucklers: knucklerData.length,
-        total_pieces: operatorData.reduce((sum, o) => sum + (o.total_pieces || 0), 0),
-        total_kgs: operatorData.reduce((sum, o) => sum + (o.total_kgs || 0), 0)
-      }
+        total_pieces:    operatorData.reduce((s, o) => s + (o.total_pieces || 0), 0),
+        total_kgs:       operatorData.reduce((s, o) => s + (o.total_kgs    || 0), 0),
+      },
     });
-  } catch(e) {
-    console.error('GET production-staff-production error:', e);
+  } catch (e) {
+    console.error('GET /worker-production error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Sales by Piece Type Analytics ───────────────────────────────────────────────────
-router.get('/sales-by-piece', authenticate, requireRole('owner','admin'), async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// SALES BY PIECE TYPE
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/sales-by-piece', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db = getDb();
     const { from, to } = req.query;
-    
     let fromDate = from, toDate = to;
     if (!fromDate || !toDate) {
       const now = new Date();
@@ -1269,9 +1279,6 @@ router.get('/sales-by-piece', authenticate, requireRole('owner','admin'), async 
       fromDate = utcDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)));
     }
 
-    // Sales by piece type — cash-basis, item-level split via invoice_items
-    // Each invoice_item's share of the payment = (line_total / invoice_subtotal) * cash_received
-    // This correctly handles multi-gauge/multi-piece invoices.
     const salesData = await db.prepare(`
       SELECT
         pt.name                                                            AS piece_name,
@@ -1280,8 +1287,8 @@ router.get('/sales-by-piece', authenticate, requireRole('owner','admin'), async 
         CAST(SUM(ii.quantity) AS INTEGER)                                  AS total_pieces,
         ROUND(SUM(
           ip_agg.paid_in_period * (ii.line_total / NULLIF(i.subtotal, 0))
-        ), 2)                                                     AS total_revenue,
-        ROUND(AVG(ii.unit_price), 2)                              AS avg_price
+        ), 2)                                                              AS total_revenue,
+        ROUND(AVG(ii.unit_price), 2)                                       AS avg_price
       FROM (
         SELECT invoice_id, SUM(amount) AS paid_in_period
         FROM invoice_payments ip_inner
@@ -1299,26 +1306,32 @@ router.get('/sales-by-piece', authenticate, requireRole('owner','admin'), async 
     `).all(fromDate, toDate);
 
     res.json({
-      period: { from: fromDate, to: toDate },
+      period:     { from: fromDate, to: toDate },
       sales_data: salesData,
       summary: {
-        total_transactions: salesData.reduce((sum, s) => sum + (s.transaction_count || 0), 0),
-        total_pieces: salesData.reduce((sum, s) => sum + (s.total_pieces || 0), 0),
-        total_revenue: salesData.reduce((sum, s) => sum + parseFloat(s.total_revenue || 0), 0)
-      }
+        total_transactions: salesData.reduce((s, x) => s + (x.transaction_count || 0), 0),
+        total_pieces:       salesData.reduce((s, x) => s + (x.total_pieces       || 0), 0),
+        total_revenue:      salesData.reduce((s, x) => s + parseFloat(x.total_revenue || 0), 0),
+      },
     });
-  } catch(e) {
-    console.error('GET sales-by-piece error:', e);
+  } catch (e) {
+    console.error('GET /sales-by-piece error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ── Revenue Breakdown ───────────────────────────────────────────────────────────────
-router.get('/revenue-breakdown', authenticate, requireRole('owner','admin'), async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/revenue-breakdown — Full P&L with cost breakdown details
+//
+// §11: Transport detail rows join to sales.transport_to_market (the snapshot
+//      saved at the time of sale). Never hardcoded 0, never from config.
+//      invoices.sale_id links auto-generated invoices to their originating sale.
+//      Manual invoices (sale_id IS NULL) correctly default to 0 via COALESCE.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db = getDb();
     const { from, to } = req.query;
-    
     let fromDate = from, toDate = to;
     if (!fromDate || !toDate) {
       const now = new Date();
@@ -1326,26 +1339,28 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner','admin'), asy
       fromDate = utcDateStr(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 30)));
     }
 
-    // Get sales cost summary
     const salesSummary = await getSalesCostSummary(db, fromDate, toDate);
-    const rentCost = await getAccruedRentForRange(db, fromDate, toDate);
-    
-    // Cash-basis detail rows — item-level split via invoice_items
-    // Each line item's share of the payment = (line_total / invoice_subtotal) * cash_received
+    const rentCost     = await getAccruedRentForRange(db, fromDate, toDate);
+
+    // Detail rows — §11: LEFT JOIN sales s ON s.id = i.sale_id to get the
+    // saved transport snapshot. COALESCE(s.transport_to_market, 0) means:
+    //   - auto-generated invoices: uses the actual saved sale transport value
+    //   - manual invoices (sale_id IS NULL): defaults to 0 (correct — no sale)
+    // This replaces the old broken approach of hardcoding 0 for all rows.
     const detailRows = await db.prepare(`
       SELECT
-        i.invoice_date                                                       AS entry_date,
-        pt.name                                                              AS piece_name,
+        i.invoice_date                                                         AS entry_date,
+        pt.name                                                                AS piece_name,
         ii.quantity,
         pt.weight_kg,
-        0                                                                    AS transport_to_market,
-        ii.unit_price                                                        AS selling_price,
+        COALESCE(s.transport_to_market, 0)                                     AS transport_to_market,
+        ii.unit_price                                                          AS selling_price,
         i.total_amount,
         ip_agg.paid_in_period,
-        LEAST(
+        MIN(
           ip_agg.paid_in_period * (ii.line_total / NULLIF(i.subtotal, 0)) / NULLIF(ii.line_total, 0),
           1.0
-        )                                                                    AS ratio
+        )                                                                      AS ratio
       FROM (
         SELECT invoice_id, SUM(amount) AS paid_in_period
         FROM invoice_payments ip_inner
@@ -1357,22 +1372,23 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner','admin'), asy
       JOIN invoices      i  ON i.id  = ip_agg.invoice_id
       JOIN invoice_items ii ON ii.invoice_id = i.id
       JOIN piece_types   pt ON pt.id = ii.piece_type_id
+      LEFT JOIN sales    s  ON s.id  = i.sale_id
       WHERE ii.piece_type_id IS NOT NULL
       ORDER BY i.invoice_date DESC
     `).all(fromDate, toDate);
 
-    const wireCostPerKg   = salesSummary.weighted_wire_cost_per_kg;
-    const convPerPiece    = salesSummary.conversion_cost_per_piece;
+    const wireCostPerKg = salesSummary.weighted_wire_cost_per_kg;
+    const convPerPiece  = salesSummary.conversion_cost_per_piece;
 
     const wireCostDetails = detailRows.map(r => ({
-      entry_date:  r.entry_date,
-      piece_name:  r.piece_name,
-      quantity:    Math.round(r.quantity * r.ratio),
-      weight_kg:   r.weight_kg,
-      kgs_sold:    parseFloat((r.quantity * r.weight_kg * r.ratio).toFixed(3)),
-      wire_cost:   parseFloat((r.quantity * r.weight_kg * r.ratio * wireCostPerKg).toFixed(2)),
+      entry_date:    r.entry_date,
+      piece_name:    r.piece_name,
+      quantity:      Math.round(r.quantity * r.ratio),
+      weight_kg:     r.weight_kg,
+      kgs_sold:      parseFloat((r.quantity * r.weight_kg * r.ratio).toFixed(3)),
+      wire_cost:     parseFloat((r.quantity * r.weight_kg * r.ratio * wireCostPerKg).toFixed(2)),
       selling_price: r.selling_price,
-      revenue:     parseFloat(r.paid_in_period.toFixed(2)),
+      revenue:       parseFloat(r.paid_in_period.toFixed(2)),
     }));
 
     const conversionCostDetails = detailRows.map(r => ({
@@ -1384,96 +1400,95 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner','admin'), asy
       revenue:         parseFloat(r.paid_in_period.toFixed(2)),
     }));
 
+    // Transport details — only rows where a real transport amount was saved (§3)
     const transportCostDetails = detailRows
       .filter(r => parseFloat(r.transport_to_market) > 0)
       .map(r => ({
-        entry_date:         r.entry_date,
-        piece_name:         r.piece_name,
-        quantity:           Math.round(r.quantity * r.ratio),
+        entry_date:          r.entry_date,
+        piece_name:          r.piece_name,
+        quantity:            Math.round(r.quantity * r.ratio),
         transport_to_market: parseFloat((r.transport_to_market * r.ratio).toFixed(2)),
-        selling_price:      r.selling_price,
-        revenue:            parseFloat(r.paid_in_period.toFixed(2)),
+        selling_price:       r.selling_price,
+        revenue:             parseFloat(r.paid_in_period.toFixed(2)),
       }));
 
     const rentDetails = await db.prepare(`
-      SELECT month, amount_due
-      FROM rent_months
+      SELECT month, amount_due FROM rent_months
       WHERE month BETWEEN ? AND ?
       ORDER BY month
     `).all(fromDate.slice(0, 7), toDate.slice(0, 7));
 
-    // Calculate profit metrics (excluding rent)
-    const grossProfit = salesSummary.gross_profit;               // revenue - direct costs
-    const netProfit = grossProfit - rentCost;                    // gross minus period rent
+    const grossProfit = salesSummary.gross_profit;
+    const netProfit   = grossProfit - rentCost;
     const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
-    const netMargin = salesSummary.revenue > 0 ? (netProfit / salesSummary.revenue * 100) : 0;
+    const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
-    // Revenue breakdown percentages (excluding rent)
-    const wireCostPct = salesSummary.revenue > 0 ? (salesSummary.wire_cost / salesSummary.revenue * 100) : 0;
-    const conversionCostPct = salesSummary.revenue > 0 ? (salesSummary.conversion_cost / salesSummary.revenue * 100) : 0;
+    const wireCostPct      = salesSummary.revenue > 0 ? (salesSummary.wire_cost / salesSummary.revenue * 100) : 0;
+    const convCostPct      = salesSummary.revenue > 0 ? (salesSummary.conversion_cost / salesSummary.revenue * 100) : 0;
     const transportCostPct = salesSummary.revenue > 0 ? (salesSummary.transport_to_market_cost / salesSummary.revenue * 100) : 0;
-    const netProfitPct = salesSummary.revenue > 0 ? (netProfit / salesSummary.revenue * 100) : 0;
+    const netProfitPct     = salesSummary.revenue > 0 ? (netProfit / salesSummary.revenue * 100) : 0;
 
     res.json({
       period: { from: fromDate, to: toDate },
       summary: {
         total_revenue: parseFloat(salesSummary.revenue.toFixed(2)),
-        total_costs: parseFloat((salesSummary.direct_costs + rentCost).toFixed(2)),
-        rent_cost: parseFloat(rentCost.toFixed(2)),
-        net_profit: parseFloat(netProfit.toFixed(2)),
-        gross_margin: parseFloat(grossMargin.toFixed(1)),
-        net_margin: parseFloat(netMargin.toFixed(1))
+        total_costs:   parseFloat((salesSummary.direct_costs + rentCost).toFixed(2)),
+        rent_cost:     parseFloat(rentCost.toFixed(2)),
+        net_profit:    parseFloat(netProfit.toFixed(2)),
+        gross_margin:  parseFloat(grossMargin.toFixed(1)),
+        net_margin:    parseFloat(netMargin.toFixed(1)),
       },
       cost_breakdown: {
         wire_cost: {
-          amount: parseFloat(salesSummary.wire_cost.toFixed(2)),
-          percentage: parseFloat(wireCostPct.toFixed(1)),
-          description: 'Cost of raw wire materials',
-          details: wireCostDetails
+          amount:      parseFloat(salesSummary.wire_cost.toFixed(2)),
+          percentage:  parseFloat(wireCostPct.toFixed(1)),
+          description: 'Cost of raw wire materials (weighted landed cost)',
+          details:     wireCostDetails,
         },
         conversion_cost: {
-          amount: parseFloat(salesSummary.conversion_cost.toFixed(2)),
-          percentage: parseFloat(conversionCostPct.toFixed(1)),
-          description: 'Labor costs (operator + knuckler + sack costs)',
-          details: conversionCostDetails
+          amount:      parseFloat(salesSummary.conversion_cost.toFixed(2)),
+          percentage:  parseFloat(convCostPct.toFixed(1)),
+          description: 'Labour costs (operator + knuckler + sack costs)',
+          details:     conversionCostDetails,
         },
         transport_cost: {
-          amount: parseFloat(salesSummary.transport_to_market_cost.toFixed(2)),
-          percentage: parseFloat(transportCostPct.toFixed(1)),
-          description: 'Transport costs to market',
-          details: transportCostDetails
+          amount:      parseFloat(salesSummary.transport_to_market_cost.toFixed(2)),
+          percentage:  parseFloat(transportCostPct.toFixed(1)),
+          description: 'Transport to market — read from saved sale records (§11)',
+          details:     transportCostDetails,
         },
         rent_cost: {
-          amount: parseFloat(rentCost.toFixed(2)),
-          percentage: salesSummary.revenue > 0 ? parseFloat((rentCost / salesSummary.revenue * 100).toFixed(1)) : 0,
-          description: 'Accrued rent for this period',
-          details: rentDetails
+          amount:      parseFloat(rentCost.toFixed(2)),
+          percentage:  salesSummary.revenue > 0 ? parseFloat((rentCost / salesSummary.revenue * 100).toFixed(1)) : 0,
+          description: 'Rent accrued for this period (prorated by calendar overlap)',
+          details:     rentDetails,
         },
         net_profit: {
-          amount: parseFloat(netProfit.toFixed(2)),
-          percentage: parseFloat(netProfitPct.toFixed(1)),
-          description: 'Final profit after all costs including rent'
-        }
+          amount:      parseFloat(netProfit.toFixed(2)),
+          percentage:  parseFloat(netProfitPct.toFixed(1)),
+          description: 'Revenue − Cost of Sales − Rent Expense',
+        },
       },
       insights: {
-        total_pieces_sold: salesSummary.pieces_sold,
-        total_kgs_sold: parseFloat(salesSummary.kgs_sold.toFixed(2)),
-        avg_wire_cost_per_kg: parseFloat(salesSummary.weighted_wire_cost_per_kg.toFixed(2)),
+        total_pieces_sold:             salesSummary.pieces_sold,
+        total_kgs_sold:                parseFloat(salesSummary.kgs_sold.toFixed(2)),
+        avg_wire_cost_per_kg:          parseFloat(salesSummary.weighted_wire_cost_per_kg.toFixed(2)),
         avg_conversion_cost_per_piece: parseFloat(salesSummary.conversion_cost_per_piece.toFixed(2)),
-        cost_per_piece: parseFloat(((salesSummary.direct_costs) / salesSummary.pieces_sold).toFixed(2))
-      }
+        cost_per_piece:                salesSummary.pieces_sold > 0
+          ? parseFloat((salesSummary.direct_costs / salesSummary.pieces_sold).toFixed(2))
+          : 0,
+      },
     });
-  } catch(e) {
-    console.error('GET revenue-breakdown error:', e);
+  } catch (e) {
+    console.error('GET /revenue-breakdown error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 
-// ══════════════════════════════════════════════════════════════════
-// EXCEL / CSV EXPORTS  (no xlsx lib needed — produces clean CSV
-//   that Excel opens natively as UTF-8 with BOM)
-// ══════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// CSV EXPORTS
+// ─────────────────────────────────────────────────────────────────────────────
 
 function csvRow(arr) {
   return arr.map(v => {
@@ -1483,7 +1498,7 @@ function csvRow(arr) {
 }
 
 function buildCsv(headers, rows) {
-  const BOM = '\uFEFF'; // UTF-8 BOM so Excel opens correctly
+  const BOM = '\uFEFF';
   return BOM + [headers, ...rows].map(r => csvRow(r)).join('\r\n');
 }
 
@@ -1494,27 +1509,21 @@ function sendCsv(res, filename, headers, rows) {
   res.send(csv);
 }
 
-/* GET /api/export/purchases
- * Reconciliation approach: payments are recorded at supplier level (no purchase_id FK).
- * We allocate payments chronologically (FIFO) across that supplier's purchases so that
- * the per-row amount_paid / balance / status are internally consistent and the column
- * totals always match the true supplier balance.
- */
-router.get('/export/purchases', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/purchases
+router.get('/export/purchases', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
 
-    // Fetch all purchases in the date range (oldest first for FIFO allocation)
     const purchases = await db.prepare(`
-      SELECT p.id, p.entry_date, p.supplier_id, s.name AS supplier, p.gauge,
+      SELECT p.id, p.entry_date, s.name AS supplier, p.gauge,
              p.kgs_bought, p.cost_per_kg,
-             ROUND((p.kgs_bought * p.cost_per_kg), 2)                   AS wire_cost,
+             ROUND((p.kgs_bought * p.cost_per_kg), 2)                          AS wire_cost,
              p.transport_cost,
-             ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2) AS total_cost,
+             ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2)       AS total_cost,
              ROUND(((p.kgs_bought * p.cost_per_kg + p.transport_cost)
-                    / NULLIF(p.kgs_bought, 0)), 2)                        AS landed_per_kg,
+                    / NULLIF(p.kgs_bought, 0)), 2)                              AS landed_per_kg,
              u.full_name AS entered_by, p.created_at
       FROM purchases p
       JOIN suppliers s ON p.supplier_id = s.id
@@ -1523,82 +1532,64 @@ router.get('/export/purchases', authenticate, requireRole('owner','admin'), asyn
       ORDER BY p.entry_date ASC, p.id ASC
     `).all(from, to);
 
-    // Fetch all-time supplier payments (needed to compute true running balance)
     const allPayments = await db.prepare(`
       SELECT payee_supplier_id, ROUND(SUM(amount), 2) AS total_paid
-      FROM payments
-      WHERE category = 'supplier'
+      FROM payments WHERE category = 'supplier'
       GROUP BY payee_supplier_id
     `).all();
     const supplierPaidMap = {};
     for (const p of allPayments) supplierPaidMap[p.payee_supplier_id] = parseFloat(p.total_paid) || 0;
 
-    // Also fetch all-time purchases per supplier to compute correct FIFO allocation
     const allPurchases = await db.prepare(`
       SELECT id, supplier_id, entry_date,
              ROUND((kgs_bought * cost_per_kg + transport_cost), 2) AS total_cost
-      FROM purchases
-      ORDER BY entry_date ASC, id ASC
+      FROM purchases ORDER BY entry_date ASC, id ASC
     `).all();
 
-    // FIFO allocation: for each supplier, walk purchases oldest→newest, drain payment pool
-    const purchaseAlloc = {}; // purchase id -> { amount_paid, balance, status }
-    const supplierIds = [...new Set(allPurchases.map(p => p.supplier_id))];
+    // FIFO allocation per supplier
+    const purchaseAlloc = {};
+    const supplierIds   = [...new Set(allPurchases.map(p => p.supplier_id))];
     for (const sid of supplierIds) {
       let pool = supplierPaidMap[sid] || 0;
-      const sRows = allPurchases.filter(p => p.supplier_id === sid);
-      for (const p of sRows) {
-        const cost      = parseFloat(p.total_cost) || 0;
-        const applied   = Math.min(pool, cost);
-        const balance   = parseFloat((cost - applied).toFixed(2));
-        pool            = parseFloat((pool - applied).toFixed(2));
-        let status;
-        if (applied <= 0)            status = 'Unpaid';
-        else if (balance <= 0.01)    status = 'Fully Paid';
-        else                         status = 'Partially Paid';
+      for (const p of allPurchases.filter(x => x.supplier_id === sid)) {
+        const cost    = parseFloat(p.total_cost) || 0;
+        const applied = Math.min(pool, cost);
+        const balance = parseFloat((cost - applied).toFixed(2));
+        pool          = parseFloat((pool - applied).toFixed(2));
+        const status  = applied <= 0 ? 'Unpaid' : balance <= 0.01 ? 'Fully Paid' : 'Partially Paid';
         purchaseAlloc[p.id] = { amount_paid: parseFloat(applied.toFixed(2)), balance, status };
       }
     }
 
-    // Build export rows (restore original DESC order)
-    const sorted = [...purchases].sort((a, b) =>
-      b.entry_date < a.entry_date ? -1 : b.entry_date > a.entry_date ? 1 : b.id - a.id
-    );
     const headers = [
-      'Date','Supplier','Gauge','Kgs Bought','Cost/kg','Wire Cost','Transport',
-      'Total Cost','Landed/kg','Amount Paid','Balance','Payment Status',
-      'Entered By','Created At'
+      'Date', 'Supplier', 'Gauge', 'Kgs Bought', 'Cost/kg', 'Wire Cost', 'Transport',
+      'Total Cost', 'Landed/kg', 'Amount Paid', 'Balance', 'Payment Status',
+      'Entered By', 'Created At',
     ];
     sendCsv(res, `imara_purchases_${from}_to_${to}.csv`, headers,
-      sorted.map(r => {
+      purchases.map(r => {
         const alloc = purchaseAlloc[r.id] || { amount_paid: 0, balance: parseFloat(r.total_cost) || 0, status: 'Unpaid' };
         return [
           r.entry_date, r.supplier, r.gauge, r.kgs_bought, r.cost_per_kg,
           r.wire_cost, r.transport_cost, r.total_cost, r.landed_per_kg,
           alloc.amount_paid, alloc.balance, alloc.status,
-          r.entered_by, r.created_at
+          r.entered_by, r.created_at,
         ];
-      }));
-  } catch(e) {
+      })
+    );
+  } catch (e) {
     console.error('Export purchases error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* GET /api/export/sales
- *
- * One row per invoice (invoice-centric export).
- * All sale line items belonging to the same invoice are consolidated
- * into a single row.  Sales that have no linked invoice each get their
- * own row (labelled "No Invoice").
- */
-router.get('/export/sales', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/sales
+router.get('/export/sales', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
 
-    // ── lookup tables ────────────────────────────────────────────────────────
     const pieceTypes = {};
     const userNames  = {};
     for (const p of await db.prepare('SELECT id, name FROM piece_types').all())
@@ -1606,7 +1597,6 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
     for (const u of await db.prepare('SELECT id, full_name FROM users').all())
       userNames[u.id] = u.full_name;
 
-    // ── invoices in the date range ───────────────────────────────────────────
     const invoices = await db.prepare(`
       SELECT id, invoice_number, invoice_date, customer_name,
              total_amount, amount_paid, status, tax_amount, notes
@@ -1615,14 +1605,10 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
       ORDER BY invoice_date DESC, id DESC
     `).all(from, to);
 
-    // ── invoice items ────────────────────────────────────────────────────────
     const allItems = await db.prepare(`
-      SELECT ii.invoice_id,
-             ii.piece_type_id,
+      SELECT ii.invoice_id, ii.piece_type_id,
              COALESCE(ii.gauge,'') AS gauge,
-             ii.quantity,
-             ii.unit_price,
-             ii.line_total
+             ii.quantity, ii.unit_price, ii.line_total
       FROM invoice_items ii
     `).all();
     const itemsByInv = {};
@@ -1631,7 +1617,6 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
       itemsByInv[it.invoice_id].push(it);
     }
 
-    // ── payments keyed by invoice_id ─────────────────────────────────────────
     const allPmts = await db.prepare(`
       SELECT invoice_id, payment_date, amount, payment_method, notes
       FROM invoice_payments ORDER BY payment_date ASC, created_at ASC
@@ -1642,8 +1627,7 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
       pmtsByInv[p.invoice_id].push(p);
     }
 
-    // ── build CSV rows (one row per invoice, items consolidated) ─────────────
-    function getStatusLabel(inv) {
+    function statusLabel(inv) {
       if (inv.status === 'cancelled') return 'Cancelled';
       const bal = parseFloat(inv.total_amount) - parseFloat(inv.amount_paid);
       if (bal <= 0.01) return 'Fully Paid';
@@ -1652,67 +1636,49 @@ router.get('/export/sales', authenticate, requireRole('owner','admin'), async (r
     }
 
     const headers = [
-      'Invoice #', 'Date', 'Customer',
-      'Piece Types', 'Gauges', 'Total Qty',
+      'Invoice #', 'Date', 'Customer', 'Piece Types', 'Gauges', 'Total Qty',
       'Tax (KES)', 'Invoice Total (KES)', 'Amount Paid (KES)', 'Balance (KES)',
-      'Payment Status', 'Payment History', 'Notes'
+      'Payment Status', 'Payment History', 'Notes',
     ];
-
     sendCsv(res, `imara_sales_${from}_to_${to}.csv`, headers,
       invoices.map(inv => {
-        const items  = itemsByInv[inv.id] || [];
-        const pmts   = pmtsByInv[inv.id]  || [];
-        const total  = parseFloat(inv.total_amount) || 0;
-        const paid   = parseFloat(inv.amount_paid)  || 0;
-        const bal    = parseFloat(Math.max(0, total - paid).toFixed(2));
-
-        const pieceList = items.map(it => pieceTypes[it.piece_type_id] || '').filter(Boolean).join('; ');
-        const gaugeList = [...new Set(items.map(it => it.gauge).filter(Boolean))].join('; ');
-        const totalQty  = items.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0);
-
-        const pmtHistory = pmts.length
-          ? pmts.map(p =>
-              `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}` +
-              (p.notes ? ` (${p.notes})` : '')
-            ).join(' | ')
+        const items       = itemsByInv[inv.id] || [];
+        const pmts        = pmtsByInv[inv.id]  || [];
+        const total       = parseFloat(inv.total_amount) || 0;
+        const paid        = parseFloat(inv.amount_paid)  || 0;
+        const bal         = parseFloat(Math.max(0, total - paid).toFixed(2));
+        const pieceList   = items.map(it => pieceTypes[it.piece_type_id] || '').filter(Boolean).join('; ');
+        const gaugeList   = [...new Set(items.map(it => it.gauge).filter(Boolean))].join('; ');
+        const totalQty    = items.reduce((s, it) => s + (parseFloat(it.quantity) || 0), 0);
+        const pmtHistory  = pmts.length
+          ? pmts.map(p => `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}${p.notes ? ` (${p.notes})` : ''}`).join(' | ')
           : '';
-
         return [
-          inv.invoice_number,
-          inv.invoice_date,
-          inv.customer_name,
-          pieceList,
-          gaugeList,
-          totalQty,
-          parseFloat(inv.tax_amount) || 0,
-          total,
-          paid,
-          bal,
-          getStatusLabel(inv),
-          pmtHistory,
-          inv.notes || ''
+          inv.invoice_number, inv.invoice_date, inv.customer_name,
+          pieceList, gaugeList, totalQty,
+          parseFloat(inv.tax_amount) || 0, total, paid, bal,
+          statusLabel(inv), pmtHistory, inv.notes || '',
         ];
       })
     );
-
-  } catch(e) {
+  } catch (e) {
     console.error('Export sales error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* GET /api/export/production */
-router.get('/export/production', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/production
+router.get('/export/production', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
     const rows = await db.prepare(`
       SELECT pr.entry_date, pr.gauge, pr.kgs_used,
-             STRING_AGG(pt.name || ' x' || pi.pieces_produced, ', ') AS items,
+             GROUP_CONCAT(pt.name || ' x' || pi.pieces_produced, ', ') AS items,
              u_op.full_name AS operator, u_kn.full_name AS knuckler,
-             pr.operator_cost, pr.knuckler_cost, pr.sack_cost,
-             pr.total_cost, u_en.full_name AS entered_by, pr.created_at
+             pr.operator_cost, pr.knuckler_cost, pr.sack_cost, pr.total_cost,
+             u_en.full_name AS entered_by, pr.created_at
       FROM production pr
       LEFT JOIN production_items pi ON pi.production_id = pr.id
       LEFT JOIN piece_types pt ON pi.piece_type_id = pt.id
@@ -1724,55 +1690,74 @@ router.get('/export/production', authenticate, requireRole('owner','admin'), asy
                pr.operator_cost, pr.knuckler_cost, pr.sack_cost, pr.total_cost, u_en.full_name, pr.created_at
       ORDER BY pr.entry_date DESC, pr.id DESC
     `).all(from, to);
-    const headers = ['Date','Gauge','Kgs Used','Items Produced','Operator','Knuckler','Operator Cost','Knuckler Cost','Sack Cost','Total Cost','Entered By','Created At'];
+    const headers = [
+      'Date', 'Gauge', 'Kgs Used', 'Items Produced', 'Operator', 'Knuckler',
+      'Operator Cost', 'Knuckler Cost', 'Sack Cost', 'Total Cost', 'Entered By', 'Created At',
+    ];
     sendCsv(res, `imara_production_${from}_to_${to}.csv`, headers,
-      rows.map(r => [r.entry_date, r.gauge, r.kgs_used, r.items, r.operator, r.knuckler,
-        r.operator_cost, r.knuckler_cost, r.sack_cost, r.total_cost, r.entered_by, r.created_at]));
-  } catch(e) {
+      rows.map(r => [
+        r.entry_date, r.gauge, r.kgs_used, r.items, r.operator, r.knuckler,
+        r.operator_cost, r.knuckler_cost, r.sack_cost, r.total_cost,
+        r.entered_by, r.created_at,
+      ])
+    );
+  } catch (e) {
     console.error('Export production error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* GET /api/export/gauge-analysis */
-router.get('/export/gauge-analysis', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/gauge-analysis
+router.get('/export/gauge-analysis', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
     const gauges = (await db.prepare(`
       SELECT DISTINCT gauge FROM purchases WHERE gauge != '' AND entry_date BETWEEN ? AND ?
-      UNION SELECT DISTINCT gauge FROM production WHERE gauge != '' AND entry_date BETWEEN ? AND ?
-      UNION SELECT DISTINCT gauge_source FROM sales WHERE gauge_source != '' AND entry_date BETWEEN ? AND ?
+      UNION
+      SELECT DISTINCT gauge FROM production WHERE gauge != '' AND entry_date BETWEEN ? AND ?
+      UNION
+      SELECT DISTINCT gauge_source FROM sales WHERE gauge_source != '' AND entry_date BETWEEN ? AND ?
     `).all(from, to, from, to, from, to)).map(r => r.gauge || r.gauge_source).filter(Boolean);
 
     const rows = [];
     for (const gauge of gauges) {
-      const b = await db.prepare(`SELECT COALESCE(SUM(kgs_bought),0) AS v, COALESCE(SUM(kgs_bought*cost_per_kg),0) AS cost FROM purchases WHERE gauge=? AND entry_date BETWEEN ? AND ?`).get(gauge, from, to);
-      const p = await db.prepare(`SELECT COALESCE(SUM(kgs_used),0) AS kgs, COALESCE(SUM(pi.pieces_produced),0) AS pcs FROM production pr LEFT JOIN production_items pi ON pi.production_id=pr.id WHERE pr.gauge=? AND pr.entry_date BETWEEN ? AND ?`).get(gauge, from, to);
-      const s = await db.prepare(`SELECT COALESCE(SUM(quantity),0) AS pcs, COALESCE(SUM(quantity*selling_price),0) AS rev FROM sales WHERE gauge_source=? AND entry_date BETWEEN ? AND ?`).get(gauge, from, to);
+      const b = await db.prepare(
+        `SELECT COALESCE(SUM(kgs_bought),0) AS v, COALESCE(SUM(kgs_bought*cost_per_kg),0) AS cost
+         FROM purchases WHERE gauge=? AND entry_date BETWEEN ? AND ?`
+      ).get(gauge, from, to);
+      const p = await db.prepare(
+        `SELECT COALESCE(SUM(kgs_used),0) AS kgs, COALESCE(SUM(pi.pieces_produced),0) AS pcs
+         FROM production pr LEFT JOIN production_items pi ON pi.production_id=pr.id
+         WHERE pr.gauge=? AND pr.entry_date BETWEEN ? AND ?`
+      ).get(gauge, from, to);
+      const s = await db.prepare(
+        `SELECT COALESCE(SUM(quantity),0) AS pcs, COALESCE(SUM(quantity*selling_price),0) AS rev
+         FROM sales WHERE gauge_source=? AND entry_date BETWEEN ? AND ?`
+      ).get(gauge, from, to);
       rows.push([
         gauge,
-        parseFloat(b.v)||0,
-        parseFloat(b.cost)||0,
-        parseFloat(p.kgs)||0,
-        parseInt(p.pcs)||0,
-        parseInt(s.pcs)||0,
-        parseFloat(s.rev)||0,
-        parseFloat(((parseFloat(b.v)||0) - (parseFloat(p.kgs)||0)).toFixed(2)),
-        Math.max(0,(parseInt(p.pcs)||0)-(parseInt(s.pcs)||0)),
+        parseFloat(b.v)    || 0, parseFloat(b.cost) || 0,
+        parseFloat(p.kgs)  || 0, parseInt(p.pcs)    || 0,
+        parseInt(s.pcs)    || 0, parseFloat(s.rev)  || 0,
+        parseFloat(((parseFloat(b.v) || 0) - (parseFloat(p.kgs) || 0)).toFixed(2)),
+        Math.max(0, (parseInt(p.pcs) || 0) - (parseInt(s.pcs) || 0)),
       ]);
     }
-    const headers = ['Gauge','Kgs Purchased','Wire Cost (KES)','Kgs Used in Production','Pieces Produced','Pieces Sold','Revenue (KES)','Kgs in Stock','Pieces in Stock'];
+    const headers = [
+      'Gauge', 'Kgs Purchased', 'Wire Cost (KES)', 'Kgs Used in Production',
+      'Pieces Produced', 'Pieces Sold', 'Revenue (KES)', 'Kgs in Stock', 'Pieces in Stock',
+    ];
     sendCsv(res, `imara_gauge_analysis_${from}_to_${to}.csv`, headers, rows);
-  } catch(e) {
+  } catch (e) {
     console.error('Export gauge-analysis error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* GET /api/export/invoices */
-router.get('/export/invoices', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/invoices
+router.get('/export/invoices', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
@@ -1782,47 +1767,43 @@ router.get('/export/invoices', authenticate, requireRole('owner','admin'), async
              i.customer_phone,
              CASE
                WHEN i.status = 'paid'            THEN 'Fully Paid'
-               WHEN i.status = 'partial_payment'
-                AND i.amount_paid > 0            THEN 'Partially Paid'
+               WHEN i.status = 'partial_payment' AND i.amount_paid > 0 THEN 'Partially Paid'
                WHEN i.status = 'partial_payment' THEN 'Unpaid'
-               WHEN i.status = 'cancelled'       THEN 'Cancelled'
+               WHEN i.status = 'cancelled'        THEN 'Cancelled'
                ELSE i.status
-             END                                                        AS payment_status,
+             END                                                  AS payment_status,
              i.subtotal, i.discount_amount, i.tax_amount, i.total_amount,
-             ROUND(i.amount_paid, 2)                          AS amount_paid,
-             ROUND((i.total_amount - i.amount_paid), 2)       AS balance,
+             ROUND(i.amount_paid, 2)                              AS amount_paid,
+             ROUND((i.total_amount - i.amount_paid), 2)           AS balance,
              u.full_name AS created_by, i.notes
       FROM invoices i JOIN users u ON i.created_by = u.id
       WHERE i.invoice_date BETWEEN ? AND ?
       ORDER BY i.invoice_date DESC, i.id DESC
     `).all(from, to);
-    const headers = ['Invoice #','Date','Due Date','Customer','Phone','Payment Status','Subtotal','Discount','Tax','Total','Amount Paid','Balance','Created By','Notes'];
+    const headers = [
+      'Invoice #', 'Date', 'Due Date', 'Customer', 'Phone', 'Payment Status',
+      'Subtotal', 'Discount', 'Tax', 'Total', 'Amount Paid', 'Balance', 'Created By', 'Notes',
+    ];
     sendCsv(res, `imara_invoices_${from}_to_${to}.csv`, headers,
-      rows.map(r => [r.invoice_number, r.invoice_date, r.due_date, r.customer_name,
-        r.customer_phone, r.payment_status, r.subtotal, r.discount_amount, r.tax_amount,
-        r.total_amount, r.amount_paid, r.balance, r.created_by, r.notes]));
-  } catch(e) {
+      rows.map(r => [
+        r.invoice_number, r.invoice_date, r.due_date, r.customer_name, r.customer_phone,
+        r.payment_status, r.subtotal, r.discount_amount, r.tax_amount,
+        r.total_amount, r.amount_paid, r.balance, r.created_by, r.notes,
+      ])
+    );
+  } catch (e) {
     console.error('Export invoices error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * GET /api/export/sales-xlsx
- *
- * Invoice-centric Excel export with merged cells:
- *   • One invoice  = one visual group.
- *   • Invoice-level columns are MERGED vertically across all item rows.
- *   • Colour-coded by payment status: green=paid, amber=partial, red=unpaid.
- *   • Sheet 2: per-customer summary totals.
- * ═══════════════════════════════════════════════════════════════════════════ */
-router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), async (req, res) => {
+// GET /api/export/sales-xlsx
+router.get('/export/sales-xlsx', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db   = getDb();
     const from = req.query.from || '2000-01-01';
     const to   = req.query.to   || '2099-12-31';
 
-    // lookup tables
     const pieceTypes = {};
     for (const p of await db.prepare('SELECT id, name FROM piece_types').all())
       pieceTypes[p.id] = p.name;
@@ -1830,7 +1811,6 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
     for (const u of await db.prepare('SELECT id, full_name FROM users').all())
       userNames[u.id] = u.full_name;
 
-    // invoices in date range
     const invoices = await db.prepare(`
       SELECT id, invoice_number, invoice_date, due_date,
              customer_name, customer_phone,
@@ -1841,7 +1821,6 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
       ORDER BY invoice_date DESC, id DESC
     `).all(from, to);
 
-    // items keyed by invoice_id
     const allItems = await db.prepare(`
       SELECT invoice_id, piece_type_id, COALESCE(gauge,'') AS gauge,
              description, quantity, unit_price, line_total
@@ -1853,7 +1832,6 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
       itemsByInv[it.invoice_id].push(it);
     }
 
-    // payments keyed by invoice_id
     const allPmts = await db.prepare(`
       SELECT invoice_id, payment_date, amount, payment_method, notes
       FROM invoice_payments ORDER BY payment_date ASC, created_at ASC
@@ -1864,7 +1842,7 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
       pmtsByInv[p.invoice_id].push(p);
     }
 
-    function getStatusLabel(inv) {
+    function statusLabel(inv) {
       if (inv.status === 'cancelled') return 'Cancelled';
       const bal = parseFloat(inv.total_amount) - parseFloat(inv.amount_paid);
       if (bal <= 0.01) return 'Fully Paid';
@@ -1872,38 +1850,33 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
       return 'Unpaid';
     }
 
-    // one row per item — invoice-level fields repeat on every item row
     const headers = [
       'Invoice #', 'Date', 'Due Date', 'Customer', 'Phone',
       'Piece Type', 'Gauge', 'Qty', 'Unit Price (KES)', 'Line Total (KES)',
       'Subtotal (KES)', 'Discount (KES)', 'Tax (KES)', 'Invoice Total (KES)',
       'Amount Paid (KES)', 'Balance (KES)', 'Payment Status',
-      'Payment History', 'Generated By'
+      'Payment History', 'Generated By',
     ];
 
     const rows = [];
     for (const inv of invoices) {
       const items  = itemsByInv[inv.id] || [null];
       const pmts   = pmtsByInv[inv.id]  || [];
-      const total  = parseFloat(inv.total_amount)  || 0;
-      const paid   = parseFloat(inv.amount_paid)   || 0;
+      const total  = parseFloat(inv.total_amount) || 0;
+      const paid   = parseFloat(inv.amount_paid)  || 0;
       const bal    = parseFloat(Math.max(0, total - paid).toFixed(2));
       const pmtHistory = pmts.length
         ? pmts.map(p =>
-            `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}` +
-            (p.notes ? ` (${p.notes})` : '')
+            `${p.payment_date}: KES ${parseFloat(p.amount).toFixed(2)} via ${p.payment_method}${p.notes ? ` (${p.notes})` : ''}`
           ).join(' | ')
         : '';
-      const status      = getStatusLabel(inv);
+      const status      = statusLabel(inv);
       const generatedBy = userNames[inv.created_by] || '';
 
       for (const item of items) {
         rows.push([
-          inv.invoice_number,
-          inv.invoice_date,
-          inv.due_date || '',
-          inv.customer_name,
-          inv.customer_phone || '',
+          inv.invoice_number, inv.invoice_date, inv.due_date || '',
+          inv.customer_name, inv.customer_phone || '',
           item ? (pieceTypes[item.piece_type_id] || item.description || '') : '',
           item ? item.gauge      : '',
           item ? item.quantity   : '',
@@ -1912,23 +1885,19 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner','admin'), asy
           parseFloat(inv.subtotal)        || 0,
           parseFloat(inv.discount_amount) || 0,
           parseFloat(inv.tax_amount)      || 0,
-          total,
-          paid,
-          bal,
-          status,
-          pmtHistory,
-          generatedBy
+          total, paid, bal,
+          status, pmtHistory, generatedBy,
         ]);
       }
     }
 
-    sendCsv(res, `imara_sales_${from}_to_${to}.csv`, headers, rows);
-
+    sendCsv(res, `imara_sales_detailed_${from}_to_${to}.csv`, headers, rows);
   } catch (e) {
     console.error('Export sales-xlsx error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 module.exports = router;
 module.exports.writeNotification   = writeNotification;

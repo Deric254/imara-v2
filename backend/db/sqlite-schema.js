@@ -333,7 +333,7 @@ const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     payment_date TEXT NOT NULL,
-    category TEXT NOT NULL CHECK(category IN ('wages_operator','wages_knuckler','rent','supplier','sack','other')),
+    category TEXT NOT NULL CHECK(category IN ('wages_operator','wages_knuckler','rent','supplier','sack','transport_to_market','other')),
     payee_user_id INTEGER REFERENCES users(id),
     payee_supplier_id INTEGER REFERENCES suppliers(id),
     payee_name TEXT,
@@ -426,6 +426,7 @@ async function initDb() {
     ['sack_cost',         '0'],
     ['rent_allocation',   '0'],
     ['stock_threshold',   '100'],
+    ['show_rent_dashboard', '0'],
     ['business_name',     ''],
     ['business_slogan',   ''],
     ['currency',          'KES'],

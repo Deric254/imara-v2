@@ -795,7 +795,10 @@ function applyPreset(days, btn) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
   const toD   = new Date();
-  const fromD = days===0 ? new Date() : new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-days);
+  // Fix: "N Days" means N inclusive calendar days ending today.
+  // today - (N-1) gives exactly N days: e.g. 7 Days = today-6 to today = 7 days.
+  // days===0 means "Today only" — from=to=today.
+  const fromD = days===0 ? new Date() : new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-(days-1));
   document.getElementById('toDate').value   = localDateStr(toD);
   document.getElementById('fromDate').value = localDateStr(fromD);
   sessionStorage.setItem('dash_fromDate', localDateStr(fromD));
@@ -867,17 +870,27 @@ async function loadDash(){
     }
     const k=d.kpis, raw=inv.raw_material;
 
+    // ── Show Rent toggle ─────────────────────────────────────────────────────
+    // Uses the shared loadGlobalConfig / getConfig pattern from shared.js.
+    // No extra network call — config is cached after first load.
+    await loadGlobalConfig();
+    const showRent = (getConfig('show_rent_dashboard', '0') === '1');
+    // ────────────────────────────────────────────────────────────────────────
+
     hideAllChartLoaders();
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     // Outstanding figures are all-time snapshots, not period-filtered
     const recvAmt  = d.summary?.invoices?.outstanding_amount || 0;
     const recvCnt  = d.summary?.invoices?.partial_count || 0;
-    const payAmt   = d.summary?.purchases?.outstanding_payable || 0;
+    const payAmt   = showRent
+      ? d.summary?.purchases?.outstanding_payable || 0
+      : (d.summary?.purchases?.outstanding_payable || 0) - (d.summary?.purchases?.rent_outstanding || 0);
     const suppOut  = d.summary?.purchases?.supplier_outstanding || 0;
     const wageOut  = d.summary?.purchases?.wages_outstanding || 0;
     const rentOut  = d.summary?.purchases?.rent_outstanding || 0;
     const sackOut  = d.summary?.purchases?.sack_outstanding || 0;
+    const tranOut  = d.summary?.purchases?.transport_outstanding || 0;
 
     document.getElementById('kpiGrid').innerHTML=`
       <div class="kpi" title="Cash collected from customers · ${from} → ${to}">
@@ -888,15 +901,15 @@ async function loadDash(){
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
-      <div class="kpi ${k.net_profit<0?'danger':''}" title="Revenue minus cost of goods sold · ${from} → ${to}">
-        <div class="kpi-icon">${k.net_profit<0?'📉':'📈'}</div>
+      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent Expense (Selected Period)':'Revenue minus Cost of Sales · Rent hidden (enable in Configuration)'} · ${from} → ${to}">
+        <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
-          <div class="kpi-label">Net Profit</div>
-          <div class="kpi-value">${compactKES(k.net_profit)}</div>
-          <div class="kpi-sub ${k.net_profit<0?'danger':'ok'}"><span class="dot" style="background:${k.net_profit<0?'var(--red)':'var(--g500)'}"></span><span>${k.net_margin_pct}% net margin</span></div>
+          <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
+          <div class="kpi-value">${compactKES(showRent?k.net_profit:k.gross_profit)}</div>
+          <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi" title="Wire + labour + transport on items sold · ${from} → ${to}">
+      <div class="kpi" title="Wire + labour + sacks + transport on items sold · Rent is a separate overhead · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
@@ -944,7 +957,7 @@ async function loadDash(){
           <div class="kpi-sub ${recvAmt>0?'warn':'ok'}"><span class="dot" style="background:${recvAmt>0?'var(--amber)':'var(--g500)'}"></span><span>${recvCnt} invoice${recvCnt!==1?'s':''} outstanding</span></div>
         </div>
       </div>
-      <div class="kpi ${payAmt>0?'danger':''}" title="Period costs incurred vs paid · Suppliers: ${fmtKES(suppOut)} · Wages: ${fmtKES(wageOut)} · Rent: ${fmtKES(rentOut)}">
+      <div class="kpi ${payAmt>0?'danger':''}" title="Period costs incurred vs paid · Suppliers: ${fmtKES(suppOut)} · Wages: ${fmtKES(wageOut)} · Transport: ${fmtKES(tranOut)} · Sack: ${fmtKES(sackOut)}${showRent?' · Outstanding Rent Balance: '+fmtKES(rentOut):''}">
         <div class="kpi-icon">📤</div>
         <div class="kpi-body">
           <div class="kpi-label">Payables</div>
@@ -1114,37 +1127,63 @@ async function loadDash(){
       })
     }));
 
-    /* Revenue Breakdown — doughnut */
+    /* Revenue Breakdown — doughnut
+       When rent is ON:  Wire | Labour | Transport | Rent Expense (Period) | Net Profit
+       When rent is OFF: Wire | Labour | Transport | Gross Profit
+       Controlled by show_rent_dashboard config — no backend logic changed. */
     destroyChart('revenueBreakdownChart');
     const bd=rb.cost_breakdown;
+    const bdLabels = showRent
+      ? ['Wire Cost','Labour & Sacks','Transport to Market','Rent Expense (Period)','Net Profit']
+      : ['Wire Cost','Labour & Sacks','Transport to Market','Gross Profit'];
+    const bdData = showRent
+      ? [bd.wire_cost.amount, bd.conversion_cost.amount, bd.transport_cost.amount, bd.rent_cost.amount, bd.net_profit.amount]
+      : [bd.wire_cost.amount, bd.conversion_cost.amount, bd.transport_cost.amount, rb.summary.total_revenue - (bd.wire_cost.amount + bd.conversion_cost.amount + bd.transport_cost.amount)];
+    const bdPcts = showRent
+      ? [bd.wire_cost.percentage, bd.conversion_cost.percentage, bd.transport_cost.percentage, bd.rent_cost.percentage, bd.net_profit.percentage]
+      : [bd.wire_cost.percentage, bd.conversion_cost.percentage, bd.transport_cost.percentage,
+         rb.summary.total_revenue > 0 ? parseFloat(((rb.summary.total_revenue - bd.wire_cost.amount - bd.conversion_cost.amount - bd.transport_cost.amount) / rb.summary.total_revenue * 100).toFixed(1)) : 0];
+    const bdColors = showRent
+      ? ['#dc2626','#f59e0b','#3b82f6','#8b5cf6','#10b981']
+      : ['#dc2626','#f59e0b','#3b82f6','#10b981'];
     chartRegistry.set('revenueBreakdownChart', new Chart(document.getElementById('revenueBreakdownChart'),{
       type:'doughnut',
       data:{
-        labels:['Wire Cost','Conversion Cost','Transport Cost','Net Profit'],
-        datasets:[{ data:[bd.wire_cost.amount,bd.conversion_cost.amount,bd.transport_cost.amount,bd.net_profit.amount],
-          backgroundColor:['#dc2626','#f59e0b','#3b82f6','#10b981'], borderWidth:0 }]
+        labels: bdLabels,
+        datasets:[{ data: bdData, backgroundColor: bdColors, borderWidth:0 }]
       },
       options: circularOpts({
         plugins:{
           legend: legendOpts(),
           datalabels: pctLabel(),
           tooltip:{ callbacks:{ label: ctx=>{
-            const pcts=[bd.wire_cost.percentage,bd.conversion_cost.percentage,bd.transport_cost.percentage,bd.net_profit.percentage];
-            return `${ctx.label}: ${smartKES(ctx.parsed)} (${pcts[ctx.dataIndex]}%)`;
+            return `${ctx.label}: ${smartKES(ctx.parsed)} (${bdPcts[ctx.dataIndex]}%)`;
           }}}
         }
       })
     }));
 
-    /* Cost Breakdown — bar */
+    /* Cost Breakdown — bar
+       When rent is ON:  Wire | Labour | Transport | Rent Expense (Period)
+       When rent is OFF: Wire | Labour | Transport (rent bar completely hidden) */
     destroyChart('costAnalysisChart');
+    const barLabels = showRent
+      ? ['Wire Cost','Labour & Sacks','Transport to Market','Rent Expense (Period)']
+      : ['Wire Cost','Labour & Sacks','Transport to Market'];
+    const barData = showRent
+      ? [bd.wire_cost.amount, bd.conversion_cost.amount, bd.transport_cost.amount, bd.rent_cost.amount]
+      : [bd.wire_cost.amount, bd.conversion_cost.amount, bd.transport_cost.amount];
+    const barColors = showRent
+      ? ['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)','rgba(139,92,246,.65)']
+      : ['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)'];
     chartRegistry.set('costAnalysisChart', new Chart(document.getElementById('costAnalysisChart'),{
       type:'bar',
       data:{
-        labels:['Wire Cost','Conversion Cost','Transport Cost'],
+        labels: barLabels,
         datasets:[{ label:'Cost (KES)',
-          data:[bd.wire_cost.amount,bd.conversion_cost.amount,bd.transport_cost.amount],
-          backgroundColor:['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)'], borderRadius:3
+          data:    barData,
+          backgroundColor: barColors,
+          borderRadius:3
         }]
       },
       options: cartesianOpts({
@@ -1291,7 +1330,7 @@ async function _fireSmartNotifs({ d, inv, k, raw, recvAmt, recvCnt, payAmt }) {
     await _postSmartNotif({
       type: payAmt > 100000 ? 'alert' : 'warn', category: 'sales',
       title: `📤 Payables — ${fmtKES(payAmt)} This Period`,
-      message: `Period costs outstanding: ${fmtKES(payAmt)} (suppliers, wages, rent). Check obligations for this period.`,
+      message: `Period costs outstanding: ${fmtKES(payAmt)} (suppliers, wages, transport, sack). Check obligations for this period.`,
     });
   }
 
@@ -1342,7 +1381,8 @@ if (user.role==='admin') {
   const _savedFrom = sessionStorage.getItem('dash_fromDate');
   const _savedTo   = sessionStorage.getItem('dash_toDate');
   const toD = new Date();
-  const fromD = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-7);
+  // 7 Days = today-6 to today = 7 inclusive calendar days (same fix as applyPreset)
+  const fromD = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-6);
   document.getElementById('toDate').value   = _savedTo   || _localDateStr(toD);
   document.getElementById('fromDate').value = _savedFrom || _localDateStr(fromD);
   if (_savedFrom || _savedTo) {

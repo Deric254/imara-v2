@@ -135,14 +135,39 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
       `SELECT ROUND(SUM(amount),2) AS total FROM payments WHERE payment_date BETWEEN ? AND ? AND category='other'`
     ).get(from, to);
 
+    // Transport to market — accrued from sales, paid via reconciliation payments
+    // This is the market transport cost saved on each sale at time of entry.
+    // It is a real cash cost that must be fully tracked just like wages and sacks.
+    // Accrued = SUM(sales.transport_to_market) for sales in the period.
+    // Paid    = SUM(payments) where category = 'transport_to_market' in the period.
+    const transportAccrued = await db.prepare(
+      `SELECT ROUND(COALESCE(SUM(transport_to_market),0),2) AS total FROM sales WHERE entry_date BETWEEN ? AND ?`
+    ).get(from, to);
+    const transportPaid = await db.prepare(
+      `SELECT ROUND(COALESCE(SUM(amount),0),2) AS total FROM payments WHERE payment_date BETWEEN ? AND ? AND category='transport_to_market'`
+    ).get(from, to);
+    const transportBalance = parseFloat(
+      (parseFloat(transportAccrued?.total||0) - parseFloat(transportPaid?.total||0)).toFixed(2)
+    );
+
+    // All-time transport (for the grand banner)
+    const allTransportAccrued = parseFloat(
+      ((await db.prepare(`SELECT COALESCE(SUM(transport_to_market),0) AS t FROM sales`).get()).t || 0)
+    );
+    const allTransportPaid = parseFloat(
+      ((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='transport_to_market'`).get()).t || 0)
+    );
+
     const totalWagesAccrued   = wages.reduce((s, w) => s + w.accrued_operator + w.accrued_knuckler, 0);
     const totalWagesPaid      = wages.reduce((s, w) => s + w.paid_operator    + w.paid_knuckler,    0);
     const totalWagesBalance   = parseFloat((totalWagesAccrued - totalWagesPaid).toFixed(2));
     const totalSupplierBilled = suppliers.reduce((s, x) => s + x.total_billed, 0);
     const totalSupplierPaid   = suppliers.reduce((s, x) => s + x.total_paid,   0);
     const totalSupplierBal    = parseFloat((totalSupplierBilled - totalSupplierPaid).toFixed(2));
-    // Period-filtered grand (wages+suppliers+sack use date filter; rent is always all-time)
-    const grandLiability = parseFloat((totalWagesBalance + totalSupplierBal + sackBalance + rentBalance).toFixed(2));
+    // Period-filtered grand (wages+suppliers+sack+transport use date filter; rent is always all-time)
+    const grandLiability = parseFloat(
+      (totalWagesBalance + totalSupplierBal + sackBalance + transportBalance + rentBalance).toFixed(2)
+    );
 
     // All-time true liability (used for the grand banner so it always matches the dashboard)
     const allWagesOpAccrued = num((await db.prepare(`SELECT COALESCE(SUM(operator_cost),0) AS t FROM production`).get()).t);
@@ -159,14 +184,23 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
     const allSackPaid       = num((await db.prepare(`SELECT COALESCE(SUM(amount),0) AS t FROM payments WHERE category='sack'`).get()).t);
     const allSackBal        = Math.max(0, parseFloat((allSackAccrued - allSackPaid).toFixed(2)));
 
+    const allTransportBal   = Math.max(0, parseFloat((allTransportAccrued - allTransportPaid).toFixed(2)));
+
     // Rent is already all-time
-    const allTimeGrand = parseFloat((allWagesBal + allSuppBal + allSackBal + rentBalance).toFixed(2));
+    const allTimeGrand = parseFloat(
+      (allWagesBal + allSuppBal + allSackBal + allTransportBal + rentBalance).toFixed(2)
+    );
 
     res.json({
       period: { from, to },
       wages: { workers: wages, total_accrued: parseFloat(totalWagesAccrued.toFixed(2)), total_paid: parseFloat(totalWagesPaid.toFixed(2)), balance: totalWagesBalance },
       suppliers: { breakdown: suppliers, total_billed: parseFloat(totalSupplierBilled.toFixed(2)), total_paid: parseFloat(totalSupplierPaid.toFixed(2)), balance: totalSupplierBal },
       sack: { accrued: parseFloat(num(sackAccrued?.total).toFixed(2)), paid: parseFloat(num(sackPaid?.total).toFixed(2)), balance: sackBalance },
+      transport_to_market: {
+        accrued: parseFloat(num(transportAccrued?.total).toFixed(2)),
+        paid:    parseFloat(num(transportPaid?.total).toFixed(2)),
+        balance: transportBalance,
+      },
       rent: {
         months: rentMonths.map(r => ({
           ...r,
@@ -226,7 +260,7 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
     const { payment_date, category, amount, notes = '', payee_user_id, payee_supplier_id, payee_name } = req.body;
 
     if (!payment_date) return res.status(400).json({ error: 'payment_date required' });
-    const validCats = ['wages_operator','wages_knuckler','rent','supplier','sack','other'];
+    const validCats = ['wages_operator','wages_knuckler','rent','supplier','sack','transport_to_market','other'];
     if (!validCats.includes(category)) return res.status(400).json({ error: 'Invalid category' });
     if (!amount || parseFloat(amount) <= 0) return res.status(400).json({ error: 'amount must be > 0' });
     if ((category === 'wages_operator' || category === 'wages_knuckler') && !payee_user_id)
@@ -308,6 +342,21 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       if (paying > remaining + 0.005) {
         return res.status(400).json({
           error: `Overpayment not allowed. Outstanding sack balance is ${remaining.toFixed(2)}. You are trying to pay ${paying.toFixed(2)}.`
+        });
+      }
+    }
+
+    // SAFEGUARD: prevent transport overpayment beyond total accrued transport cost
+    if (category === 'transport_to_market') {
+      const tAccrued   = await db.prepare(`SELECT COALESCE(SUM(transport_to_market), 0) AS total FROM sales`).get();
+      const tAlreadyPaid = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = 'transport_to_market'`).get();
+      const totalAccrued = parseFloat(tAccrued.total)      || 0;
+      const totalPaid    = parseFloat(tAlreadyPaid.total)  || 0;
+      const remaining    = parseFloat((totalAccrued - totalPaid).toFixed(2));
+      const paying       = parseFloat(amount);
+      if (paying > remaining + 0.005) {
+        return res.status(400).json({
+          error: `Overpayment not allowed. Outstanding transport balance is KES ${remaining.toFixed(2)}. You are trying to pay KES ${paying.toFixed(2)}.`
         });
       }
     }

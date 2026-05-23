@@ -62,7 +62,29 @@ pg.innerHTML = `
       <label class="label">Low Stock Threshold (kg)</label>
       <input class="input" type="number" id="c_threshold" min="0" step="1" placeholder="100">
     </div>
-    <button class="btn btn-primary btn-sm" onclick="saveMetrics()">Save Metrics</button>
+
+    <div class="form-group" style="margin-top:.75rem">
+      <label class="label">Dashboard Display</label>
+      <div style="display:flex;align-items:center;gap:.75rem;margin-top:.35rem">
+        <div id="rentToggle" onclick="toggleRent()"
+          style="width:44px;height:24px;border-radius:12px;cursor:pointer;position:relative;
+                 transition:background .2s;flex-shrink:0;background:var(--color-border-tertiary)">
+          <div id="rentToggleKnob"
+            style="position:absolute;top:3px;left:3px;width:18px;height:18px;
+                   border-radius:50%;background:#fff;transition:transform .2s;
+                   box-shadow:0 1px 3px rgba(0,0,0,.25)"></div>
+        </div>
+        <span style="font-size:.875rem;color:var(--color-text-secondary)" id="rentToggleLabel">
+          Show Rent in Dashboard — <strong>Off</strong>
+        </span>
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);margin-top:.3rem">
+        When off, rent expense is hidden from all KPIs and charts on the dashboard.
+        Reconciliation is unaffected.
+      </div>
+    </div>
+
+    <button class="btn btn-primary btn-sm" onclick="saveMetrics()" style="margin-top:.75rem">Save Metrics</button>
     <div id="metric_err" class="err" style="margin-top:.5rem"></div>
   </div>
 
@@ -151,6 +173,9 @@ async function load() {
     document.getElementById('c_threshold').value = getConfig('stock_threshold', '');
     document.getElementById('c_wire_gauges').value = getConfig('wire_gauges', '');
 
+    // Load rent toggle state
+    setRentToggle(getConfig('show_rent_dashboard', '0') === '1');
+
     renderPieces();
     renderSuppliers();
   } catch (e) {
@@ -212,11 +237,28 @@ async function saveCosts() {
   }
 }
 
+let _rentOn = false;
+
+function setRentToggle(on) {
+  _rentOn = on;
+  const track = document.getElementById('rentToggle');
+  const knob  = document.getElementById('rentToggleKnob');
+  const label = document.getElementById('rentToggleLabel');
+  track.style.background  = on ? 'var(--color-accent, #16a34a)' : 'var(--color-border-tertiary)';
+  knob.style.transform    = on ? 'translateX(20px)' : 'translateX(0)';
+  label.innerHTML = `Show Rent in Dashboard — <strong>${on ? 'On' : 'Off'}</strong>`;
+}
+
+function toggleRent() {
+  setRentToggle(!_rentOn);
+}
+
 async function saveMetrics() {
   showErr('metric_err', '');
   const vals = {
-    wire_gauges: document.getElementById('c_wire_gauges').value.trim(),
-    stock_threshold: document.getElementById('c_threshold').value,
+    wire_gauges:          document.getElementById('c_wire_gauges').value.trim(),
+    stock_threshold:      document.getElementById('c_threshold').value,
+    show_rent_dashboard:  _rentOn ? '1' : '0',
   };
   if (vals.stock_threshold !== '' && isNaN(parseFloat(vals.stock_threshold))) {
     return showErr('metric_err', 'Invalid threshold');
