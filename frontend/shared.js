@@ -214,6 +214,17 @@ function fmt(n, dec = 0) {
   return Number(n).toLocaleString('en-KE', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+/** Weight formatter — auto-converts to tonnes when ≥ 1000 kg.
+ *  e.g. 330 → "330 kg", 1000 → "1 t", 1500 → "1.5 t", 2750 → "2.75 t" */
+function fmtKg(v) {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v);
+  const abs = Math.abs(n);
+  if (abs >= 1000) return parseFloat((n / 1000).toFixed(2)) + ' t';
+  if (abs >= 1)    return parseFloat(n.toFixed(1)) + ' kg';
+  return n.toFixed(2) + ' kg';
+}
+
 function fmtMoney(n, currency) {
   if (n == null || isNaN(n)) return '—';
   const cur = currency || getConfig('currency') || 'KES';

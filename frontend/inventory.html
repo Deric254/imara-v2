@@ -75,23 +75,23 @@ async function load() {
     document.getElementById('rawKpis').innerHTML = `
       <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">
         <div class="kpi-label">Raw Wire Stock</div>
-        <div class="kpi-value mono">${fmt(r.remaining_kgs,1)}</div>
-        <div class="kpi-sub">kg remaining</div>
+        <div class="kpi-value mono">${fmtKg(r.remaining_kgs)}</div>
+        <div class="kpi-sub">remaining</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Total Purchased</div>
-        <div class="kpi-value mono">${fmt(r.total_bought_kgs,1)}</div>
-        <div class="kpi-sub">kg all-time</div>
+        <div class="kpi-value mono">${fmtKg(r.total_bought_kgs)}</div>
+        <div class="kpi-sub">all-time</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Total Used</div>
-        <div class="kpi-value mono">${fmt(r.total_used_kgs,1)}</div>
-        <div class="kpi-sub">kg in production</div>
+        <div class="kpi-value mono">${fmtKg(r.total_used_kgs)}</div>
+        <div class="kpi-sub">in production</div>
       </div>
       <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">
         <div class="kpi-label">Stock Level</div>
         <div class="kpi-value mono">${fmt(r.remaining_pct,1)}%</div>
-        <div class="kpi-sub">threshold: ${fmt(r.threshold)} kg</div>
+        <div class="kpi-sub">threshold: ${fmtKg(r.threshold)}</div>
       </div>
       <div class="kpi ${inv.finished_goods.reduce((t,f)=>t+f.available_pieces,0)===0?'danger':inv.finished_goods.reduce((t,f)=>t+f.available_pieces,0)<50?'warning':''}">
         <div class="kpi-label">Finished Goods</div>
@@ -103,14 +103,14 @@ async function load() {
     // Usage bar
     document.getElementById('rawBarWrap').innerHTML = `
       <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.4rem">
-        <span>Raw Wire Usage</span><span>${fmt(r.total_used_kgs,1)} kg used of ${fmt(r.total_bought_kgs,1)} kg</span>
+        <span>Raw Wire Usage</span><span>${fmtKg(r.total_used_kgs)} used of ${fmtKg(r.total_bought_kgs)}</span>
       </div>
       <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden">
         <div style="width:${Math.min(100-r.remaining_pct,100)}%;height:100%;border-radius:99px;
           background:${r.out_of_stock?'var(--red)':r.low_stock?'var(--amber)':'var(--g500)'}"></div>
       </div>
       ${r.low_stock?`<div class="alert alert-warn" style="margin-top:.75rem"><span class="alert-icon">⚠</span>
-        ${r.out_of_stock?'Stock depleted!':'Low stock — below threshold of '+fmt(r.threshold)+' kg'}</div>`:''}
+        ${r.out_of_stock?'Stock depleted!':'Low stock — below threshold of '+fmtKg(r.threshold)}</div>`:''}
     `;
 
     // Raw materials table
@@ -130,16 +130,16 @@ async function load() {
           : '<span class="badge badge-green">In Stock</span>';
         return `<tr>
           <td><strong>${escHtml(g.gauge || '—')}</strong></td>
-          <td class="mono">${fmt(bought,1)}</td>
-          <td class="mono">${fmt(used,1)}</td>
-          <td class="mono"><strong>${fmt(rem,1)}</strong></td>
+          <td class="mono">${fmtKg(bought)}</td>
+          <td class="mono">${fmtKg(used)}</td>
+          <td class="mono"><strong>${fmtKg(rem)}</strong></td>
           <td>${status}</td>
         </tr>`;
       }).join('') + `<tr style="background:var(--g50);font-weight:700">
         <td>Total</td>
-        <td class="mono">${fmt(r.total_bought_kgs,1)}</td>
-        <td class="mono">${fmt(r.total_used_kgs,1)}</td>
-        <td class="mono">${fmt(r.remaining_kgs,1)}</td>
+        <td class="mono">${fmtKg(r.total_bought_kgs)}</td>
+        <td class="mono">${fmtKg(r.total_used_kgs)}</td>
+        <td class="mono">${fmtKg(r.remaining_kgs)}</td>
         <td></td>
       </tr>`;
     }
@@ -164,7 +164,7 @@ async function load() {
           <td class="mono">${fmt(f.total_produced)}</td>
           <td class="mono">${fmt(f.total_sold)}</td>
           <td class="mono"><strong>${fmt(f.available_pieces)}</strong></td>
-          <td class="mono">${fmt(f.available_kgs,2)}</td>
+          <td class="mono">${fmtKg(f.available_kgs)}</td>
           <td class="mono">${fmt(f.available_meters,1)}</td>
           <td class="mono">${fmt(f.stock_value,2)} KES</td>
           <td>${status}</td>

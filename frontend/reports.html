@@ -214,7 +214,7 @@ async function loadAll() {
       <div class="kpi ${profit<0?'danger':'prof'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Net Profit</div><span>📈</span></div>
         <div class="kpi-value mono">${fmt(profit)}</div><div class="kpi-sub">sold items only, plus rent</div></div>
       <div class="kpi buy"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Material Flow</div><span>📦</span></div>
-        <div class="kpi-value mono">${fmt(totalKgs,1)}</div><div class="kpi-sub">kg raw wire bought</div></div>
+        <div class="kpi-value mono">${fmtKg(totalKgs)}</div><div class="kpi-sub">raw wire bought</div></div>
       <div class="kpi ${parseFloat(efficiency)<90?'warning':'prod'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Utilization</div><span>⚙</span></div>
         <div class="kpi-value mono">${efficiency}%</div><div class="kpi-sub">material efficiency</div></div>
       <div class="kpi best"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Best Seller</div><span>💎</span></div>
@@ -278,7 +278,7 @@ async function loadAll() {
       ? _purchases.map(r=>`<tr>
           <td class="mono">${r.entry_date}</td><td>${escHtml(r.supplier_name)}</td>
           <td>${r.gauge?`<span class="gauge-badge">${escHtml(r.gauge)}</span>`:'—'}</td>
-          <td class="mono">${fmt(r.kgs_bought,1)}</td><td class="mono">${fmt(r.cost_per_kg,2)}</td>
+          <td class="mono">${fmtKg(r.kgs_bought)}</td><td class="mono">${fmt(r.cost_per_kg,2)}</td>
           <td class="mono">${fmt(r.transport_cost,2)}</td><td class="mono">${fmt(r.total_cost,2)}</td>
           <td class="mono">${fmt(r.landed_cost_per_kg,2)}</td><td style="font-size:.78rem">${escHtml(r.entered_by_name)}</td>
           ${delCol?`<td><button class="btn btn-danger btn-sm" onclick="del('purchases',${r.id})">✕</button></td>`:''}</tr>`).join('')
@@ -286,7 +286,7 @@ async function loadAll() {
 
     document.getElementById('prTable').innerHTML = _production.length
       ? _production.map(r=>`<tr>
-          <td class="mono">${r.entry_date}</td><td class="mono">${fmt(r.kgs_used,1)}</td>
+          <td class="mono">${r.entry_date}</td><td class="mono">${fmtKg(r.kgs_used)}</td>
           <td class="mono">${fmt((r.items||[]).reduce((s,i)=>s+(parseInt(i.pieces_produced)||0),0))}<br><span style="font-size:.72rem;color:var(--muted)">${(r.items||[]).map(i=>escHtml(i.piece_name)+': '+fmt(i.pieces_produced)).join(', ')}</span></td>
           <td style="font-size:.82rem">${escHtml(r.operator_name||'—')}</td><td style="font-size:.82rem">${escHtml(r.knuckler_name||'—')}</td>
           <td class="mono">${fmt(r.total_overhead,2)}</td>
@@ -300,7 +300,7 @@ async function loadAll() {
           <td class="mono">${r.entry_date}</td><td>${escHtml(r.piece_name)}</td>
           <td>${r.gauge_source?`<span class="gauge-badge">${escHtml(r.gauge_source)}</span>`:'—'}</td>
           <td class="mono">${fmt(r.quantity)}</td><td class="mono">${fmt(r.selling_price,2)}</td>
-          <td class="mono">${fmt(r.revenue,2)}</td><td class="mono">${fmt(r.kgs_sold,2)}</td>
+          <td class="mono">${fmt(r.revenue,2)}</td><td class="mono">${fmtKg(r.kgs_sold)}</td>
           <td class="mono">${fmt(r.meters_sold,1)}</td>
           <td>${r.price_overridden?'<span class="badge badge-amber">Custom</span>':'<span class="badge badge-green">Configured</span>'}</td>
           <td style="font-size:.78rem">${escHtml(r.entered_by_name)}</td>
@@ -676,7 +676,7 @@ async function loadGaugeKpi() {
         <div class="kpi-value mono">${fmt(totalPcs)}</div>
         <div class="kpi-sub">all gauges</div></div>
       <div class="kpi buy"><div class="kpi-label">Wire Purchased</div>
-        <div class="kpi-value mono">${fmt(totalKgs,1)} kg</div>
+        <div class="kpi-value mono">${fmtKg(totalKgs)}</div>
         <div class="kpi-sub">raw stock</div></div>`;
 
     // Best gauge banner

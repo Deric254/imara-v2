@@ -921,18 +921,19 @@ async function loadDash(){
         <div class="kpi-icon">⚙️</div>
         <div class="kpi-body">
           <div class="kpi-label">Production</div>
-          <div class="kpi-value">${smartVal(k.total_kgs_produced)}<span style="font-size:.82em;font-weight:500;color:var(--muted)"> kg</span></div>
+          <div class="kpi-value">${fmtKg(k.total_kgs_produced)}</div>
           <div class="kpi-sub"><span class="dot"></span><span>${k.total_pieces_sold} pieces sold</span></div>
         </div>
       </div>
-      <div class="kpi ${raw.low_stock?(raw.out_of_stock?'danger':'warning'):''}" title="All-time · Bought: ${smartVal(raw.total_bought_kgs)} kg · Used: ${smartVal(raw.total_used_kgs)} kg">
+      <div class="kpi ${raw.low_stock?(raw.out_of_stock?'danger':'warning'):''}" title="All-time · Bought: ${fmtKg(raw.total_bought_kgs)} · Used: ${fmtKg(raw.total_used_kgs)}">
         <div class="kpi-icon">${raw.out_of_stock?'🚨':raw.low_stock?'⚠️':'📦'}</div>
         <div class="kpi-body">
           <div class="kpi-label">Raw Stock</div>
-          <div class="kpi-value">${smartVal(raw.remaining_kgs)}<span style="font-size:.82em;font-weight:500;color:var(--muted)"> kg</span></div>
+          <div class="kpi-value">${fmtKg(raw.remaining_kgs)}</div>
           <div class="kpi-sub ${raw.out_of_stock?'danger':raw.low_stock?'warn':''}"><span class="dot" style="background:${raw.out_of_stock?'var(--red)':raw.low_stock?'var(--amber)':'var(--g500)'}"></span><span>${raw.out_of_stock?'Out of stock':raw.remaining_pct+'% remaining'}</span></div>
         </div>
       </div>
+
       <div class="kpi info" title="Highest revenue piece this period · ${from} → ${to}">
         <div class="kpi-icon">🏆</div>
         <div class="kpi-body">
@@ -1014,9 +1015,9 @@ async function loadDash(){
         options: cartesianOpts({
           plugins:{
             datalabels: labels.length > 30 ? { display: false } : endLabel('#d97706',' kg'),
-            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+smartVal(ctx.parsed.y)+' kg' : 'No data' }}
+            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+fmtKg(ctx.parsed.y) : 'No data' }}
           },
-          scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>smartVal(v)+' kg'}} }
+          scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>fmtKg(v)}} }
         }, labels.length)
       }));
     }
@@ -1201,14 +1202,14 @@ async function loadDash(){
     document.getElementById('stockOverview').innerHTML=`
       <div style="margin-bottom:1rem">
         <div style="display:flex;justify-content:space-between;font-size:.78rem;color:var(--muted);margin-bottom:.35rem">
-          <span>Raw wire stock</span><span>${smartVal(raw.remaining_kgs)} kg of ${smartVal(raw.total_bought_kgs)} kg</span>
+          <span>Raw wire stock</span><span>${fmtKg(raw.remaining_kgs)} of ${fmtKg(raw.total_bought_kgs)}</span>
         </div>
         <div style="background:var(--border);border-radius:99px;height:10px;overflow:hidden">
           <div style="width:${Math.min(raw.remaining_pct,100)}%;height:100%;border-radius:99px;transition:.4s;
             background:${raw.out_of_stock?'var(--red)':raw.low_stock?'var(--amber)':'var(--g500)'}"></div>
         </div>
         ${raw.low_stock?`<div style="font-size:.75rem;color:${raw.out_of_stock?'var(--red)':'var(--amber)'};margin-top:.35rem">
-          ${raw.out_of_stock?'⚠ Out of stock!':'⚠ Low stock — below threshold of '+smartVal(raw.threshold)+' kg'}</div>`:''}
+          ${raw.out_of_stock?'⚠ Out of stock!':'⚠ Low stock — below threshold of '+fmtKg(raw.threshold)}</div>`:''}
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:.75rem">
         ${fg.map(f=>`<div style="background:var(--g50);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem">
@@ -1311,8 +1312,8 @@ async function _fireSmartNotifs({ d, inv, k, raw, recvAmt, recvCnt, payAmt }) {
   } else if (raw.low_stock) {
     await _postSmartNotif({
       type: 'warn', category: 'stock_low',
-      title: `⚠ Raw Wire Low — ${smartVal(raw.remaining_kgs)} kg remaining`,
-      message: `Only ${raw.remaining_pct}% of wire stock left (threshold: ${smartVal(raw.threshold)} kg). Consider restocking.`,
+      title: `⚠ Raw Wire Low — ${fmtKg(raw.remaining_kgs)} remaining`,
+      message: `Only ${raw.remaining_pct}% of wire stock left (threshold: ${fmtKg(raw.threshold)}). Consider restocking.`,
     });
   }
 
