@@ -29,6 +29,7 @@ let serverPort = 9000;
 let autoUpdater = null;
 let isCheckingForUpdate = false;
 let isDownloadingUpdate = false;
+let isManualUpdateCheck = false;
 
 function initAutoUpdater() {
   if (!app.isPackaged) return null; // never run updater in dev/source mode
@@ -117,12 +118,22 @@ function initAutoUpdater() {
       mainWindow?.setProgressBar(-1);
       console.error('Auto-updater error:', err?.message || err);
 
-      dialog.showMessageBox(mainWindow, {
-        type: 'error',
-        title: 'Update Check Failed',
-        message: 'IMARA LINKS could not check for updates.',
-        detail: err?.message || 'Please check your internet connection and try again.',
-      });
+      // Only show a dialog when the user explicitly triggered the check.
+      // Silent background/startup checks fail quietly to avoid nagging the user.
+      if (isManualUpdateCheck) {
+        const is404 = (err?.message || '').includes('404');
+        dialog.showMessageBox(mainWindow, {
+          type: is404 ? 'info' : 'error',
+          title: is404 ? 'No Updates Available' : 'Update Check Failed',
+          message: is404
+            ? 'IMARA LINKS is up to date.'
+            : 'IMARA LINKS could not check for updates.',
+          detail: is404
+            ? `You are running the latest version (${app.getVersion()}).`
+            : 'Please check your internet connection and try again.',
+        });
+      }
+      isManualUpdateCheck = false;
     });
 
   } catch (err) {
@@ -164,8 +175,10 @@ function checkForUpdatesManually() {
     return;
   }
 
+  isManualUpdateCheck = true;
   updater.checkForUpdates().catch((err) => {
     isCheckingForUpdate = false;
+    isManualUpdateCheck = false;
     mainWindow?.setProgressBar(-1);
     dialog.showMessageBox(mainWindow, {
       type: 'error',
