@@ -58,7 +58,25 @@ jobs:
           git commit -m "chore(release): v${{ steps.version.outputs.NEW_VERSION }}" || echo "Nothing to commit"
           git push origin HEAD
 
-      - name: Build & publish to GitHub Releases
-        run: npm run publish:win
+      - name: Build Windows installer
+        run: npm run build:win
+
+      - name: Create GitHub Release with installer
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.NEW_VERSION }}
+          name: Version ${{ steps.version.outputs.NEW_VERSION }}
+          body: |
+            ## IMARA LINKS v${{ steps.version.outputs.NEW_VERSION }}
+            - Bug fixes and improvements
+            - Released: ${{ github.event.head_commit.timestamp }}
+
+            **Installation:** Download the `.exe` below and run it.
+          files: |
+            dist/IMARA-LINKS-Setup-*.exe
+            dist/IMARA-LINKS-Setup-*.exe.blockmap
+            dist/latest.yml
+          draft: false
+          prerelease: false
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
