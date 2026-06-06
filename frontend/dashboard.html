@@ -807,7 +807,12 @@ function applyPreset(days, btn) {
 }
 
 function _granularity(from, to) {
-  const d = Math.round((new Date(to)-new Date(from))/864e5)+1;
+  // Parse YYYY-MM-DD as local date (not UTC) to avoid timezone-induced off-by-one
+  function _parseLocal(s) {
+    const [y,m,d] = s.split('-').map(Number);
+    return new Date(y, m-1, d);
+  }
+  const d = Math.round((_parseLocal(to)-_parseLocal(from))/864e5)+1;
   if (d<=1)   return 'Daily';
   if (d<=31)  return 'Daily';
   if (d<=90)  return 'Weekly';
@@ -1378,15 +1383,23 @@ if (user.role==='admin') {
   function _localDateStr(d) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
-  // Restore last-used period from sessionStorage, fallback to 7 days
+  // Restore last-used period from sessionStorage, but only if toDate is still today
+  // (stale sessions from yesterday would shift all dates one day behind)
   const _savedFrom = sessionStorage.getItem('dash_fromDate');
   const _savedTo   = sessionStorage.getItem('dash_toDate');
   const toD = new Date();
+  const _todayStr = _localDateStr(toD);
+  const _isStale  = _savedTo && _savedTo !== _todayStr;
   // 7 Days = today-6 to today = 7 inclusive calendar days (same fix as applyPreset)
   const fromD = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-6);
-  document.getElementById('toDate').value   = _savedTo   || _localDateStr(toD);
-  document.getElementById('fromDate').value = _savedFrom || _localDateStr(fromD);
-  if (_savedFrom || _savedTo) {
+  document.getElementById('toDate').value   = (!_isStale && _savedTo)   ? _savedTo   : _todayStr;
+  document.getElementById('fromDate').value = (!_isStale && _savedFrom) ? _savedFrom : _localDateStr(fromD);
+  if (_isStale) {
+    // Saved dates are from a previous day — clear them so presets recalculate from today
+    sessionStorage.removeItem('dash_fromDate');
+    sessionStorage.removeItem('dash_toDate');
+  }
+  if (!_isStale && (_savedFrom || _savedTo)) {
     document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
   }
   document.getElementById('fromDate').addEventListener('change', () => {

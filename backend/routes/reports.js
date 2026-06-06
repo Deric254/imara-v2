@@ -637,44 +637,15 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     const utcEnd   = new Date(Date.UTC(ey, em - 1, ed));
     const diffDays = Math.round((utcEnd - utcStart) / 86400000) + 1;
 
-    let step;
-    if      (diffDays <= 7)   step = 1;
-    else if (diffDays <= 31)  step = Math.max(1, Math.floor(diffDays / 15));
-    else if (diffDays <= 90)  step = 7;
-    else if (diffDays <= 365) step = 30;
-    else                      step = 90;
+    // Always daily — one point per day for every range.
+    // The chart has zoom/pan so large ranges are still navigable.
+    // Bucketing (step>1) caused transactions to be labelled with the bucket
+    // start date instead of the actual transaction date, shifting dates.
+    const step = 1;
 
     const buckets = [];
-    if (step >= 28) {
-      let cur = new Date(Date.UTC(sy, sm - 1, 1));
-      while (cur <= utcEnd) {
-        const ds       = utcDateStr(cur);
-        const monthEnd = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 0));
-        const de       = utcDateStr(new Date(Math.min(monthEnd.getTime(), utcEnd.getTime())));
-        if (de >= fromDate) buckets.push({ ds: ds < fromDate ? fromDate : ds, de });
-        cur = new Date(Date.UTC(cur.getUTCFullYear(), cur.getUTCMonth() + 1, 1));
-      }
-    } else if (step === 7) {
-      let cur = new Date(utcStart);
-      const dow = cur.getUTCDay();
-      cur.setUTCDate(cur.getUTCDate() + (dow === 0 ? -6 : 1 - dow));
-      while (cur <= utcEnd) {
-        const ds      = utcDateStr(cur);
-        const weekEnd = new Date(cur.getTime() + 6 * 86400000);
-        const de      = utcDateStr(new Date(Math.min(weekEnd.getTime(), utcEnd.getTime())));
-        if (de >= fromDate) buckets.push({ ds: ds < fromDate ? fromDate : ds, de });
-        cur.setUTCDate(cur.getUTCDate() + 7);
-      }
-    } else if (step > 1) {
-      for (let d = new Date(utcStart); d <= utcEnd; d.setUTCDate(d.getUTCDate() + step)) {
-        const ds = utcDateStr(d);
-        const de = utcDateStr(new Date(Math.min(d.getTime() + (step - 1) * 86400000, utcEnd.getTime())));
-        buckets.push({ ds, de });
-      }
-    } else {
-      for (let d = new Date(utcStart); d <= utcEnd; d.setUTCDate(d.getUTCDate() + 1)) {
-        buckets.push({ ds: utcDateStr(d), de: utcDateStr(d) });
-      }
+    for (let d = new Date(utcStart); d <= utcEnd; d.setUTCDate(d.getUTCDate() + 1)) {
+      buckets.push({ ds: utcDateStr(d), de: utcDateStr(d) });
     }
 
     const [revRows, kgPRows, kgBRows] = await Promise.all([
@@ -831,9 +802,9 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     res.json({
       period_days: days, from: fromDate, to: toDate,
       granularity: {
-        unit:         diffDays <= 7 ? 'day' : diffDays <= 31 ? 'day' : diffDays <= 90 ? 'week' : diffDays <= 365 ? 'month' : 'quarter',
-        step,
-        label:        diffDays <= 7 ? 'Daily' : diffDays <= 31 ? 'Daily' : diffDays <= 90 ? 'Weekly' : diffDays <= 365 ? 'Monthly' : 'Quarterly',
+        unit:         'day',
+        step:         1,
+        label:        diffDays <= 31 ? 'Daily' : diffDays <= 90 ? 'Weekly' : diffDays <= 365 ? 'Monthly' : 'Quarterly',
         total_points: trends.length,
       },
       kpis: {
