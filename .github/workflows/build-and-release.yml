@@ -11,6 +11,7 @@ on:
       - 'electron-main.js'
       - 'preload.js'
       - 'package.json'
+      - 'electron-builder.yml'
       - '!*.md'
 
 jobs:
@@ -60,6 +61,9 @@ jobs:
 
       - name: Build Windows installer
         run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Create GitHub Release with installer
         uses: softprops/action-gh-release@v1
@@ -73,8 +77,8 @@ jobs:
 
             **Installation:** Download the `.exe` below and run it.
           files: |
-            dist/IMARA LINKS Setup *.exe
-            dist/IMARA LINKS Setup *.exe.blockmap
+            dist/IMARA-LINKS-Setup-*.exe
+            dist/IMARA-LINKS-Setup-*.exe.blockmap
             dist/latest.yml
           draft: false
           prerelease: false

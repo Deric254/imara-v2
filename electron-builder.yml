@@ -1,6 +1,6 @@
 appId: com.imara-links.app
 productName: IMARA LINKS
-npmRebuild: false
+npmRebuild: true
 directories:
   buildResources: assets
 
@@ -14,6 +14,7 @@ files:
 win:
   target:
     - nsis
+  artifactName: IMARA-LINKS-Setup-${version}.${ext}
   certificateFile: null
   certificatePassword: null
 

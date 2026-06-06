@@ -8,7 +8,7 @@
     "electron-dev": "electron .",
     "start": "node backend/server.js",
     "build": "electron-builder",
-    "build:win": "electron-builder --win --publish never",
+    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win --publish never",
     "publish:win": "electron-builder --win --publish always"
   },
   "devDependencies": {
