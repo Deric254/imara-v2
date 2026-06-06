@@ -73,8 +73,8 @@ jobs:
 
             **Installation:** Download the `.exe` below and run it.
           files: |
-            dist/IMARA-LINKS-Setup-*.exe
-            dist/IMARA-LINKS-Setup-*.exe.blockmap
+            dist/IMARA LINKS Setup *.exe
+            dist/IMARA LINKS Setup *.exe.blockmap
             dist/latest.yml
           draft: false
           prerelease: false
