@@ -972,7 +972,8 @@ async function loadDash(){
         </div>
       </div>`;
 
-    const trendRows = compactTrendData(d.trends || []);
+    const trendRows = compactTrendData(d.trends || [])
+      .filter(t => t.revenue > 0 || t.production > 0); // skip days with no activity
     const labels = trendRows.map(t=>t.label);
     const revs   = trendRows.map(t=>t.revenue);
     const prods  = trendRows.map(t=>t.production);
