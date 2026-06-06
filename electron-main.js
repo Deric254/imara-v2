@@ -1,5 +1,6 @@
 // electron-main.js — IMARA LINKS Desktop App
 // This file lives in the project ROOT and is the Electron entry point.
+// v2.0.22
 
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path    = require('path');
