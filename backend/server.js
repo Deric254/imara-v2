@@ -6,7 +6,6 @@ const helmet    = require('helmet');
 const morgan    = require('morgan');
 const rateLimit = require('express-rate-limit');
 
-// db/index.js selects SQLite or Neon based on DATABASE_TYPE env var
 const { initDb } = require('./db');
 
 // ── Safety guard: refuse to start with the default placeholder secret ─────────

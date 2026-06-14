@@ -31,7 +31,7 @@ async function authenticate(req, res, next) {
 
     // Reject tokens issued before the last password change.
     // pca in the token is stored as milliseconds (Date.getTime()).
-    // password_changed_at from Postgres is an ISO timestamp string — convert it
+    // password_changed_at may be stored as ISO timestamp — normalise to ms
     // to milliseconds before comparing so both sides are the same unit.
     // Only enforce when BOTH the token carries a real pca AND the DB has a timestamp.
     const tokenPca = Number(payload.pca);

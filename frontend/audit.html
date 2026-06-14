@@ -4,6 +4,15 @@
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Audit Log - IMARA LINKS</title>
 <link rel="stylesheet" href="shared.css">
+<style>
+/* Shared period-slicer styles (identical across all pages) */
+.period-bar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:1.25rem}
+.period-bar label{font-size:.8rem;color:var(--muted);white-space:nowrap}
+.period-preset{background:var(--g50);border:1px solid var(--border);border-radius:6px;
+  padding:.3rem .65rem;font-size:.8rem;font-weight:500;color:var(--ink);cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
+.period-preset:hover,.period-preset.active{background:var(--g500);color:#fff;border-color:var(--g500)}
+</style>
 </head>
 <body>
 <script src="shared.js"></script>
@@ -17,20 +26,21 @@
   pg.innerHTML = `
 <div class="card" style="margin-bottom:1.25rem">
   <div class="card-title">Filter Audit Log</div>
-  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem">
-    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:.5rem">
-        <label class="label" style="margin:0;white-space:nowrap">From</label>
-        <input type="date" class="input" id="fromDate" style="width:auto">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem">
+    <div class="period-bar" style="margin-bottom:0">
+      <label>Period:</label>
+      <input type="date" class="input" id="fromDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+      <span style="font-size:.8rem;color:var(--muted)">to</span>
+      <input type="date" class="input" id="toDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
+      <button class="btn btn-primary btn-sm" onclick="loadAudit()">Apply</button>
+      <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+        <button class="period-preset" onclick="preset(0,this)">Today</button>
+        <button class="period-preset" onclick="preset(7,this)">7 Days</button>
+        <button class="period-preset" onclick="preset('this_month',this)">This Month</button>
+        <button class="period-preset" onclick="preset('last_month',this)">Last Month</button>
+        <button class="period-preset" onclick="preset(90,this)">90 Days</button>
+        <button class="period-preset" onclick="preset(365,this)">1 Year</button>
       </div>
-      <div style="display:flex;align-items:center;gap:.5rem">
-        <label class="label" style="margin:0">To</label>
-        <input type="date" class="input" id="toDate" style="width:auto">
-      </div>
-      <button class="btn btn-primary" onclick="loadAudit()">Apply</button>
-      <button class="btn btn-secondary" onclick="preset(7)">Last 7d</button>
-      <button class="btn btn-secondary" onclick="preset('this_month')">This Month</button>
-      <button class="btn btn-secondary" onclick="preset('last_month')">Last Month</button>
     </div>
     <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn" style="display:none">
       Export to CSV
@@ -84,20 +94,22 @@
 
   let auditData = [];
 
-  function preset(days) {
+  function preset(days, btn) {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
     const today = new Date();
     let from, to;
     if (days === 'this_month') {
       from = new Date(today.getFullYear(), today.getMonth(), 1);
-      to   = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      to   = today;
     } else if (days === 'last_month') {
       from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
       to   = new Date(today.getFullYear(), today.getMonth(), 0);
     } else {
       to   = today;
-      from = new Date(Date.now() - days * 86400000);
+      from = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
     }
-    document.getElementById('toDate').value = localDateString(to);
+    document.getElementById('toDate').value   = localDateString(to);
     document.getElementById('fromDate').value = localDateString(from);
     loadAudit();
   }
@@ -225,7 +237,14 @@
     downloadCSV(`audit_log_${from}_to_${to}`, headers, rows);
   }
 
-  preset(7);
+  preset(7, document.querySelector('.period-preset[onclick*="preset(7"]'));
+  // Deactivate preset buttons when user manually changes dates
+  document.getElementById('fromDate').addEventListener('change', () => {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+  });
+  document.getElementById('toDate').addEventListener('change', () => {
+    document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
+  });
 </script>
 </body>
 </html>

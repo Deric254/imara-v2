@@ -14,7 +14,7 @@ if (!process.env.JWT_SECRET) {
   const seed   = app.getPath('userData') + 'imara-links-v2';
   process.env.JWT_SECRET = crypto.createHash('sha256').update(seed).digest('hex');
 }
-process.env.DATABASE_TYPE = process.env.DATABASE_TYPE || 'local';
+// Force local SQLite — Neon/Postgres not used
 process.env.NODE_ENV       = process.env.NODE_ENV       || 'production';
 
 const { initDb } = require('./backend/db');
