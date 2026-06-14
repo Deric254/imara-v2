@@ -534,7 +534,7 @@ function renderGrandBanner() {
   if (periodEl) {
     if (period < 0) {
       // Negative means more was paid this period than was accrued — settling old debts
-      periodEl.textContent = 'KES ' + fmt(Math.abs(period), 2) + ' net paid out (more paid than accrued — clearing older debts)';
+      periodEl.textContent = 'KES ' + fmt(Math.abs(period), 2) + ' net paid out';
       periodEl.style.color = '#86efac'; // light green — this is a good thing
     } else {
       periodEl.textContent = 'KES ' + fmt(period, 2) + ' net owed this period';
