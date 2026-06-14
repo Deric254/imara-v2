@@ -507,3 +507,4 @@ ipcMain.on('app-info', (event) => {
     port: serverPort,
   });
 });
+//Triggering new version logic 
