@@ -29,7 +29,8 @@
       </div>
       <button class="btn btn-primary" onclick="loadAudit()">Apply</button>
       <button class="btn btn-secondary" onclick="preset(7)">Last 7d</button>
-      <button class="btn btn-secondary" onclick="preset(30)">Last 30d</button>
+      <button class="btn btn-secondary" onclick="preset('this_month')">This Month</button>
+      <button class="btn btn-secondary" onclick="preset('last_month')">Last Month</button>
     </div>
     <button class="btn btn-secondary" onclick="exportCSV()" id="exportBtn" style="display:none">
       Export to CSV
@@ -84,8 +85,18 @@
   let auditData = [];
 
   function preset(days) {
-    const to = new Date();
-    const from = new Date(Date.now() - days * 86400000);
+    const today = new Date();
+    let from, to;
+    if (days === 'this_month') {
+      from = new Date(today.getFullYear(), today.getMonth(), 1);
+      to   = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    } else if (days === 'last_month') {
+      from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      to   = new Date(today.getFullYear(), today.getMonth(), 0);
+    } else {
+      to   = today;
+      from = new Date(Date.now() - days * 86400000);
+    }
     document.getElementById('toDate').value = localDateString(to);
     document.getElementById('fromDate').value = localDateString(from);
     loadAudit();

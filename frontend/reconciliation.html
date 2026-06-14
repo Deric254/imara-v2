@@ -142,9 +142,9 @@ async function init() {
   <span style="font-size:.8rem;color:var(--muted)">to</span>
   <input type="date" class="input" id="toDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
   <button class="btn btn-primary btn-sm" onclick="loadAll()">Apply</button>
-  <button class="btn btn-secondary btn-sm" onclick="applyPreset(30)">30d</button>
-  <button class="btn btn-secondary btn-sm" onclick="applyPreset(90)">90d</button>
   <button class="btn btn-secondary btn-sm" onclick="applyMonth()">This month</button>
+  <button class="btn btn-secondary btn-sm" onclick="applyLastMonth()">Last Month</button>
+  <button class="btn btn-secondary btn-sm" onclick="applyPreset(90)">90d</button>
   <button class="btn btn-secondary btn-sm" onclick="applyAllTime()">All time</button>
   <button class="btn btn-secondary btn-sm" onclick="openReconStatement()">Statement</button>
 </div>
@@ -435,10 +435,19 @@ function applyPreset(days) {
   loadAll();
 }
 function applyMonth() {
+  // 1st of current month → today (days so far this month)
   const now  = new Date();
   const from = new Date(now.getFullYear(), now.getMonth(), 1);
   document.getElementById('fromDate').value = _reconLocalDate(from);
   document.getElementById('toDate').value   = _reconLocalDate(now);
+  loadAll();
+}
+function applyLastMonth() {
+  const now  = new Date();
+  const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const to   = new Date(now.getFullYear(), now.getMonth(), 0);
+  document.getElementById('fromDate').value = _reconLocalDate(from);
+  document.getElementById('toDate').value   = _reconLocalDate(to);
   loadAll();
 }
 function applyAllTime() {

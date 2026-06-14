@@ -653,9 +653,10 @@ if (user.role === 'admin') {
     <input type="date" class="input" id="toDate" style="width:auto;padding:.3rem .6rem;font-size:.82rem">
     <button class="btn btn-primary btn-sm" onclick="loadDash()">Apply</button>
     <div style="display:flex;gap:.25rem;margin-left:auto;flex-wrap:wrap">
-      <button class="period-preset active" onclick="applyPreset(7,this)">7 Days</button>
-      <button class="period-preset"        onclick="applyPreset(30,this)">30 Days</button>
-      <button class="period-preset"        onclick="applyPreset(0,this)">Today</button>
+      <button class="period-preset active" onclick="applyPreset(0,this)">Today</button>
+      <button class="period-preset"        onclick="applyPreset(7,this)">7 Days</button>
+      <button class="period-preset"        onclick="applyPreset('this_month',this)">This Month</button>
+      <button class="period-preset"        onclick="applyPreset('last_month',this)">Last Month</button>
       <button class="period-preset"        onclick="applyPreset(90,this)">90 Days</button>
       <button class="period-preset"        onclick="applyPreset(365,this)">1 Year</button>
     </div>
@@ -793,15 +794,23 @@ async function loadWorkerDashboard(){
 function applyPreset(days, btn) {
   document.querySelectorAll('.period-preset').forEach(b=>b.classList.remove('active'));
   if(btn) btn.classList.add('active');
-  // localDateStr is defined in the owner boot block below — shared util
   function localDateStr(d) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   }
-  const toD   = new Date();
-  // Fix: "N Days" means N inclusive calendar days ending today.
-  // today - (N-1) gives exactly N days: e.g. 7 Days = today-6 to today = 7 days.
-  // days===0 means "Today only" — from=to=today.
-  const fromD = days===0 ? new Date() : new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-(days-1));
+  const today = new Date();
+  let fromD, toD;
+  if (days === 'this_month') {
+    // 1st of current month → today (days so far this month)
+    fromD = new Date(today.getFullYear(), today.getMonth(), 1);
+    toD   = today;
+  } else if (days === 'last_month') {
+    // full previous calendar month: 1st → last day
+    fromD = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    toD   = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else {
+    toD   = today;
+    fromD = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
+  }
   document.getElementById('toDate').value   = localDateStr(toD);
   document.getElementById('fromDate').value = localDateStr(fromD);
   sessionStorage.setItem('dash_fromDate', localDateStr(fromD));

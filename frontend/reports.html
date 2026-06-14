@@ -48,7 +48,8 @@ async function init() {
     </div>
     <button class="btn btn-primary" onclick="loadAll()">Apply</button>
     <button class="btn btn-secondary" onclick="preset(7)">Last 7d</button>
-    <button class="btn btn-secondary" onclick="preset(30)">Last 30d</button>
+    <button class="btn btn-secondary" onclick="preset('this_month')">This Month</button>
+    <button class="btn btn-secondary" onclick="preset('last_month')">Last Month</button>
     <button class="btn btn-secondary" onclick="preset(90)">Last 90d</button>
     <button class="btn btn-primary" onclick="generatePDF()" id="pdfBtn" style="margin-left:auto;background:var(--red);border-color:var(--red)">📄 Export PDF Report</button>
   </div>
@@ -148,8 +149,20 @@ function showTab(name, btn) {
 }
 
 function preset(days) {
-  const to   = new Date();
-  const from = new Date(Date.now() - days * 86400000);
+  const today = new Date();
+  let from, to;
+  if (days === 'this_month') {
+    // 1st of current month → today (days so far this month)
+    from = new Date(today.getFullYear(), today.getMonth(), 1);
+    to   = today;
+  } else if (days === 'last_month') {
+    // full previous calendar month: 1st → last day
+    from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    to   = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else {
+    to   = today;
+    from = new Date(Date.now() - days * 86400000);
+  }
   document.getElementById('toDate').value   = localDateString(to);
   document.getElementById('fromDate').value = localDateString(from);
   loadAll();
@@ -772,7 +785,7 @@ async function loadGaugeKpi() {
 const _origShowTab = typeof showTab !== 'undefined' ? showTab : null;
 
 init().then(() => {
-  preset(30);
+  preset('this_month');
   // Restore last active tab (after data loads so the tab content shows)
   setTimeout(() => {
     const savedTab = sessionStorage.getItem('reports_activeTab');
