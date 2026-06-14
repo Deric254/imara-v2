@@ -613,9 +613,9 @@ function renderWages() {
     html += `<div class="liability-card ${cls}"><div class="liability-row">
       <div><div class="liability-name">${escHtml(wk.name||'Unknown')}</div>
         <div class="liability-meta">
-          ${wk.accrued_operator>0?`Op: KES ${fmt(wk.accrued_operator,2)} accrued / KES ${fmt(wk.paid_operator,2)} paid`:''}
-          ${wk.accrued_operator>0&&wk.accrued_knuckler>0?' &middot; ':''}
-          ${wk.accrued_knuckler>0?`Kn: KES ${fmt(wk.accrued_knuckler,2)} accrued / KES ${fmt(wk.paid_knuckler,2)} paid`:''}
+          ${(wk.accrued_operator>0||wk.paid_operator>0)?`Op: KES ${fmt(wk.accrued_operator,2)} accrued / KES ${fmt(wk.paid_operator,2)} paid`:''}
+          ${(wk.accrued_operator>0||wk.paid_operator>0)&&(wk.accrued_knuckler>0||wk.paid_knuckler>0)?' · ':''}
+          ${(wk.accrued_knuckler>0||wk.paid_knuckler>0)?`Kn: KES ${fmt(wk.accrued_knuckler,2)} accrued / KES ${fmt(wk.paid_knuckler,2)} paid`:''}
         </div></div>
       <div class="liability-amounts">
         <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${bal>0?'red':'green'}">KES ${fmt(Math.max(0,bal),2)}</div></div>
