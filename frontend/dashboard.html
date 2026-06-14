@@ -701,7 +701,7 @@ if (user.role === 'admin') {
     <button class="btn btn-primary btn-sm" onclick="exportPurchases()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Purchases</button>
     <button class="btn btn-primary btn-sm" onclick="exportProduction()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Production</button>
     <button class="btn btn-primary btn-sm" onclick="exportSales()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Sales</button>
-    <button class="btn btn-primary btn-sm" id="plPdfBtn" onclick="exportPnLPDF()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📄</span>P&amp;L PDF</button>
+    <button class="btn btn-primary btn-sm" id="plPdfBtn" onclick="exportPnLPDF()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📄</span>P&amp;L Report</button>
   </div>
 </div>`;
 
@@ -1687,7 +1687,7 @@ async function exportPnLPDF() {
 
     // ── INCOME ───────────────────────────────
     drawTable([
-      { label: 'INCOME', amount: '', _type: 'section' },
+      { label: 'REVENUE', amount: '', _type: 'section' },
       { label: 'Revenue Received (Cash from Customers)', amount: fmtK(revenue), _type: 'total', _neg: false },
     ]);
 
