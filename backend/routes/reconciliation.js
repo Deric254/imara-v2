@@ -39,19 +39,23 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
       GROUP BY pr.operator_id, pr.knuckler_id, u_op.full_name, u_kn.full_name
     `).all(from, to);
 
+    // Load all users upfront so names are always available regardless of period filter
+    const allUsers = await db.prepare(`SELECT id, full_name FROM users`).all([]);
+    const userNameMap = {};
+    for (const u of allUsers) userNameMap[u.id] = u.full_name;
+
     const wageMap = {};
     for (const r of wagesRows) {
       if (r.operator_id) {
-        wageMap[r.operator_id] = wageMap[r.operator_id] || { user_id: r.operator_id, name: r.operator_name, accrued_operator: 0, accrued_knuckler: 0 };
+        wageMap[r.operator_id] = wageMap[r.operator_id] || { user_id: r.operator_id, name: userNameMap[r.operator_id], accrued_operator: 0, accrued_knuckler: 0 };
         wageMap[r.operator_id].accrued_operator += num(r.total_operator);
       }
       if (r.knuckler_id) {
-        wageMap[r.knuckler_id] = wageMap[r.knuckler_id] || { user_id: r.knuckler_id, name: r.knuckler_name, accrued_operator: 0, accrued_knuckler: 0 };
+        wageMap[r.knuckler_id] = wageMap[r.knuckler_id] || { user_id: r.knuckler_id, name: userNameMap[r.knuckler_id], accrued_operator: 0, accrued_knuckler: 0 };
         wageMap[r.knuckler_id].accrued_knuckler += num(r.total_knuckler);
       }
     }
 
-    // FIX: ROUND + add category to GROUP BY (already present, just cast)
     const wagesPaid = await db.prepare(`
       SELECT payee_user_id, category,
              ROUND(SUM(amount), 2) AS paid
@@ -63,7 +67,9 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
 
     for (const p of wagesPaid) {
       if (!p.payee_user_id) continue;
-      wageMap[p.payee_user_id] = wageMap[p.payee_user_id] || { user_id: p.payee_user_id, name: '?', accrued_operator: 0, accrued_knuckler: 0 };
+      if (!wageMap[p.payee_user_id]) {
+        wageMap[p.payee_user_id] = { user_id: p.payee_user_id, name: userNameMap[p.payee_user_id], accrued_operator: 0, accrued_knuckler: 0 };
+      }
       if (p.category === 'wages_operator') wageMap[p.payee_user_id].paid_operator = num(p.paid);
       if (p.category === 'wages_knuckler') wageMap[p.payee_user_id].paid_knuckler = num(p.paid);
     }
