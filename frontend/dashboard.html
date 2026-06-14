@@ -1479,7 +1479,7 @@ async function exportPnLPDF() {
   const btn = document.getElementById('plPdfBtn');
   const origHTML = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = '<span>⏳</span>Wait…';
+  btn.innerHTML = '<span>&#x23F3;</span>Wait...';
 
   try {
     await loadGlobalConfig();
@@ -1497,13 +1497,13 @@ async function exportPnLPDF() {
     const bizName   = getConfig('business_name',  'IMARA LINKS');
     const bizSlogan = getConfig('business_slogan', 'Built Strong By IMARA');
 
-    // Figures — identical to dashboard
-    const revenue     = parseFloat(k.total_revenue)      || 0;
-    const costOfSales = parseFloat(k.direct_costs_sold)  || 0;
-    const grossProfit = parseFloat(k.gross_profit)        || 0;
-    const grossMargin = parseFloat(k.gross_margin_pct)    || 0;
-    const netProfit   = parseFloat(k.net_profit)          || 0;
-    const netMargin   = parseFloat(k.net_margin_pct)      || 0;
+    // Figures
+    const revenue     = parseFloat(k.total_revenue)            || 0;
+    const costOfSales = parseFloat(k.direct_costs_sold)        || 0;
+    const grossProfit = parseFloat(k.gross_profit)             || 0;
+    const grossMargin = parseFloat(k.gross_margin_pct)         || 0;
+    const netProfit   = parseFloat(k.net_profit)               || 0;
+    const netMargin   = parseFloat(k.net_margin_pct)           || 0;
     const wireCost    = parseFloat(bd.wire_cost?.amount)       || 0;
     const convCost    = parseFloat(bd.conversion_cost?.amount) || 0;
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;
@@ -1511,171 +1511,239 @@ async function exportPnLPDF() {
 
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF('p', 'mm', 'a4');
-    const PW = 210, PH = 297, ML = 15, MR = 195;
+    const PW = 210, PH = 297, ML = 14, MR = 196, TW = MR - ML;
 
-    // Colours
-    const GREEN  = [30, 154, 98];
-    const DKGRAY = [30, 30, 30];
-    const MGRAY  = [80, 80, 80];
-    const LGRAY  = [130, 130, 130];
-    const WHITE  = [255, 255, 255];
-    const RED    = [200, 30, 30];
-    const BGGREEN= [235, 247, 240];
+    // Palette
+    const G    = [30, 154, 98];   // primary green
+    const DG   = [20, 100, 65];   // dark green
+    const W    = [255, 255, 255];
+    const INK  = [22, 22, 22];
+    const MUTE = [100, 100, 100];
+    const PALE = [210, 240, 225];
+    const BGLT = [240, 250, 245];
+    const RED  = [190, 30, 30];
 
-    // Safe currency formatter — no special chars
-    const fmt = v => 'KES ' + Number(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const pctStr = v => Number(v).toFixed(1) + '%';
+    const fmtK = v => 'KES ' + Number(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const pct  = v => Number(v).toFixed(1) + '%';
 
-    let y = 0;
+    // ═══════════════════════════════════════════
+    // HEADER — full bleed green, no divider line
+    // ═══════════════════════════════════════════
+    const BAND = 52;
+    doc.setFillColor(...G);
+    doc.rect(0, 0, PW, BAND, 'F');
 
-    // ── 1. GREEN LETTERHEAD BAND ───────────────────────────────
-    doc.setFillColor(...GREEN);
-    doc.rect(0, 0, PW, 42, 'F');
+    // Subtle dark accent strip at very top
+    doc.setFillColor(...DG);
+    doc.rect(0, 0, PW, 3, 'F');
 
-    // Logo inside band
+    // ── Logo (circular) ─────────────────────
+    const LX = 10, LY = 8, LD = 36;
+    let logoLoaded = false;
     try {
-      const logoDataUrl = await new Promise((resolve, reject) => {
+      const logoDataUrl = await new Promise((res, rej) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
-        const timer = setTimeout(() => reject('timeout'), 5000);
+        const t = setTimeout(() => rej('timeout'), 5000);
         img.onload = () => {
-          clearTimeout(timer);
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          const size = 400;
-          canvas.width = canvas.height = size;
-          ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip();
-          const aspect = img.width / img.height;
+          clearTimeout(t);
+          const cv = document.createElement('canvas');
+          const cx = cv.getContext('2d');
+          const sz = 500; cv.width = cv.height = sz;
+          cx.beginPath(); cx.arc(sz/2, sz/2, sz/2, 0, Math.PI*2); cx.closePath(); cx.clip();
+          const ar = img.width / img.height;
           let dW, dH, dX, dY;
-          if (aspect > 1) { dH=size; dW=size*aspect; dX=-(dW-size)/2; dY=0; }
-          else             { dW=size; dH=size/aspect; dX=0; dY=-(dH-size)/2; }
-          ctx.drawImage(img, dX, dY, dW, dH);
-          resolve(canvas.toDataURL('image/png'));
+          if (ar > 1) { dH=sz; dW=sz*ar; dX=-(dW-sz)/2; dY=0; }
+          else        { dW=sz; dH=sz/ar; dX=0; dY=-(dH-sz)/2; }
+          cx.drawImage(img, dX, dY, dW, dH);
+          res(cv.toDataURL('image/png'));
         };
-        img.onerror = () => { clearTimeout(timer); reject('err'); };
+        img.onerror = () => { clearTimeout(t); rej('err'); };
         img.src = 'logo.png?' + Date.now();
       });
-      doc.addImage(logoDataUrl, 'PNG', 10, 5, 32, 32);
-      doc.setDrawColor(...WHITE); doc.setLineWidth(0.6); doc.circle(10+16, 5+16, 16, 'S');
-    } catch(e) { /* skip logo gracefully */ }
+      doc.addImage(logoDataUrl, 'PNG', LX, LY, LD, LD);
+      // White ring around logo
+      doc.setDrawColor(...W); doc.setLineWidth(0.8);
+      doc.circle(LX + LD/2, LY + LD/2, LD/2, 'S');
+      logoLoaded = true;
+    } catch(e) {}
 
-    // Business name
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(...WHITE);
-    doc.text(bizName.toUpperCase(), 48, 18);
+    // ── Business name + slogan (LEFT of header) ─
+    const NX = logoLoaded ? LX + LD + 6 : LX;
+    const NY = LY + 9;
 
-    // Slogan — normal (not italic) to avoid spacing bug
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(210, 240, 225);
-    doc.text(bizSlogan, 48, 26);
+    // Business name — large, white, bold
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(...W);
+    doc.text(bizName.toUpperCase(), NX, NY);
 
-    // Report type label right-aligned
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...WHITE);
-    doc.text('PROFIT & LOSS STATEMENT', MR, 18, { align: 'right' });
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(210, 240, 225);
-    // Use plain "to" instead of arrow — avoids special char rendering bug
-    doc.text('Period: ' + from + ' to ' + to, MR, 26, { align: 'right' });
-    doc.text('Generated: ' + new Date().toLocaleDateString('en-KE') + ' ' + new Date().toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}), MR, 32, { align: 'right' });
+    // Hairline under name
+    const nameW = doc.getTextWidth(bizName.toUpperCase());
+    doc.setDrawColor(...PALE); doc.setLineWidth(0.3);
+    doc.line(NX, NY + 1.5, NX + nameW, NY + 1.5);
 
-    y = 52;
+    // Slogan — lighter, smaller
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...PALE);
+    doc.text(bizSlogan, NX, NY + 9);
 
-    // ── Section heading ────────────────────────────────────────
-    const section = (title) => {
-      doc.setFillColor(...GREEN);
-      doc.rect(ML, y, MR - ML, 8, 'F');
-      doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...WHITE);
-      doc.text(title, ML + 3, y + 5.5);
-      y += 12;
-    };
+    // ── Report type + period (RIGHT of header) ─
+    // RIGHT column starts at midpoint
+    const RX = PW / 2 + 8;
+    const RY = LY + 8;
 
-    // ── Data row ───────────────────────────────────────────────
-    // opts: { bold, green, red, indent, shade }
-    const row = (label, value, opts = {}) => {
-      const x = ML + (opts.indent || 0);
-      if (opts.shade) {
-        doc.setFillColor(...BGGREEN);
-        doc.rect(ML, y - 5, MR - ML, 8, 'F');
-      }
-      if (opts.bold) doc.setFont('helvetica', 'bold'); else doc.setFont('helvetica', 'normal');
-      const sz = opts.bold ? 10 : 9.5;
-      doc.setFontSize(sz);
-      const tc = opts.green ? GREEN : opts.red ? RED : opts.bold ? DKGRAY : MGRAY;
-      doc.setTextColor(...tc);
-      doc.text(label, x, y);
-      doc.text(value, MR, y, { align: 'right' });
-      y += 7;
-    };
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(...W);
+    doc.text('PROFIT & LOSS STATEMENT', MR, RY, { align: 'right' });
 
-    const rule = () => {
-      doc.setDrawColor(210, 232, 220); doc.setLineWidth(0.25);
-      doc.line(ML, y - 3, MR, y - 3);
-    };
-
-    // ── INCOME ────────────────────────────────────────────────
-    section('INCOME');
-    row('Revenue Received (Cash from Customers)', fmt(revenue), { bold: true, green: true, shade: true });
-    y += 4;
-
-    // ── COST OF SALES ─────────────────────────────────────────
-    section('COST OF SALES');
-    row('Wire / Raw Material Cost', fmt(wireCost), { indent: 5 });
-    rule();
-    row('Labour & Sacks (Conversion Cost)', fmt(convCost), { indent: 5 });
-    rule();
-    row('Transport to Market', fmt(tranCost), { indent: 5 });
-    rule();
-    row('Total Cost of Sales', fmt(costOfSales), { bold: true, shade: true });
-    y += 4;
-
-    // ── GROSS PROFIT ──────────────────────────────────────────
-    section('GROSS PROFIT');
-    row(
-      'Gross Profit  (' + pctStr(grossMargin) + ' gross margin)',
-      fmt(grossProfit),
-      grossProfit < 0 ? { bold: true, red: true, shade: true } : { bold: true, green: true, shade: true }
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(...PALE);
+    doc.text('Period:  ' + from + '  to  ' + to, MR, RY + 9, { align: 'right' });
+    doc.text(
+      'Generated:  ' + new Date().toLocaleDateString('en-KE') + '  ' +
+      new Date().toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' }),
+      MR, RY + 16, { align: 'right' }
     );
-    y += 4;
 
-    // ── OPERATING EXPENSES (only if rent enabled) ─────────────
+    let y = BAND + 10;
+
+    // ═══════════════════════════════════════════
+    // TABLE HELPER using autoTable
+    // Each section is one autoTable call — clean
+    // columns: label (left) | amount (right)
+    // ═══════════════════════════════════════════
+
+    const COL_L = TW * 0.62;  // label column width
+    const COL_R = TW * 0.38;  // amount column width
+
+    // Section header row style
+    const sHead = (title) => [{
+      label: title, amount: ''
+    }];
+
+    // Draw a section block as a real autoTable
+    const drawTable = (rows, opts = {}) => {
+      doc.autoTable({
+        startY: y,
+        margin: { left: ML, right: PW - MR },
+        tableWidth: TW,
+        columns: [
+          { dataKey: 'label',  header: '' },
+          { dataKey: 'amount', header: '' },
+        ],
+        body: rows,
+        styles: {
+          font: 'helvetica',
+          fontSize: 9.5,
+          cellPadding: { top: 2.8, bottom: 2.8, left: 4, right: 4 },
+          lineColor: [220, 238, 228],
+          lineWidth: 0.2,
+          textColor: [...INK],
+          valign: 'middle',
+        },
+        columnStyles: {
+          label:  { cellWidth: COL_L, fontStyle: 'normal', textColor: [...MUTE] },
+          amount: { cellWidth: COL_R, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
+        },
+        // Override per-row via didParseCell
+        didParseCell: function(data) {
+          const r = data.row.raw;
+          if (r._type === 'section') {
+            data.cell.styles.fillColor   = [...G];
+            data.cell.styles.textColor   = [...W];
+            data.cell.styles.fontStyle   = 'bold';
+            data.cell.styles.fontSize    = 9.5;
+            data.cell.styles.lineWidth   = 0;
+            data.cell.styles.cellPadding = { top: 3, bottom: 3, left: 4, right: 4 };
+          } else if (r._type === 'total') {
+            data.cell.styles.fillColor   = [...BGLT];
+            data.cell.styles.fontStyle   = 'bold';
+            data.cell.styles.fontSize    = 10;
+            data.cell.styles.textColor   = r._neg ? [...RED] : [...G];
+            data.cell.styles.lineWidth   = 0.3;
+            data.cell.styles.lineColor   = [...G];
+          } else if (r._type === 'item') {
+            data.cell.styles.fillColor   = [255, 255, 255];
+            data.cell.styles.textColor   = data.column.dataKey === 'label' ? [...MUTE] : [...INK];
+            data.cell.styles.fontStyle   = 'normal';
+            data.cell.styles.lineColor   = [225, 240, 232];
+          }
+        },
+        showHead: false,
+      });
+      y = doc.lastAutoTable.finalY + 6;
+    };
+
+    // ── INCOME ───────────────────────────────
+    drawTable([
+      { label: 'INCOME', amount: '', _type: 'section' },
+      { label: 'Revenue Received (Cash from Customers)', amount: fmtK(revenue), _type: 'total', _neg: false },
+    ]);
+
+    // ── COST OF SALES ─────────────────────────
+    drawTable([
+      { label: 'COST OF SALES', amount: '', _type: 'section' },
+      { label: 'Wire / Raw Material Cost',         amount: fmtK(wireCost),    _type: 'item' },
+      { label: 'Labour & Sacks (Conversion Cost)', amount: fmtK(convCost),    _type: 'item' },
+      { label: 'Transport to Market',              amount: fmtK(tranCost),    _type: 'item' },
+      { label: 'Total Cost of Sales',              amount: fmtK(costOfSales), _type: 'total', _neg: false },
+    ]);
+
+    // ── GROSS PROFIT ──────────────────────────
+    drawTable([
+      { label: 'GROSS PROFIT', amount: '', _type: 'section' },
+      { label: 'Gross Profit  (' + pct(grossMargin) + ' gross margin)', amount: fmtK(grossProfit), _type: 'total', _neg: grossProfit < 0 },
+    ]);
+
+    // ── OPERATING EXPENSES (rent only if enabled) ─
     if (showRent && rentCost > 0) {
-      section('OPERATING EXPENSES');
-      row('Rent Expense (Period)', fmt(rentCost), { indent: 5 });
-      rule();
-      row('Total Operating Expenses', fmt(rentCost), { bold: true, shade: true });
-      y += 4;
+      drawTable([
+        { label: 'OPERATING EXPENSES', amount: '', _type: 'section' },
+        { label: 'Rent Expense (Period)',      amount: fmtK(rentCost), _type: 'item'  },
+        { label: 'Total Operating Expenses',   amount: fmtK(rentCost), _type: 'total', _neg: false },
+      ]);
     }
 
-    // ── NET PROFIT ────────────────────────────────────────────
-    const displayProfit = showRent ? netProfit  : grossProfit;
-    const displayMargin = showRent ? netMargin  : grossMargin;
-    const displayLabel  = showRent ? 'Net Profit' : 'Gross Profit';
-    const displayType   = showRent ? 'net' : 'gross';
-    section(showRent ? 'NET PROFIT' : 'GROSS PROFIT (BOTTOM LINE)');
-    row(
-      displayLabel + '  (' + pctStr(displayMargin) + ' ' + displayType + ' margin)',
-      fmt(displayProfit),
-      displayProfit < 0 ? { bold: true, red: true, shade: true } : { bold: true, green: true, shade: true }
+    // ── NET / BOTTOM-LINE PROFIT ──────────────
+    const dispProfit = showRent ? netProfit   : grossProfit;
+    const dispMargin = showRent ? netMargin   : grossMargin;
+    const dispLabel  = showRent ? 'Net Profit': 'Gross Profit';
+    const dispType   = showRent ? 'net'       : 'gross';
+    drawTable([
+      { label: showRent ? 'NET PROFIT' : 'BOTTOM LINE', amount: '', _type: 'section' },
+      { label: dispLabel + '  (' + pct(dispMargin) + ' ' + dispType + ' margin)', amount: fmtK(dispProfit), _type: 'total', _neg: dispProfit < 0 },
+    ]);
+
+    // ═══════════════════════════════════════════
+    // FOOTER — dark green band, slogan centred
+    // ═══════════════════════════════════════════
+    const FH   = 22;
+    const FY   = PH - FH;
+    doc.setFillColor(...DG);
+    doc.rect(0, FY, PW, FH, 'F');
+
+    // Accent strip at very bottom
+    doc.setFillColor(...G);
+    doc.rect(0, PH - 3, PW, 3, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(...W);
+    doc.text(bizSlogan.toUpperCase(), PW / 2, FY + 9, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...PALE);
+    doc.text(
+      bizName.toUpperCase() + '   |   ' + from + ' to ' + to,
+      PW / 2, FY + 16, { align: 'center' }
     );
-    y += 8;
 
-    // ── FOOTER LINE ───────────────────────────────────────────
-    doc.setDrawColor(...GREEN); doc.setLineWidth(0.6);
-    doc.line(ML, y, MR, y);
-    y += 6;
-
-    // Footer text — normal font only, no italic
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...LGRAY);
-    doc.text('This P&L reflects the period ' + from + ' to ' + to + '.', ML, y);
-    y += 4.5;
-    doc.text('Cost of Sales = Wire Cost + Labour & Sacks + Transport to Market on items sold.', ML, y);
-    if (!showRent) {
-      y += 4.5;
-      doc.text('Rent expense is hidden (enable via Configuration > Show Rent on Dashboard).', ML, y);
-    }
-
-    // Page number
-    doc.setFontSize(8); doc.setTextColor(180);
-    doc.text('Page 1 of 1', MR, PH - 8, { align: 'right' });
-
-    const fileName = bizName.replace(/\s+/g,'_') + '_PnL_' + from + '_to_' + to + '.pdf';
+    const fileName = bizName.replace(/\s+/g, '_') + '_PnL_' + from + '_to_' + to + '.pdf';
     doc.save(fileName);
     showToast('P&L PDF exported');
   } catch(e) {
