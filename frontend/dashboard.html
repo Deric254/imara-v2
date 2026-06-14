@@ -8,6 +8,8 @@
 <script src="chartjs-plugin-datalabels.min.js"></script>
 <script src="hammer.min.js"></script>
 <script src="chartjs-plugin-zoom.min.js"></script>
+<script src="jspdf.umd.min.js"></script>
+<script src="jspdf.plugin.autotable.min.js"></script>
 <style>
 /* ── Period bar ─────────────────────────────────────────────── */
 .period-bar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}
@@ -694,10 +696,11 @@ if (user.role === 'admin') {
 </div>
 <div class="card" style="max-width:560px;margin-top:1rem">
   <div class="card-title">Export Data</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem;margin-top:.75rem">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.75rem;margin-top:.75rem">
     <button class="btn btn-primary btn-sm" onclick="exportPurchases()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Purchases</button>
     <button class="btn btn-primary btn-sm" onclick="exportProduction()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Production</button>
     <button class="btn btn-primary btn-sm" onclick="exportSales()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📥</span>Sales</button>
+    <button class="btn btn-primary btn-sm" id="plPdfBtn" onclick="exportPnLPDF()" style="display:flex;align-items:center;justify-content:center;gap:.4rem"><span>📄</span>P&amp;L PDF</button>
   </div>
 </div>`;
 
@@ -1462,6 +1465,225 @@ async function exportSales() {
     showToast('Export failed: ' + (e.error || e.message), 'error');
   } finally {
     hidePageLoader();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   P&L PDF EXPORT — mirrors exactly what the dashboard shows
+═══════════════════════════════════════════════════════════════ */
+async function exportPnLPDF() {
+  const from = document.getElementById('fromDate')?.value;
+  const to   = document.getElementById('toDate')?.value;
+  if (!from || !to) { showToast('Please select a date range first.', 'error'); return; }
+
+  const btn = document.getElementById('plPdfBtn');
+  const origHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span>⏳</span>Wait…';
+
+  try {
+    await loadGlobalConfig();
+    const showRent = (getConfig('show_rent_dashboard', '0') === '1');
+
+    const [d, rb] = await Promise.all([
+      api('GET', `/dashboard?from=${from}&to=${to}`),
+      api('GET', `/revenue-breakdown?from=${from}&to=${to}`),
+    ]);
+    if (!d || !rb) { showToast('Could not load data for P&L report.', 'error'); return; }
+
+    const k  = d.kpis;
+    const bd = rb.cost_breakdown;
+
+    const bizName   = getConfig('business_name',  'IMARA LINKS');
+    const bizSlogan = getConfig('business_slogan', 'Built Strong By IMARA');
+
+    // Figures — identical to dashboard
+    const revenue     = parseFloat(k.total_revenue)      || 0;
+    const costOfSales = parseFloat(k.direct_costs_sold)  || 0;
+    const grossProfit = parseFloat(k.gross_profit)        || 0;
+    const grossMargin = parseFloat(k.gross_margin_pct)    || 0;
+    const netProfit   = parseFloat(k.net_profit)          || 0;
+    const netMargin   = parseFloat(k.net_margin_pct)      || 0;
+    const wireCost    = parseFloat(bd.wire_cost?.amount)       || 0;
+    const convCost    = parseFloat(bd.conversion_cost?.amount) || 0;
+    const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;
+    const rentCost    = parseFloat(bd.rent_cost?.amount)       || 0;
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const PW = 210, PH = 297, ML = 15, MR = 195;
+
+    // Colours
+    const GREEN  = [30, 154, 98];
+    const DKGRAY = [30, 30, 30];
+    const MGRAY  = [80, 80, 80];
+    const LGRAY  = [130, 130, 130];
+    const WHITE  = [255, 255, 255];
+    const RED    = [200, 30, 30];
+    const BGGREEN= [235, 247, 240];
+
+    // Safe currency formatter — no special chars
+    const fmt = v => 'KES ' + Number(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const pctStr = v => Number(v).toFixed(1) + '%';
+
+    let y = 0;
+
+    // ── 1. GREEN LETTERHEAD BAND ───────────────────────────────
+    doc.setFillColor(...GREEN);
+    doc.rect(0, 0, PW, 42, 'F');
+
+    // Logo inside band
+    try {
+      const logoDataUrl = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => reject('timeout'), 5000);
+        img.onload = () => {
+          clearTimeout(timer);
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          const size = 400;
+          canvas.width = canvas.height = size;
+          ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip();
+          const aspect = img.width / img.height;
+          let dW, dH, dX, dY;
+          if (aspect > 1) { dH=size; dW=size*aspect; dX=-(dW-size)/2; dY=0; }
+          else             { dW=size; dH=size/aspect; dX=0; dY=-(dH-size)/2; }
+          ctx.drawImage(img, dX, dY, dW, dH);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => { clearTimeout(timer); reject('err'); };
+        img.src = 'logo.png?' + Date.now();
+      });
+      doc.addImage(logoDataUrl, 'PNG', 10, 5, 32, 32);
+      doc.setDrawColor(...WHITE); doc.setLineWidth(0.6); doc.circle(10+16, 5+16, 16, 'S');
+    } catch(e) { /* skip logo gracefully */ }
+
+    // Business name
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(...WHITE);
+    doc.text(bizName.toUpperCase(), 48, 18);
+
+    // Slogan — normal (not italic) to avoid spacing bug
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(210, 240, 225);
+    doc.text(bizSlogan, 48, 26);
+
+    // Report type label right-aligned
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(...WHITE);
+    doc.text('PROFIT & LOSS STATEMENT', MR, 18, { align: 'right' });
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(210, 240, 225);
+    // Use plain "to" instead of arrow — avoids special char rendering bug
+    doc.text('Period: ' + from + ' to ' + to, MR, 26, { align: 'right' });
+    doc.text('Generated: ' + new Date().toLocaleDateString('en-KE') + ' ' + new Date().toLocaleTimeString('en-KE', {hour:'2-digit',minute:'2-digit'}), MR, 32, { align: 'right' });
+
+    y = 52;
+
+    // ── Section heading ────────────────────────────────────────
+    const section = (title) => {
+      doc.setFillColor(...GREEN);
+      doc.rect(ML, y, MR - ML, 8, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...WHITE);
+      doc.text(title, ML + 3, y + 5.5);
+      y += 12;
+    };
+
+    // ── Data row ───────────────────────────────────────────────
+    // opts: { bold, green, red, indent, shade }
+    const row = (label, value, opts = {}) => {
+      const x = ML + (opts.indent || 0);
+      if (opts.shade) {
+        doc.setFillColor(...BGGREEN);
+        doc.rect(ML, y - 5, MR - ML, 8, 'F');
+      }
+      if (opts.bold) doc.setFont('helvetica', 'bold'); else doc.setFont('helvetica', 'normal');
+      const sz = opts.bold ? 10 : 9.5;
+      doc.setFontSize(sz);
+      const tc = opts.green ? GREEN : opts.red ? RED : opts.bold ? DKGRAY : MGRAY;
+      doc.setTextColor(...tc);
+      doc.text(label, x, y);
+      doc.text(value, MR, y, { align: 'right' });
+      y += 7;
+    };
+
+    const rule = () => {
+      doc.setDrawColor(210, 232, 220); doc.setLineWidth(0.25);
+      doc.line(ML, y - 3, MR, y - 3);
+    };
+
+    // ── INCOME ────────────────────────────────────────────────
+    section('INCOME');
+    row('Revenue Received (Cash from Customers)', fmt(revenue), { bold: true, green: true, shade: true });
+    y += 4;
+
+    // ── COST OF SALES ─────────────────────────────────────────
+    section('COST OF SALES');
+    row('Wire / Raw Material Cost', fmt(wireCost), { indent: 5 });
+    rule();
+    row('Labour & Sacks (Conversion Cost)', fmt(convCost), { indent: 5 });
+    rule();
+    row('Transport to Market', fmt(tranCost), { indent: 5 });
+    rule();
+    row('Total Cost of Sales', fmt(costOfSales), { bold: true, shade: true });
+    y += 4;
+
+    // ── GROSS PROFIT ──────────────────────────────────────────
+    section('GROSS PROFIT');
+    row(
+      'Gross Profit  (' + pctStr(grossMargin) + ' gross margin)',
+      fmt(grossProfit),
+      grossProfit < 0 ? { bold: true, red: true, shade: true } : { bold: true, green: true, shade: true }
+    );
+    y += 4;
+
+    // ── OPERATING EXPENSES (only if rent enabled) ─────────────
+    if (showRent && rentCost > 0) {
+      section('OPERATING EXPENSES');
+      row('Rent Expense (Period)', fmt(rentCost), { indent: 5 });
+      rule();
+      row('Total Operating Expenses', fmt(rentCost), { bold: true, shade: true });
+      y += 4;
+    }
+
+    // ── NET PROFIT ────────────────────────────────────────────
+    const displayProfit = showRent ? netProfit  : grossProfit;
+    const displayMargin = showRent ? netMargin  : grossMargin;
+    const displayLabel  = showRent ? 'Net Profit' : 'Gross Profit';
+    const displayType   = showRent ? 'net' : 'gross';
+    section(showRent ? 'NET PROFIT' : 'GROSS PROFIT (BOTTOM LINE)');
+    row(
+      displayLabel + '  (' + pctStr(displayMargin) + ' ' + displayType + ' margin)',
+      fmt(displayProfit),
+      displayProfit < 0 ? { bold: true, red: true, shade: true } : { bold: true, green: true, shade: true }
+    );
+    y += 8;
+
+    // ── FOOTER LINE ───────────────────────────────────────────
+    doc.setDrawColor(...GREEN); doc.setLineWidth(0.6);
+    doc.line(ML, y, MR, y);
+    y += 6;
+
+    // Footer text — normal font only, no italic
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...LGRAY);
+    doc.text('This P&L reflects the period ' + from + ' to ' + to + '.', ML, y);
+    y += 4.5;
+    doc.text('Cost of Sales = Wire Cost + Labour & Sacks + Transport to Market on items sold.', ML, y);
+    if (!showRent) {
+      y += 4.5;
+      doc.text('Rent expense is hidden (enable via Configuration > Show Rent on Dashboard).', ML, y);
+    }
+
+    // Page number
+    doc.setFontSize(8); doc.setTextColor(180);
+    doc.text('Page 1 of 1', MR, PH - 8, { align: 'right' });
+
+    const fileName = bizName.replace(/\s+/g,'_') + '_PnL_' + from + '_to_' + to + '.pdf';
+    doc.save(fileName);
+    showToast('P&L PDF exported');
+  } catch(e) {
+    console.error('P&L PDF error:', e);
+    showToast('Failed to generate P&L PDF: ' + (e.message || 'Unknown error'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHTML;
   }
 }
 </script>
