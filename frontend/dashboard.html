@@ -1503,8 +1503,8 @@ async function exportPnLPDF() {
     const k  = d.kpis;
     const bd = rb.cost_breakdown;
 
-    const bizName   = getConfig('business_name',  'IMARA LINKS');
-    const bizSlogan = getConfig('business_slogan', 'Built Strong By IMARA');
+    const bizName   = getConfig('business_name',  'IMARA LINKS') || 'IMARA LINKS';
+    const bizSlogan = getConfig('business_slogan', 'Built Strong By IMARA') || 'Built Strong By IMARA';
 
     // Figures
     const revenue     = parseFloat(k.total_revenue)            || 0;
@@ -1561,9 +1561,10 @@ async function exportPnLPDF() {
           const sz = 500; cv.width = cv.height = sz;
           cx.beginPath(); cx.arc(sz/2, sz/2, sz/2, 0, Math.PI*2); cx.closePath(); cx.clip();
           const ar = img.width / img.height;
+          const zoom = 1.26; // crop out the white margin around the circular badge
           let dW, dH, dX, dY;
-          if (ar > 1) { dH=sz; dW=sz*ar; dX=-(dW-sz)/2; dY=0; }
-          else        { dW=sz; dH=sz/ar; dX=0; dY=-(dH-sz)/2; }
+          if (ar > 1) { dH=sz*zoom; dW=sz*ar*zoom; dX=-(dW-sz)/2; dY=-(dH-sz)/2; }
+          else        { dW=sz*zoom; dH=sz/ar*zoom; dX=-(dW-sz)/2; dY=-(dH-sz)/2; }
           cx.drawImage(img, dX, dY, dW, dH);
           res(cv.toDataURL('image/png'));
         };
@@ -1571,9 +1572,6 @@ async function exportPnLPDF() {
         img.src = 'logo.png?' + Date.now();
       });
       doc.addImage(logoDataUrl, 'PNG', LX, LY, LD, LD);
-      // White ring around logo
-      doc.setDrawColor(...W); doc.setLineWidth(0.8);
-      doc.circle(LX + LD/2, LY + LD/2, LD/2, 'S');
       logoLoaded = true;
     } catch(e) {}
 
