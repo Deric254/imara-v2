@@ -926,11 +926,11 @@ async function loadDash(){
           <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi" title="Wire + labour + sacks + transport on items sold · Rent is a separate overhead · ${from} → ${to}">
+      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent expense on items sold':'Wire + labour + sacks + transport on items sold · Rent is a separate overhead'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${compactKES(k.direct_costs_sold)}</div>
+          <div class="kpi-value">${compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold)}</div>
           <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue</span></div>
         </div>
       </div>
