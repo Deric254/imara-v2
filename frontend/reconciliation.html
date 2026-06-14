@@ -629,7 +629,7 @@ function renderSuppliers() {
     : `<span style="color:var(--red);font-size:.75rem;font-weight:400">KES ${fmt(s.total_billed - s.total_paid,2)} still owed to suppliers</span>`;
   let html = `
     <div style="background:var(--g50);border:1px solid var(--border);border-radius:var(--radius);padding:.6rem 1rem;margin-bottom:1rem;font-size:.8rem;color:var(--muted);line-height:1.5">
-      <strong style="color:var(--ink)">How to read this:</strong>
+      <strong style="color:var(--ink)">*</strong>
       <em>Billed</em> = value of goods received this period (accrual).
       <em>Paid</em> = cash paid to suppliers this period (may include settling older debts).
       All-time outstanding is shown in the banner above.
