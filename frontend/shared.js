@@ -231,6 +231,24 @@ function fmtMoney(n, currency) {
   return cur + ' ' + Number(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** Exact, unrounded weight string for use in title="" tooltips. e.g. 1234.5678 → "1,234.5678 kg" */
+function fmtKgExact(v) {
+  if (v == null || isNaN(v)) return '—';
+  return Number(v).toLocaleString('en-KE', { minimumFractionDigits: 3, maximumFractionDigits: 4 }) + ' kg';
+}
+
+/** Exact, unrounded money string for use in title="" tooltips. e.g. 10490.4231 → "KES 10,490.4231" */
+function fmtMoneyExact(n, currency) {
+  if (n == null || isNaN(n)) return '—';
+  const cur = currency || getConfig('currency') || 'KES';
+  return cur + ' ' + Number(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+/** Wrap a rounded display string in a span whose title="" shows the exact figure on hover. */
+function tipSpan(displayHtml, exactText) {
+  return `<span title="${escHtml(exactText)}" style="cursor:help;border-bottom:1px dotted currentColor">${displayHtml}</span>`;
+}
+
 function localDateString(date = new Date()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');

@@ -300,6 +300,9 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.get('*', (_req, res) => res.sendFile(path.join(frontendPath, 'index.html')));
 
     backendApp.use((err, _req, res, _next) => {
+      if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && 'body' in err)) {
+        return res.status(400).json({ error: 'Malformed JSON in request body' });
+      }
       console.error('Backend error:', err);
       res.status(500).json({ error: 'Internal server error' });
     });

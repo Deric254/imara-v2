@@ -130,6 +130,25 @@ function invalidateStockCaches() {
   _invCache = null; _invCacheExpiry = 0;
 }
 
+// ── Wire batch selection (rule 4: real per-batch landing costs) ────────────
+let _batchCache = {};        // gauge -> { ts, batches }
+let _selectedBatchByGauge = {}; // gauge -> purchase_id chosen in the dropdown
+const BATCH_CACHE_MS = 8000;
+
+async function getBatchesForGauge(gauge) {
+  const key = gauge || '';
+  const c = _batchCache[key];
+  if (c && Date.now() < c.ts) return c.batches;
+  let batches = [];
+  try { batches = await api('GET', `/daily/batches?gauge=${encodeURIComponent(key)}`); } catch(e) { batches = []; }
+  _batchCache[key] = { ts: Date.now() + BATCH_CACHE_MS, batches };
+  return batches;
+}
+
+function invalidateBatchCache() {
+  _batchCache = {};
+}
+
 // Generic debounce
 function debounce(fn, ms) {
   let t;
@@ -211,7 +230,10 @@ pg.innerHTML = `
           <label class="label">Transport Cost (KES)</label>
           <input class="input" type="number" id="p_transport" min="0" step="1" placeholder="0">
         </div>
-        <div class="form-group"></div>
+        <div class="form-group">
+          <label class="label">Batch Name <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+          <input class="input" type="text" id="p_batch_name" maxlength="80" placeholder="e.g. June G12 — Acme Steel">
+        </div>
       </div>
       <div class="summary-box" id="p_summary" style="display:none">
         <div class="summary-row"><span>Total Cost:</span><strong id="p_total_cost">—</strong></div>
@@ -227,10 +249,10 @@ pg.innerHTML = `
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Supplier</th><th>Gauge</th><th>Kgs</th><th>Cost/kg</th><th>Transport</th><th>Total</th><th>Landed/kg</th>
+          <th>Batch</th><th>Supplier</th><th>Gauge</th><th>Kgs</th><th>Remaining</th><th>Cost/kg</th><th>Transport</th><th>Total</th><th>Landed/kg</th>
           ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
         </tr></thead>
-        <tbody id="p_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?8:7}"><div class="spinner"></div></td></tr></tbody>
+        <tbody id="p_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?10:9}"><div class="spinner"></div></td></tr></tbody>
         </table>
       </div>
     </div>
@@ -263,6 +285,7 @@ pg.innerHTML = `
         </div>
       </div>
       <div id="pr_material_status" style="font-size:.75rem;margin-top:.5rem;display:none"></div>
+      <div id="pr_batch_selectors" style="margin-top:.5rem;display:none"></div>
       <hr class="divider">
       <div class="card-title">Pieces Produced</div>
       <div id="pr_items"></div>
@@ -283,10 +306,10 @@ pg.innerHTML = `
       </div>
       <div class="table-wrap">
         <table><thead><tr>
-          <th>Kgs Used</th><th>Gauge</th><th>Operator</th><th>Knuckler</th><th>Pieces</th><th>Total Cost</th>
+          <th>Kgs Used</th><th>Gauge</th><th>Batch</th><th>Operator</th><th>Knuckler</th><th>Pieces</th><th>Total Cost</th>
           ${user.role!=='knuckler' && user.role!=='operator'?'<th></th>':''}
         </tr></thead>
-        <tbody id="pr_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?7:6}"><div class="spinner"></div></td></tr></tbody>
+        <tbody id="pr_list"><tr class="loading-row"><td colspan="${user.role!=='knuckler' && user.role!=='operator'?8:7}"><div class="spinner"></div></td></tr></tbody>
         </table>
       </div>
     </div>
@@ -550,6 +573,40 @@ function calcWireNeeded() {
 
   // Show live gauge-specific availability — debounced, uses cache
   _calcWireWarningDebounced(perGauge);
+  renderBatchSelectors(perGauge);
+}
+
+// Render one FIFO-defaulted, manually-overridable batch dropdown per gauge in use.
+// This is the "Selection Dropdown" required by rule 4 — production must draw
+// from a SPECIFIC purchase batch so its real landed cost (no averaging) is used.
+async function renderBatchSelectors(perGauge) {
+  const wrap = document.getElementById('pr_batch_selectors');
+  if (!wrap) return;
+  const gauges = Object.keys(perGauge).filter(g => perGauge[g] > 0);
+  if (!gauges.length) { wrap.style.display = 'none'; return; }
+
+  const blocks = await Promise.all(gauges.map(async gauge => {
+    const batches = await getBatchesForGauge(gauge);
+    if (!batches.length) {
+      delete _selectedBatchByGauge[gauge];
+      return `<div style="font-size:.75rem;color:var(--red);margin-bottom:.35rem">No wire batches available for gauge ${escHtml(gauge||'—')}.</div>`;
+    }
+    // Default to FIFO oldest batch (first in list) unless the user already chose one
+    // for this gauge and it's still valid/in-stock.
+    if (!_selectedBatchByGauge[gauge] || !batches.some(b => b.id === _selectedBatchByGauge[gauge])) {
+      _selectedBatchByGauge[gauge] = batches[0].id;
+    }
+    const opts = batches.map(b => `<option value="${b.id}" ${b.id===_selectedBatchByGauge[gauge]?'selected':''}>
+      ${escHtml(b.label)} — ${fmt(b.kgs_remaining,1)} kg left @ KES ${fmt(b.landed_cost_per_kg,2)}/kg
+    </option>`).join('');
+    return `<div style="margin-bottom:.35rem">
+      <label class="label" style="font-size:.72rem">Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400">(FIFO default, change if needed)</span></label>
+      <select class="input" style="font-size:.8rem" onchange="_selectedBatchByGauge['${gauge}']=parseInt(this.value);calcOverhead();">${opts}</select>
+    </div>`;
+  }));
+
+  wrap.innerHTML = blocks.join('');
+  wrap.style.display = 'block';
 }
 
 const _calcWireWarningDebounced = debounce(async function(perGauge) {
@@ -720,54 +777,57 @@ async function loadTabData(tab) {
     const tb = document.getElementById('p_list');
     const exportBtn = document.getElementById('pExportBtn');
     exportBtn.style.display = 'none';
-    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?8:7).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?10:9).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
     try {
       const rows = await api('GET',`/daily/purchases?date=${d}`);
       window._lastPurchases = rows;
       if (!rows||!rows.length) {
-        tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text">No purchases yet for ${d}</div></td></tr>`;
+        tb.innerHTML=`<tr><td colspan="${canDelete?10:9}" class="empty"><div class="empty-text">No purchases yet for ${d}</div></td></tr>`;
         return;
       }
       exportBtn.style.display = 'block';
       tb.innerHTML=rows.map(r=>`<tr>
+        <td>${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : '—')}</td>
         <td>${escHtml(r.supplier_name)}</td>
         <td>${escHtml(r.gauge || '—')}</td>
         <td class="mono">${fmt(r.kgs_bought,1)}</td>
+        <td class="mono" title="${fmtKgExact(r.kgs_remaining)}">${fmt(r.kgs_remaining,1)}</td>
         <td class="mono">${fmt(r.cost_per_kg,2)}</td>
         <td class="mono">${fmt(r.transport_cost,2)}</td>
         <td class="mono">${fmt(r.total_cost,2)}</td>
-        <td class="mono">${fmt(r.landed_cost_per_kg,2)}</td>
+        <td class="mono" title="${fmtMoneyExact(r.landed_cost_per_kg)}/kg (exact)">${fmt(r.landed_cost_per_kg,2)}</td>
         ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('purchases',${r.id})">✕</button></td>`:''}
       </tr>`).join('');
-    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load purchases</div></td></tr>`; PageProgress.error(); return; }
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?10:9}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load purchases</div></td></tr>`; PageProgress.error(); return; }
   }
 
   if (tab==='production') {
     const tb = document.getElementById('pr_list');
     const exportBtn = document.getElementById('prExportBtn');
     exportBtn.style.display = 'none';
-    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?7:6).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    tb.innerHTML = `<tr class="skel-row">${Array(canDelete?8:7).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
     try {
       const rows = await api('GET',`/daily/production?date=${d}`);
       window._lastProduction = rows;
       if (!rows||!rows.length) {
-        tb.innerHTML=`<tr><td colspan="${canDelete?7:6}" class="empty"><div class="empty-text">No production yet for ${d}</div></td></tr>`;
+        tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text">No production yet for ${d}</div></td></tr>`;
         return;
       }
       exportBtn.style.display = 'block';
       tb.innerHTML=rows.map(r=>{
         const pieces=(r.items||[]).map(i=>`${escHtml(i.piece_name)}: ${fmt(i.pieces_produced)}`).join('<br>');
         return `<tr>
-          <td class="mono">${fmt(r.kgs_used,1)} kg</td>
+          <td class="mono" title="${fmtKgExact(r.kgs_used)}">${fmt(r.kgs_used,1)} kg</td>
           <td>${escHtml(r.gauge||'—')}</td>
+          <td style="font-size:.8rem" title="Real landed cost: ${r.batch_landed_cost_per_kg!=null?fmtMoneyExact(r.batch_landed_cost_per_kg)+'/kg':'—'}">${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : (r.purchase_id?('Batch #'+r.purchase_id):'—'))}</td>
           <td>${escHtml(r.operator_name||'—')}</td>
           <td>${escHtml(r.knuckler_name||'—')}</td>
           <td style="font-size:.8rem">${pieces||'—'}</td>
-          <td class="mono">${fmt(r.total_cost,2)}</td>
+          <td class="mono" title="${fmtMoneyExact(r.total_cost)}">${fmt(r.total_cost,2)}</td>
           ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('production',${r.id})">✕</button></td>`:''}
         </tr>`;
       }).join('');
-    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?7:6}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load production</div></td></tr>`; PageProgress.error(); return; }
+    } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?8:7}" class="empty"><div class="empty-text" style="color:var(--red)">⚠ Failed to load production</div></td></tr>`; PageProgress.error(); return; }
   }
 
   if (tab==='sales') {
@@ -872,15 +932,17 @@ function exportDailyCSV(type) {
   if (type === 'purchases') {
     const data = window._lastPurchases;
     if (!data || !data.length) return;
-    headers = ['Supplier', 'Kgs', 'Cost/kg', 'Transport', 'Total', 'Landed/kg', 'Entered By'];
-    rows = data.map(r => [r.supplier_name, r.kgs_bought, r.cost_per_kg, r.transport_cost, r.total_cost, r.landed_cost_per_kg, r.entered_by_name]);
+    headers = ['Batch', 'Supplier', 'Kgs', 'Remaining', 'Cost/kg', 'Transport', 'Total', 'Landed/kg', 'Entered By'];
+    rows = data.map(r => [r.batch_name || '—', r.supplier_name, r.kgs_bought, r.kgs_remaining, r.cost_per_kg, r.transport_cost, r.total_cost, r.landed_cost_per_kg, r.entered_by_name]);
     filename = `purchases_${d}`;
   } else if (type === 'production') {
     const data = window._lastProduction;
     if (!data || !data.length) return;
-    headers = ['Kgs Used', 'Operator', 'Knuckler', 'Pieces Produced', 'Total Cost', 'Entered By'];
+    headers = ['Kgs Used', 'Gauge', 'Batch', 'Operator', 'Knuckler', 'Pieces Produced', 'Total Cost', 'Entered By'];
     rows = data.map(r => [
-      r.kgs_used, 
+      r.kgs_used,
+      r.gauge || '—',
+      r.batch_name || (r.purchase_id ? `Batch #${r.purchase_id}` : '—'),
       r.operator_name || '—', 
       r.knuckler_name || '—', 
       (r.items || []).map(i => `${i.piece_name}: ${i.pieces_produced}`).join('; '),
@@ -914,6 +976,7 @@ function calcOverhead() {
   let totalPieces = 0;
   let totalSacks = 0;
   let expectedKgs = 0;
+  const perGaugeKgs = {};
 
   itemEls.forEach(el => {
     const qty = parseInt(el.querySelector('.pr-qty').value) || 0;
@@ -922,12 +985,40 @@ function calcOverhead() {
       totalSacks += qty * 2;
       const pieceId = el.querySelector('.pr-piece').value;
       const pt = pieceTypes.find(p => p.id == pieceId);
-      if (pt) expectedKgs += qty * pt.weight_kg;
+      const gauge = el.querySelector('.pr-item-gauge')?.value || document.getElementById('pr_gauge')?.value || '';
+      if (pt) {
+        const kgs = qty * pt.weight_kg;
+        expectedKgs += kgs;
+        perGaugeKgs[gauge] = (perGaugeKgs[gauge] || 0) + kgs;
+      }
     }
   });
 
   const kgsUsed = parseFloat(document.getElementById('pr_kgs').value) || 0;
-  const wireCost = rates.wire_cost_per_kg * kgsUsed;
+
+  // Real per-batch wire cost (rule 4) — sum each gauge's kg × its selected batch's
+  // actual landed cost. Falls back to the global average only as a transient
+  // preview placeholder before a batch has loaded/been picked; the server always
+  // recomputes from the real batch at submission time.
+  let wireCost = 0, wireCostLabel = '';
+  const gaugeKeys = Object.keys(perGaugeKgs);
+  if (gaugeKeys.length) {
+    const parts = [];
+    for (const gauge of gaugeKeys) {
+      const kg = perGaugeKgs[gauge];
+      const batchId = _selectedBatchByGauge[gauge];
+      const batches = (_batchCache[gauge] && _batchCache[gauge].batches) || [];
+      const batch = batches.find(b => b.id === batchId);
+      const rate = batch ? batch.landed_cost_per_kg : rates.wire_cost_per_kg;
+      wireCost += rate * kg;
+      parts.push(`${fmtMoney(rate)}/kg×${fmt(kg,1)}kg${batch?'':' (est.)'}`);
+    }
+    wireCostLabel = parts.join(' + ');
+  } else {
+    wireCost = rates.wire_cost_per_kg * kgsUsed;
+    wireCostLabel = `${fmtMoney(rates.wire_cost_per_kg)}/kg × ${fmt(kgsUsed,2)} kg (est.)`;
+  }
+
   const opCost = rates.operator_rate * totalPieces;
   const knCost = rates.knuckler_rate * totalPieces;
   const sackCost = rates.sack_rate * totalSacks;
@@ -940,7 +1031,7 @@ function calcOverhead() {
   if (el) {
     el.innerHTML = `
       <div style="display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;font-size:.82rem">
-        <span style="color:var(--muted)">Wire landed cost (${fmtMoney(rates.wire_cost_per_kg)}/kg × ${fmt(kgsUsed,2)} kg)</span><span class="mono">${fmtMoney(wireCost)}</span>
+        <span style="color:var(--muted)" title="Real batch landing cost(s), not an average">Wire — real landed cost (${wireCostLabel})</span><span class="mono">${fmtMoney(wireCost)}</span>
         <span style="color:var(--muted)">Operator (${fmtMoney(rates.operator_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(opCost)}</span>
         <span style="color:var(--muted)">Knuckler (${fmtMoney(rates.knuckler_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(knCost)}</span>
         <span style="color:var(--muted)">Sacks (${fmtMoney(rates.sack_rate)} × ${totalSacks} sacks)</span><span class="mono">${fmtMoney(sackCost)}</span>
@@ -963,6 +1054,7 @@ async function submitPurchase() {
   const cost_per_kg  = parseFloat(document.getElementById('p_cost_kg').value);
   const transport_cost = parseFloat(document.getElementById('p_transport').value)||0;
   const gauge          = document.getElementById('p_gauge').value;
+  const batch_name      = document.getElementById('p_batch_name').value.trim();
 
   // Validate first — before locking, so user can correct errors freely
   if (!supplier_id)                        return showErr('p_err','Select a supplier');
@@ -975,13 +1067,15 @@ async function submitPurchase() {
   if (purchaseBtn) { purchaseBtn.disabled = true; purchaseBtn.textContent = '⏳ Saving…'; }
 
   try {
-    await api('POST','/daily/purchases',{entry_date:d,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge});
+    await api('POST','/daily/purchases',{entry_date:d,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name});
     _prodRates = await api('GET','/daily/production-cost-inputs');
     invalidateStockCaches(); // fresh stock data for next entry
+    invalidateBatchCache();  // new batch now available for production selection
 
     // Clear the form BEFORE re-enabling — user sees blank form, not the old values
     document.getElementById('p_kgs').value = '';
     document.getElementById('p_transport').value = '0';
+    document.getElementById('p_batch_name').value = '';
     updateConfigField('p_cost_kg', 'cost_per_kg', '0.00');
     document.getElementById('p_summary').style.display = 'none';
     showErr('p_err','');
@@ -1043,6 +1137,13 @@ async function submitProduction() {
 
   if (!Object.keys(gaugeGroups).length) return showErr('pr_err','Add at least one piece type with pieces produced');
 
+  // Every gauge group must have a wire batch selected (rule 4 — no average costing)
+  for (const gauge of Object.keys(gaugeGroups)) {
+    if (!_selectedBatchByGauge[gauge]) {
+      return showErr('pr_err', `Select a wire batch for gauge ${gauge || '—'} before saving.`);
+    }
+  }
+
   // Acquire lock + disable button
   _productionSubmitting = true;
   const prodBtn = document.querySelector('button[onclick="submitProduction()"]');
@@ -1063,7 +1164,8 @@ async function submitProduction() {
 
     if (prodBtn) prodBtn.textContent = '⏳ Saving…';
 
-    // Submit one POST per gauge group — the backend handles each atomically
+    // Submit one POST per gauge group — the backend handles each atomically,
+    // charging the REAL landed cost of the selected wire batch (rule 4).
     const gaugeList = Object.keys(gaugeGroups);
     for (const gauge of gaugeList) {
       const items = gaugeGroups[gauge];
@@ -1072,6 +1174,7 @@ async function submitProduction() {
         entry_date: d,
         kgs_used: kgsUsed,
         gauge,
+        purchase_id: _selectedBatchByGauge[gauge],
         operator_id,
         knuckler_id,
         items: items.map(i => ({ piece_type_id: i.piece_type_id, pieces_produced: i.pieces_produced }))
@@ -1082,10 +1185,13 @@ async function submitProduction() {
     document.getElementById('pr_kgs').value = '';
     document.getElementById('pr_items').innerHTML = '';
     document.getElementById('pr_material_status').style.display = 'none';
+    document.getElementById('pr_batch_selectors').style.display = 'none';
+    _selectedBatchByGauge = {};
     showErr('pr_err','');
     prItemCount = 0; addPrItem();
 
     invalidateStockCaches();
+    invalidateBatchCache();
     await loadTabData('production');
 
     if (typeof BroadcastChannel !== 'undefined') {

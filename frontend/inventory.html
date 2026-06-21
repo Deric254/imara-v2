@@ -75,17 +75,17 @@ async function load() {
     document.getElementById('rawKpis').innerHTML = `
       <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">
         <div class="kpi-label">Raw Wire Stock</div>
-        <div class="kpi-value mono">${fmtKg(r.remaining_kgs)}</div>
+        <div class="kpi-value mono">${tipSpan(fmtKg(r.remaining_kgs), fmtKgExact(r.remaining_kgs))}</div>
         <div class="kpi-sub">remaining</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Total Purchased</div>
-        <div class="kpi-value mono">${fmtKg(r.total_bought_kgs)}</div>
+        <div class="kpi-value mono">${tipSpan(fmtKg(r.total_bought_kgs), fmtKgExact(r.total_bought_kgs))}</div>
         <div class="kpi-sub">all-time</div>
       </div>
       <div class="kpi">
         <div class="kpi-label">Total Used</div>
-        <div class="kpi-value mono">${fmtKg(r.total_used_kgs)}</div>
+        <div class="kpi-value mono">${tipSpan(fmtKg(r.total_used_kgs), fmtKgExact(r.total_used_kgs))}</div>
         <div class="kpi-sub">in production</div>
       </div>
       <div class="kpi ${r.out_of_stock?'danger':r.low_stock?'warning':''}">

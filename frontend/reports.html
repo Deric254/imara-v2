@@ -231,15 +231,15 @@ async function loadAll() {
 
     document.getElementById('summaryKpis').innerHTML = `
       <div class="kpi rev"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Revenue</div><span>💰</span></div>
-        <div class="kpi-value mono">${fmt(totalRev)}</div><div class="kpi-sub">KES total income</div></div>
+        <div class="kpi-value mono">${tipSpan(fmt(totalRev), fmtMoneyExact(totalRev))}</div><div class="kpi-sub">KES total income</div></div>
       <div class="kpi ${profit<0?'danger':'prof'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Net Profit</div><span>📈</span></div>
-        <div class="kpi-value mono">${fmt(profit)}</div><div class="kpi-sub">sold items only, plus rent</div></div>
+        <div class="kpi-value mono">${tipSpan(fmt(profit), fmtMoneyExact(profit))}</div><div class="kpi-sub">sold items only, plus rent</div></div>
       <div class="kpi buy"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Material Flow</div><span>📦</span></div>
-        <div class="kpi-value mono">${fmtKg(totalKgs)}</div><div class="kpi-sub">raw wire bought</div></div>
+        <div class="kpi-value mono">${tipSpan(fmtKg(totalKgs), fmtKgExact(totalKgs))}</div><div class="kpi-sub">raw wire bought</div></div>
       <div class="kpi ${parseFloat(efficiency)<90?'warning':'prod'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Utilization</div><span>⚙</span></div>
         <div class="kpi-value mono">${efficiency}%</div><div class="kpi-sub">material efficiency</div></div>
       <div class="kpi best"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Best Seller</div><span>💎</span></div>
-        <div class="kpi-value" style="font-size:1rem">${escHtml(topProduct[0])}</div><div class="kpi-sub">${fmt(topProduct[1])} KES generated</div></div>`;
+        <div class="kpi-value" style="font-size:1rem">${escHtml(topProduct[0])}</div><div class="kpi-sub">${tipSpan(fmt(topProduct[1]), fmtMoneyExact(topProduct[1]))} KES generated</div></div>`;
 
     const trends = dash?.trends || [];
     document.getElementById('trendLabel').textContent = `(${from} → ${to})`;
@@ -258,7 +258,7 @@ async function loadAll() {
           scales:{
             x:{grid:{display:false},ticks:{font:{size:10},color:'#5a7a68',maxRotation:45,maxTicksLimit:20}},
             y:{position:'left',grid:{color:'#dde9e3'},ticks:{font:{size:11},color:'#5a7a68',callback:v=>v>=1000?(v/1000).toFixed(0)+'k':v}},
-            y2:{position:'right',grid:{display:false},ticks:{font:{size:11},color:'#d97706'}},
+            y2:{position:'right',grid:{display:false},ticks:{font:{size:11},color:'#d97706',callback:v=>fmtKg(v)}},
           }}
       });
     }
@@ -278,7 +278,7 @@ async function loadAll() {
                 return{text:`${label} (${tot>0?((val/tot)*100).toFixed(1):0}%)`,fillStyle:d.datasets[0].backgroundColor[i%productColors.length],strokeStyle:'#fff',lineWidth:2,hidden:isNaN(val)||chart.getDatasetMeta(0).data[i].hidden,index:i};
               });
             }}},
-            tooltip:{callbacks:{label:(item)=>{const tot=item.dataset.data.reduce((a,b)=>a+b,0);return ` ${item.label}: KES ${fmt(item.raw)} (${((item.raw/tot)*100).toFixed(1)}%)`;}}},
+            tooltip:{callbacks:{label:(item)=>{const tot=item.dataset.data.reduce((a,b)=>a+b,0);return ` ${item.label}: ${fmtMoneyExact(item.raw)} (${((item.raw/tot)*100).toFixed(1)}%)`;}}},
           },cutout:'65%'}
       });
     }

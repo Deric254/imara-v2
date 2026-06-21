@@ -229,6 +229,8 @@ const TABLE_STATEMENTS = [
     cost_per_kg REAL NOT NULL CHECK(cost_per_kg >= 0),
     transport_cost REAL NOT NULL DEFAULT 0 CHECK(transport_cost >= 0),
     gauge TEXT DEFAULT '',
+    batch_name TEXT NOT NULL DEFAULT '',
+    kgs_remaining REAL,
     entered_by INTEGER NOT NULL REFERENCES users(id),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
@@ -238,6 +240,7 @@ const TABLE_STATEMENTS = [
     entry_date TEXT NOT NULL,
     kgs_used REAL NOT NULL CHECK(kgs_used >= 0),
     gauge TEXT DEFAULT '',
+    purchase_id INTEGER REFERENCES purchases(id),
     operator_id INTEGER REFERENCES users(id),
     knuckler_id INTEGER REFERENCES users(id),
     operator_cost REAL NOT NULL DEFAULT 0,

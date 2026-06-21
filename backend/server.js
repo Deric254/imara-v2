@@ -74,6 +74,12 @@ app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ── Global error handler ──────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  // express.json() throws a SyntaxError (with type 'entity.parse.failed') when
+  // the request body is not valid JSON. This is a client input problem, not a
+  // server fault, so it should be a 400 — not fall through to the generic 500.
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && 'body' in err)) {
+    return res.status(400).json({ error: 'Malformed JSON in request body' });
+  }
   console.error('Unhandled error:', err.stack || err.message || err);
   res.status(500).json({ error: 'Internal server error' });
 });

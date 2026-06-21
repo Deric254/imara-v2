@@ -541,6 +541,18 @@ function endLabel(color, unit='') {
     formatter: v => v != null && v !== 0 ? smartVal(v) + unit : ''
   };
 }
+/* weight-specific datalabel — uses fmtKg (auto kg/t) instead of smartVal+'kg' which produced "1.2K kg" */
+function endLabelKg(color) {
+  return {
+    display: function(ctx) {
+      const v = ctx.dataset.data[ctx.dataIndex];
+      return v != null && v !== 0;
+    },
+    anchor:'end', align:'end', offset:2, clamp:true,
+    color, font:{weight:'bold', size:9},
+    formatter: v => v != null && v !== 0 ? fmtKg(v) : ''
+  };
+}
 /* shared datalabel for pie/doughnut slices — only on slices big enough to hold the text */
 function pctLabel() {
   return {
@@ -914,7 +926,7 @@ async function loadDash(){
         <div class="kpi-icon">💰</div>
         <div class="kpi-body">
           <div class="kpi-label">Revenue Received</div>
-          <div class="kpi-value">${compactKES(k.total_revenue)}</div>
+          <div class="kpi-value">${tipSpan(compactKES(k.total_revenue), fmtMoneyExact(k.total_revenue))}</div>
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
@@ -922,31 +934,31 @@ async function loadDash(){
         <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
           <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
-          <div class="kpi-value">${compactKES(showRent?k.net_profit:k.gross_profit)}</div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?k.net_profit:k.gross_profit), fmtMoneyExact(showRent?k.net_profit:k.gross_profit))}</div>
           <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent expense on items sold':'Wire + labour + sacks + transport on items sold · Rent is a separate overhead'} · ${from} → ${to}">
+      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent expense on items SOLD this period':'Wire + labour + sacks + transport on items SOLD this period · Rent is a separate overhead'}. Wire portion uses a period weighted-average cost/kg (KES ${fmt(k.weighted_wire_cost_per_kg,2)}/kg) since sold pieces aren't traced to one wire batch — this is a different figure from the Production tab's per-batch real cost. · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold)}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold), fmtMoneyExact(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
         </div>
       </div>
-      <div class="kpi" title="Wire used in production · ${from} → ${to}">
+      <div class="kpi" title="Wire used in production (real batch cost, same figure as the Production tab total) · ${from} → ${to}">
         <div class="kpi-icon">⚙️</div>
         <div class="kpi-body">
           <div class="kpi-label">Production</div>
-          <div class="kpi-value">${fmtKg(k.total_kgs_produced)}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_pieces_sold} pieces sold</span></div>
+          <div class="kpi-value">${tipSpan(fmtKg(k.total_kgs_produced), fmtKgExact(k.total_kgs_produced))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${tipSpan(compactKES(k.total_production_cost), fmtMoneyExact(k.total_production_cost))} cost · ${k.total_pieces_sold} sold</span></div>
         </div>
       </div>
       <div class="kpi ${raw.low_stock?(raw.out_of_stock?'danger':'warning'):''}" title="All-time · Bought: ${fmtKg(raw.total_bought_kgs)} · Used: ${fmtKg(raw.total_used_kgs)}">
         <div class="kpi-icon">${raw.out_of_stock?'🚨':raw.low_stock?'⚠️':'📦'}</div>
         <div class="kpi-body">
           <div class="kpi-label">Raw Stock</div>
-          <div class="kpi-value">${fmtKg(raw.remaining_kgs)}</div>
+          <div class="kpi-value">${tipSpan(fmtKg(raw.remaining_kgs), fmtKgExact(raw.remaining_kgs))}</div>
           <div class="kpi-sub ${raw.out_of_stock?'danger':raw.low_stock?'warn':''}"><span class="dot" style="background:${raw.out_of_stock?'var(--red)':raw.low_stock?'var(--amber)':'var(--g500)'}"></span><span>${raw.out_of_stock?'Out of stock':raw.remaining_pct+'% remaining'}</span></div>
         </div>
       </div>
@@ -1009,7 +1021,7 @@ async function loadDash(){
         options: cartesianOpts({
           plugins:{
             datalabels: labels.length > 30 ? { display: false } : endLabel('#1e9a62'),
-            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Revenue: '+smartKES(ctx.parsed.y) : 'No data' }}
+            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Revenue: '+fmtMoneyExact(ctx.parsed.y) : 'No data' }}
           },
           scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>smartVal(v)}} }
         }, labels.length)
@@ -1032,8 +1044,8 @@ async function loadDash(){
         }]},
         options: cartesianOpts({
           plugins:{
-            datalabels: labels.length > 30 ? { display: false } : endLabel('#d97706',' kg'),
-            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+fmtKg(ctx.parsed.y) : 'No data' }}
+            datalabels: labels.length > 30 ? { display: false } : endLabelKg('#d97706'),
+            tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+fmtKgExact(ctx.parsed.y) : 'No data' }}
           },
           scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>fmtKg(v)}} }
         }, labels.length)
@@ -1057,7 +1069,7 @@ async function loadDash(){
           datalabels: endLabel('#1e9a62'),
           tooltip:{ callbacks:{ label: ctx=>{
             const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + numVal(item), 0);
-            return [`Revenue: ${smartKES(ctx.parsed.x)}`,`Share: ${((ctx.parsed.x/tot)*100).toFixed(1)}%`];
+            return [`Revenue: ${fmtMoneyExact(ctx.parsed.x)}`,`Share: ${((ctx.parsed.x/tot)*100).toFixed(1)}%`];
           }}},
           zoom: {
             pan:  { enabled: true, mode: 'y', modifierKey: null },
@@ -1086,7 +1098,7 @@ async function loadDash(){
           datalabels: pctLabel(),
           tooltip:{ callbacks:{ label: ctx=>{
             const tot=(ctx.dataset.data || []).reduce((sum, item) => sum + numVal(item), 0);
-            return `${ctx.label}: ${smartKES(ctx.parsed)} (${((ctx.parsed/tot)*100).toFixed(1)}%)`;
+            return `${ctx.label}: ${fmtMoneyExact(ctx.parsed)} (${((ctx.parsed/tot)*100).toFixed(1)}%)`;
           }}}
         }
       })
@@ -1138,7 +1150,7 @@ async function loadDash(){
             return [
               `${ctx.label}`,
               `Pieces sold: ${current}`,
-              `Sales: ${smartKES(salesValue)}`,
+              `Sales: ${fmtMoneyExact(salesValue)}`,
               `Share: ${pct}%`
             ];
           }}}
@@ -1176,7 +1188,7 @@ async function loadDash(){
           legend: legendOpts(),
           datalabels: pctLabel(),
           tooltip:{ callbacks:{ label: ctx=>{
-            return `${ctx.label}: ${smartKES(ctx.parsed)} (${bdPcts[ctx.dataIndex]}%)`;
+            return `${ctx.label}: ${fmtMoneyExact(ctx.parsed)} (${bdPcts[ctx.dataIndex]}%)`;
           }}}
         }
       })

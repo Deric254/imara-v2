@@ -55,11 +55,10 @@ async function getWeightedWireCostPerKg(db) {
   return getCfgNumber(db, 'cost_per_kg');
 }
 
-async function getProductionCostBreakdown(db, totalPieces, kgsUsed) {
+async function getProductionCostBreakdown(db, totalPieces, kgsUsed, wireCostPerKg) {
   const operatorRate  = await getCfgNumber(db, 'operator_cost');
   const knucklerRate  = await getCfgNumber(db, 'knuckler_cost');
   const sackRate      = await getCfgNumber(db, 'sack_cost');
-  const wireCostPerKg = await getWeightedWireCostPerKg(db);
 
   const wire_cost      = wireCostPerKg * kgsUsed;
   const operator_cost  = operatorRate * totalPieces;
@@ -162,20 +161,23 @@ router.post('/purchases', authenticate, blockProductionStaff,
   body('cost_per_kg').isFloat({ min: 0 }).withMessage('Cost/kg must be >= 0'),
   body('transport_cost').optional().isFloat({ min: 0 }),
   body('gauge').optional().trim(),
+  body('batch_name').optional().trim().isLength({ max: 80 }).withMessage('Batch name must be 80 characters or fewer'),
   async (req, res) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
 
     try {
-      const { entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost = 0, gauge = '' } = req.body;
+      const { entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost = 0, gauge = '', batch_name = '' } = req.body;
       const db = getDb();
       if (!await db.prepare('SELECT id FROM suppliers WHERE id=? AND active=1').get(supplier_id))
         return res.status(404).json({ error: 'Supplier not found' });
 
       // FIX: RETURNING id so PostgreSQL returns the new row's id
+      // kgs_remaining starts equal to kgs_bought — this batch's stock pool,
+      // drawn down only by production runs that explicitly select it (rule 4).
       const result = await db.prepare(
-        'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,entered_by) VALUES(?,?,?,?,?,?,?) RETURNING id'
-      ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, req.user.id);
+        'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name,kgs_remaining,entered_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id'
+      ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, batch_name, kgs_bought, req.user.id);
 
       await writeAudit(db, { userId: req.user.id, action: 'CREATE_PURCHASE', table: 'purchases',
         recordId: result.lastInsertRowid, ip: req.ip });
@@ -198,6 +200,39 @@ router.post('/purchases', authenticate, blockProductionStaff,
   }
 );
 
+/* GET /api/daily/batches?gauge=12 — available wire batches for a gauge, FIFO order (oldest first).
+   Used to populate the production batch-selection dropdown. Each batch carries its own
+   REAL landed cost — no averaging. */
+router.get('/batches', authenticate, async (req, res) => {
+  try {
+    const db = getDb();
+    const gauge = (req.query.gauge || '').trim();
+    const rows = await db.prepare(`
+      SELECT p.id, p.entry_date, p.gauge, p.batch_name, p.kgs_bought, p.kgs_remaining,
+             p.cost_per_kg, p.transport_cost, s.name AS supplier_name,
+             ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),4) AS landed_cost_per_kg
+      FROM purchases p JOIN suppliers s ON p.supplier_id=s.id
+      WHERE COALESCE(p.gauge,'')=? AND p.kgs_remaining > 0.001
+      ORDER BY p.entry_date ASC, p.id ASC
+    `).all(gauge);
+    res.json(rows.map(r => ({
+      id: r.id,
+      label: r.batch_name && r.batch_name.trim()
+        ? r.batch_name
+        : `${r.entry_date} · ${r.supplier_name} · Gauge ${r.gauge || '—'}`,
+      entry_date: r.entry_date,
+      supplier_name: r.supplier_name,
+      gauge: r.gauge,
+      kgs_remaining: parseFloat(r.kgs_remaining),
+      kgs_bought: parseFloat(r.kgs_bought),
+      landed_cost_per_kg: parseFloat(r.landed_cost_per_kg),
+    })));
+  } catch(e) {
+    console.error('GET batches error:', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 /* DELETE /api/daily/purchases/:id */
 router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), async (req, res) => {
   const db = getDb();
@@ -207,6 +242,14 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
     if (!row) return res.status(404).json({ error: 'Purchase not found' });
 
     const gaugeKey = (row.gauge || '').trim();
+
+    // Batch-specific check: this exact batch must be untouched (rule 4 — real per-batch tracking)
+    if (row.kgs_remaining != null && parseFloat(row.kgs_remaining) < parseFloat(row.kgs_bought) - 0.001) {
+      return res.status(400).json({
+        error: 'INTEGRITY_VIOLATION',
+        message: `Cannot delete this batch — ${(parseFloat(row.kgs_bought) - parseFloat(row.kgs_remaining)).toFixed(3)} kg from it has already been used in production.`
+      });
+    }
 
     // Pre-flight gauge-aware check (fast path before transaction)
     const totalBoughtGauge = (await db.prepare(
@@ -272,12 +315,17 @@ router.get('/production', authenticate, async (req, res) => {
                  u.full_name AS entered_by_name,
                  op.full_name AS operator_name,
                  kn.full_name AS knuckler_name,
+                 p.batch_name AS batch_name,
+                 CASE WHEN p.kgs_bought>0
+                   THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),4)
+                   ELSE NULL END AS batch_landed_cost_per_kg,
                  ROUND((pr.operator_cost+pr.knuckler_cost),2) AS total_labour,
                  ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
                FROM production pr
                JOIN users u ON pr.entered_by=u.id
                LEFT JOIN users op ON pr.operator_id=op.id
-               LEFT JOIN users kn ON pr.knuckler_id=kn.id`;
+               LEFT JOIN users kn ON pr.knuckler_id=kn.id
+               LEFT JOIN purchases p ON pr.purchase_id=p.id`;
     const params = [], conds = [];
     if (date)       { conds.push('pr.entry_date=?');               params.push(date); }
     else if (from)  { conds.push('pr.entry_date BETWEEN ? AND ?'); params.push(from, to || from); }
@@ -309,12 +357,13 @@ router.post('/production', authenticate, blockProductionStaff,
   body('items.*.piece_type_id').isInt({ min: 1 }),
   body('items.*.pieces_produced').isInt({ min: 0 }),
   body('gauge').optional().trim(),
+  body('purchase_id').optional().isInt({ min: 1 }).withMessage('Invalid wire batch'),
   async (req, res) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
 
     try {
-      const { entry_date, kgs_used, operator_id, knuckler_id, items, gauge = '' } = req.body;
+      const { entry_date, kgs_used, operator_id, knuckler_id, items, gauge = '', purchase_id = null } = req.body;
       const db = getDb();
 
       // ENFORCE: at least one item must have pieces_produced > 0
@@ -377,9 +426,7 @@ router.post('/production', authenticate, blockProductionStaff,
         });
       }
 
-      const breakdown = await getProductionCostBreakdown(db, totalPieces, parseFloat(kgs_used));
-
-      // ATOMIC: stock check + insert in ONE transaction.
+      // ATOMIC: batch selection/validation + stock check + insert in ONE transaction.
       // This eliminates the TOCTOU race where two rapid requests both pass the
       // check before either writes — the second will now fail at the DB level.
       let pid;
@@ -403,12 +450,50 @@ router.post('/production', authenticate, blockProductionStaff,
           return; // abort transaction without throwing
         }
 
+        // Resolve the wire batch — explicit selection, or default to the oldest
+        // (FIFO) batch of this gauge with enough stock remaining (rule 4).
+        let batch;
+        if (purchase_id) {
+          batch = await db.prepare(
+            `SELECT id, gauge, kgs_remaining, kgs_bought, cost_per_kg, transport_cost FROM purchases WHERE id=?`
+          ).get(purchase_id);
+          if (!batch || (batch.gauge || '').trim() !== gaugeKey) {
+            stockError = { error: 'INVALID_BATCH', message: 'Selected wire batch does not match this gauge.' };
+            return;
+          }
+        } else {
+          batch = await db.prepare(
+            `SELECT id, gauge, kgs_remaining, kgs_bought, cost_per_kg, transport_cost FROM purchases
+             WHERE COALESCE(gauge,'')=? AND kgs_remaining > 0.001
+             ORDER BY entry_date ASC, id ASC LIMIT 1`
+          ).get(gaugeKey);
+          if (!batch) {
+            stockError = { error: 'INVALID_BATCH', message: `No wire batch found for ${gaugeKey ? 'gauge ' + gaugeKey : 'this gauge'}.` };
+            return;
+          }
+        }
+        if (parseFloat(batch.kgs_remaining) < parseFloat(kgs_used) - 0.001) {
+          stockError = {
+            error: 'INSUFFICIENT_BATCH_STOCK',
+            message: `Selected wire batch only has ${parseFloat(batch.kgs_remaining).toFixed(3)} kg remaining, but ${parseFloat(kgs_used).toFixed(3)} kg is needed. Pick a different batch or split across batches.`
+          };
+          return;
+        }
+
+        const wireCostPerKg = batch.kgs_bought > 0
+          ? (batch.kgs_bought * batch.cost_per_kg + batch.transport_cost) / batch.kgs_bought
+          : 0;
+        const breakdown = await getProductionCostBreakdown(db, totalPieces, parseFloat(kgs_used), wireCostPerKg);
+
+        await db.prepare('UPDATE purchases SET kgs_remaining = kgs_remaining - ? WHERE id=?')
+          .run(parseFloat(kgs_used), batch.id);
+
         pid = (await db.prepare(
-          `INSERT INTO production(entry_date,kgs_used,gauge,operator_id,knuckler_id,
+          `INSERT INTO production(entry_date,kgs_used,gauge,purchase_id,operator_id,knuckler_id,
             operator_cost,knuckler_cost,sack_cost,rent_allocation,total_cost,entered_by)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
         ).run(
-          entry_date, kgs_used, gauge || '',
+          entry_date, kgs_used, gauge || '', batch.id,
           operator_id || null, knuckler_id || null,
           breakdown.operator_cost, breakdown.knuckler_cost,
           breakdown.sack_cost, breakdown.rent_allocation, breakdown.total_cost,
@@ -503,6 +588,10 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
       }
       await db.prepare('DELETE FROM production_items WHERE production_id=?').run(id);
       await db.prepare('DELETE FROM production WHERE id=?').run(id);
+      if (row.purchase_id) {
+        await db.prepare('UPDATE purchases SET kgs_remaining = MIN(kgs_bought, kgs_remaining + ?) WHERE id=?')
+          .run(parseFloat(row.kgs_used), row.purchase_id);
+      }
     });
 
     if (prodBlocked) {

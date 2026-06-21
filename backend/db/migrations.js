@@ -98,6 +98,65 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '006-real-landing-cost-batches',
+    version: '2.4.0',
+    description: 'Add batch_name + kgs_remaining to purchases and purchase_id to production for real (non-averaged) per-batch landing costs, with FIFO backfill for existing rows',
+    async up(db) {
+      try {
+        const pCols = await db.prepare('PRAGMA table_info(purchases)').all();
+        if (!pCols.some(c => c.name === 'batch_name')) {
+          await db.exec("ALTER TABLE purchases ADD COLUMN batch_name TEXT NOT NULL DEFAULT ''");
+        }
+        if (!pCols.some(c => c.name === 'kgs_remaining')) {
+          await db.exec('ALTER TABLE purchases ADD COLUMN kgs_remaining REAL');
+        }
+        const prCols = await db.prepare('PRAGMA table_info(production)').all();
+        if (!prCols.some(c => c.name === 'purchase_id')) {
+          await db.exec('ALTER TABLE production ADD COLUMN purchase_id INTEGER REFERENCES purchases(id)');
+        }
+
+        // FIFO backfill: only rows that don't have kgs_remaining/purchase_id set yet.
+        // For each gauge, walk purchases oldest→newest and unattributed production
+        // oldest→newest, simulating FIFO draw-down. This does NOT change
+        // SUM(kgs_bought) or SUM(kgs_used) anywhere — it only attributes the
+        // existing totals to specific batches so the new per-batch fields are
+        // consistent with the historical (gauge-pooled) totals.
+        const gauges = await db.prepare(`SELECT DISTINCT COALESCE(gauge,'') AS g FROM purchases`).all();
+        for (const { g } of gauges) {
+          const batches = await db.prepare(
+            `SELECT id, kgs_bought FROM purchases WHERE COALESCE(gauge,'')=? AND kgs_remaining IS NULL ORDER BY entry_date ASC, id ASC`
+          ).all(g);
+          if (!batches.length) continue;
+          const prodRows = await db.prepare(
+            `SELECT id, kgs_used FROM production WHERE COALESCE(gauge,'')=? AND purchase_id IS NULL ORDER BY entry_date ASC, id ASC`
+          ).all(g);
+          const remaining = batches.map(b => ({ id: b.id, left: parseFloat(b.kgs_bought) || 0 }));
+          let bi = 0;
+          for (const pr of prodRows) {
+            let need = parseFloat(pr.kgs_used) || 0;
+            let firstBatch = null;
+            while (need > 0.0001 && bi < remaining.length) {
+              const b = remaining[bi];
+              if (b.left <= 0.0001) { bi++; continue; }
+              if (firstBatch === null) firstBatch = b.id;
+              const take = Math.min(b.left, need);
+              b.left -= take; need -= take;
+              if (b.left <= 0.0001) bi++;
+            }
+            if (firstBatch) await db.prepare(`UPDATE production SET purchase_id=? WHERE id=?`).run(firstBatch, pr.id);
+          }
+          for (const b of remaining) {
+            await db.prepare(`UPDATE purchases SET kgs_remaining=? WHERE id=?`).run(Math.max(0, parseFloat(b.left.toFixed(4))), b.id);
+          }
+        }
+        // Safety net: any purchase rows somehow still NULL (e.g. no production at all) get kgs_remaining = kgs_bought
+        await db.exec(`UPDATE purchases SET kgs_remaining = kgs_bought WHERE kgs_remaining IS NULL`);
+      } catch (err) {
+        console.warn('Migration 006:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

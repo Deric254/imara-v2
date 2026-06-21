@@ -323,9 +323,12 @@ async function getRentPayable(db, fromYYYYMM, toYYYYMM) {
     WHERE rm.month BETWEEN ? AND ?
     GROUP BY rm.id, rm.amount_due
   `).all(fromYYYYMM, toYYYYMM);
-  return Math.max(0,
-    rows.reduce((s, r) => s + Math.max(0, parseFloat(r.amount_due) - parseFloat(r.paid)), 0)
-  );
+  // Net across all months in range (a credit in one month offsets a balance owed
+  // in another), matching the netting logic used on the Reconciliation page —
+  // both screens must report the same outstanding rent figure for the same range.
+  const accrued = rows.reduce((s, r) => s + parseFloat(r.amount_due), 0);
+  const paid    = rows.reduce((s, r) => s + parseFloat(r.paid), 0);
+  return Math.max(0, parseFloat((accrued - paid).toFixed(2)));
 }
 
 
@@ -629,6 +632,11 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     const prodVol   = (await db.prepare(
       'SELECT COALESCE(SUM(kgs_used),0) AS v FROM production WHERE entry_date BETWEEN ? AND ?'
     ).get(fromDate, toDate)).v;
+    // Same source/column the Production module sums — guarantees this figure
+    // always matches what the user sees when totalling the Production tab.
+    const prodCost  = (await db.prepare(
+      'SELECT COALESCE(SUM(total_cost),0) AS v FROM production WHERE entry_date BETWEEN ? AND ?'
+    ).get(fromDate, toDate)).v;
 
     // Trend buckets
     const [sy, sm, sd] = fromDate.split('-').map(Number);
@@ -825,6 +833,7 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
         total_pieces_sold:         salesSummary.pieces_sold,
         total_kgs_sold:            parseFloat(salesSummary.kgs_sold.toFixed(2)),
         total_kgs_produced:        parseFloat(prodVol.toFixed(2)),
+        total_production_cost:     parseFloat(parseFloat(prodCost).toFixed(2)),
         raw_stock_kg:              parseFloat(rawStock.toFixed(2)),
         low_stock:                 rawStock < threshold,
         best_piece:                best?.name || '—',
@@ -1102,7 +1111,7 @@ router.post('/notifications', authenticate, async (req, res) => {
     const { type, category, title, message, roleTarget } = req.body;
     if (!title || !message) return res.status(400).json({ error: 'title and message required' });
 
-    const SUPPRESSED_CATEGORIES = ['production', 'sales', 'purchase', 'payment', 'activity'];
+    const SUPPRESSED_CATEGORIES = ['production', 'sales', 'purchases', 'payment', 'activity'];
     const SUPPRESSED_TYPES      = ['info'];
     if (SUPPRESSED_CATEGORIES.includes(category) || SUPPRESSED_TYPES.includes(type)) {
       return res.json({ ok: true });
