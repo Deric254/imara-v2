@@ -260,8 +260,9 @@ router.put('/purchases/:id/batch-name', authenticate, blockProductionStaff,
 );
 
 /* GET /api/daily/batches?gauge=12 — available wire batches for a gauge, FIFO order (oldest first).
-   Used to populate the production batch-selection dropdown. Each batch carries its own
-   REAL landed cost — no averaging. */
+   Used to populate the production batch-selection dropdown (a PREFERENCE, not a hard
+   requirement — POST /production will FIFO-cascade through these same batches if the
+   preferred one alone doesn't cover kgs_used). Each batch carries its own real landed cost. */
 router.get('/batches', authenticate, async (req, res) => {
   try {
     const db = getDb();
@@ -378,6 +379,12 @@ router.get('/production', authenticate, async (req, res) => {
                  CASE WHEN p.kgs_bought>0
                    THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),4)
                    ELSE NULL END AS batch_landed_cost_per_kg,
+                 -- True blended landed cost actually charged to this record, derived
+                 -- from the stored totals — accurate whether one batch or several
+                 -- (FIFO cascade) fed it, never just the "primary" batch's own rate.
+                 CASE WHEN pr.kgs_used>0
+                   THEN ROUND(((pr.total_cost-pr.operator_cost-pr.knuckler_cost-pr.sack_cost-pr.rent_allocation)/pr.kgs_used),4)
+                   ELSE NULL END AS wire_cost_per_kg,
                  ROUND((pr.operator_cost+pr.knuckler_cost),2) AS total_labour,
                  ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
                FROM production pr
@@ -400,8 +407,21 @@ router.get('/production', authenticate, async (req, res) => {
       FROM production_items pi JOIN piece_types pt ON pi.piece_type_id=pt.id
       WHERE pi.production_id=?
     `);
+    // Per-batch draw breakdown — lets the UI show "drew from 2 batches" honestly
+    // instead of implying a single batch supplied the whole run.
+    const usageStmt = db.prepare(`
+      SELECT pbu.purchase_id, pbu.kgs_drawn, pbu.landed_cost_per_kg,
+             COALESCE(NULLIF(p.batch_name,''), 'Batch #' || p.id) AS batch_label
+      FROM production_batch_usage pbu
+      JOIN purchases p ON pbu.purchase_id = p.id
+      WHERE pbu.production_id=?
+      ORDER BY pbu.id ASC
+    `);
     const result = [];
-    for (const r of rows) result.push({ ...r, items: await itemsStmt.all(r.id) });
+    for (const r of rows) {
+      const batches = await usageStmt.all(r.id);
+      result.push({ ...r, items: await itemsStmt.all(r.id), batches, batch_count: batches.length });
+    }
     res.json(result);
   } catch(e) {
     console.error('GET production error:', e);
@@ -509,55 +529,106 @@ router.post('/production', authenticate, blockProductionStaff,
           return; // abort transaction without throwing
         }
 
-        // Resolve the wire batch — explicit selection, or default to the oldest
-        // (FIFO) batch of this gauge with enough stock remaining (rule 4).
-        let batch;
+        // Resolve wire batches via FIFO CASCADE (rule 4, extended): a preferred
+        // batch is tried first — explicit purchase_id if given, else the oldest
+        // (FIFO) batch of this gauge. If that one batch doesn't fully cover
+        // kgs_used, the shortfall silently cascades through the REMAINING
+        // batches of this gauge in strict FIFO order (entry_date ASC, id ASC)
+        // until kgs_used is fully covered. The aggregate check above already
+        // guarantees the gauge has enough wire in total, so this only fails
+        // defensively (e.g. a concurrent write slipped in between).
+        const allBatches = await db.prepare(
+          `SELECT id, gauge, kgs_remaining, kgs_bought, cost_per_kg, transport_cost FROM purchases
+           WHERE COALESCE(gauge,'')=? AND kgs_remaining > 0.001
+           ORDER BY entry_date ASC, id ASC`
+        ).all(gaugeKey);
+
+        if (!allBatches.length) {
+          stockError = { error: 'INVALID_BATCH', message: `No wire batch found for ${gaugeKey ? 'gauge ' + gaugeKey : 'this gauge'}.` };
+          return;
+        }
+
+        const landedCostOf = b => b.kgs_bought > 0
+          ? (b.kgs_bought * b.cost_per_kg + b.transport_cost) / b.kgs_bought
+          : 0;
+
+        // Build the draw order: the preferred batch goes first (if it's a real,
+        // still-stocked batch of this gauge), everything else follows in FIFO
+        // order. This respects an explicit/manual pick as far as it can stretch,
+        // then lets FIFO fill the rest — never blocks just because one specific
+        // batch alone wasn't enough.
+        let drawOrder = allBatches;
         if (purchase_id) {
-          batch = await db.prepare(
-            `SELECT id, gauge, kgs_remaining, kgs_bought, cost_per_kg, transport_cost FROM purchases WHERE id=?`
-          ).get(purchase_id);
-          if (!batch || (batch.gauge || '').trim() !== gaugeKey) {
-            stockError = { error: 'INVALID_BATCH', message: 'Selected wire batch does not match this gauge.' };
-            return;
-          }
-        } else {
-          batch = await db.prepare(
-            `SELECT id, gauge, kgs_remaining, kgs_bought, cost_per_kg, transport_cost FROM purchases
-             WHERE COALESCE(gauge,'')=? AND kgs_remaining > 0.001
-             ORDER BY entry_date ASC, id ASC LIMIT 1`
-          ).get(gaugeKey);
-          if (!batch) {
-            stockError = { error: 'INVALID_BATCH', message: `No wire batch found for ${gaugeKey ? 'gauge ' + gaugeKey : 'this gauge'}.` };
-            return;
+          const preferredIdx = allBatches.findIndex(b => b.id === purchase_id);
+          if (preferredIdx === -1) {
+            // Could be wrong gauge (real error) or simply a batch that's already
+            // fully depleted (kgs_remaining ~0, just excluded above) — only the
+            // gauge mismatch is worth rejecting outright.
+            const preferred = await db.prepare(`SELECT gauge FROM purchases WHERE id=?`).get(purchase_id);
+            if (!preferred || (preferred.gauge || '').trim() !== gaugeKey) {
+              stockError = { error: 'INVALID_BATCH', message: 'Selected wire batch does not match this gauge.' };
+              return;
+            }
+            // exists, same gauge, just empty — fall through to plain FIFO order
+          } else {
+            drawOrder = [allBatches[preferredIdx], ...allBatches.slice(0, preferredIdx), ...allBatches.slice(preferredIdx + 1)];
           }
         }
-        if (parseFloat(batch.kgs_remaining) < parseFloat(kgs_used) - 0.001) {
+
+        let need = parseFloat(kgs_used);
+        const draws = []; // [{ batch, kgs_drawn }]
+        for (const b of drawOrder) {
+          if (need <= 0.001) break;
+          const take = Math.min(parseFloat(b.kgs_remaining), need);
+          if (take <= 0.001) continue;
+          draws.push({ batch: b, kgs_drawn: take });
+          need -= take;
+        }
+
+        if (need > 0.001) {
+          // Defensive only — the aggregate currentRawStock check above should
+          // already have caught this. Surfaces clearly if it ever doesn't.
+          const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'unspecified gauge';
           stockError = {
-            error: 'INSUFFICIENT_BATCH_STOCK',
-            message: `Selected wire batch only has ${parseFloat(batch.kgs_remaining).toFixed(3)} kg remaining, but ${parseFloat(kgs_used).toFixed(3)} kg is needed. Pick a different batch or split across batches.`
+            error: 'INSUFFICIENT_RAW_STOCK',
+            message: `Insufficient wire for ${gLabel} across all batches. Short by ${need.toFixed(3)} kg.`
           };
           return;
         }
 
-        const wireCostPerKg = batch.kgs_bought > 0
-          ? (batch.kgs_bought * batch.cost_per_kg + batch.transport_cost) / batch.kgs_bought
-          : 0;
+        // True weighted-average landed cost across every batch actually drawn
+        // from — not a flat average of batch rates, a kg-weighted blend, so a
+        // production run that's 90% old cheap wire and 10% new pricier wire
+        // is costed accordingly, not split 50/50.
+        const totalWireCost = draws.reduce((s, d) => s + d.kgs_drawn * landedCostOf(d.batch), 0);
+        const wireCostPerKg = parseFloat(kgs_used) > 0 ? totalWireCost / parseFloat(kgs_used) : 0;
+        const primaryBatchId = draws[0].batch.id; // kept on production.purchase_id for simple joins/back-compat
+
         const breakdown = await getProductionCostBreakdown(db, totalPieces, parseFloat(kgs_used), wireCostPerKg);
 
-        await db.prepare('UPDATE purchases SET kgs_remaining = kgs_remaining - ? WHERE id=?')
-          .run(parseFloat(kgs_used), batch.id);
+        for (const d of draws) {
+          await db.prepare('UPDATE purchases SET kgs_remaining = kgs_remaining - ? WHERE id=?')
+            .run(d.kgs_drawn, d.batch.id);
+        }
 
         pid = (await db.prepare(
           `INSERT INTO production(entry_date,kgs_used,gauge,purchase_id,operator_id,knuckler_id,
             operator_cost,knuckler_cost,sack_cost,rent_allocation,total_cost,entered_by)
            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
         ).run(
-          entry_date, kgs_used, gauge || '', batch.id,
+          entry_date, kgs_used, gauge || '', primaryBatchId,
           operator_id || null, knuckler_id || null,
           breakdown.operator_cost, breakdown.knuckler_cost,
           breakdown.sack_cost, breakdown.rent_allocation, breakdown.total_cost,
           req.user.id
         )).lastInsertRowid;
+
+        // Per-batch usage trail — the source of truth for delete-time stock
+        // reversal and for showing an honest "drew from N batches" breakdown.
+        const insUsage = db.prepare(
+          `INSERT INTO production_batch_usage(production_id,purchase_id,kgs_drawn,landed_cost_per_kg) VALUES(?,?,?,?)`
+        );
+        for (const d of draws) await insUsage.run(pid, d.batch.id, d.kgs_drawn, landedCostOf(d.batch));
 
         const insItem = db.prepare('INSERT INTO production_items(production_id,piece_type_id,pieces_produced) VALUES(?,?,?)');
         for (const item of items) await insItem.run(pid, item.piece_type_id, item.pieces_produced);
@@ -625,6 +696,19 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
     if (parseFloat(row.knuckler_cost) > 0) costWarnings.push(`Knuckler wages: KES ${parseFloat(row.knuckler_cost).toLocaleString()}`);
     if (parseFloat(row.sack_cost)     > 0) costWarnings.push(`Sack costs: KES ${parseFloat(row.sack_cost).toLocaleString()}`);
 
+    // Per-batch usage trail for this record — this, not row.purchase_id alone,
+    // is the authoritative list of which batches were actually drawn from and
+    // how much, so deleting a multi-batch entry restores stock correctly on
+    // EVERY batch involved (integrity over convenience).
+    const usageRows = await db.prepare(
+      'SELECT purchase_id, kgs_drawn FROM production_batch_usage WHERE production_id=?'
+    ).all(id);
+    // Defensive fallback for the (should-be-impossible post-migration) case of
+    // a production row with no usage trail — restore against its single FK.
+    const restoreList = usageRows.length
+      ? usageRows
+      : (row.purchase_id ? [{ purchase_id: row.purchase_id, kgs_drawn: parseFloat(row.kgs_used) }] : []);
+
     // ACID: delete production_items + production atomically so inventory never shows
     // a partial state where the parent row is gone but items remain or vice-versa
     let prodBlocked = false;
@@ -646,10 +730,11 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
         }
       }
       await db.prepare('DELETE FROM production_items WHERE production_id=?').run(id);
+      await db.prepare('DELETE FROM production_batch_usage WHERE production_id=?').run(id);
       await db.prepare('DELETE FROM production WHERE id=?').run(id);
-      if (row.purchase_id) {
+      for (const u of restoreList) {
         await db.prepare('UPDATE purchases SET kgs_remaining = MIN(kgs_bought, kgs_remaining + ?) WHERE id=?')
-          .run(parseFloat(row.kgs_used), row.purchase_id);
+          .run(parseFloat(u.kgs_drawn), u.purchase_id);
       }
     });
 

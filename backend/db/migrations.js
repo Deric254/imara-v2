@@ -157,6 +157,51 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '007-production-batch-usage',
+    version: '2.5.0',
+    description: 'Add production_batch_usage table so one production entry can honestly draw from multiple wire batches (FIFO cascade) with a true weighted-average landed cost, while keeping per-batch traceability for accurate stock reversal on delete. Backfills existing production rows as single-batch usage records.',
+    async up(db) {
+      try {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS production_batch_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            production_id INTEGER NOT NULL REFERENCES production(id) ON DELETE CASCADE,
+            purchase_id INTEGER NOT NULL REFERENCES purchases(id),
+            kgs_drawn REAL NOT NULL CHECK(kgs_drawn > 0),
+            landed_cost_per_kg REAL NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+        await db.exec(`CREATE INDEX IF NOT EXISTS idx_pbu_production ON production_batch_usage(production_id)`);
+        await db.exec(`CREATE INDEX IF NOT EXISTS idx_pbu_purchase   ON production_batch_usage(purchase_id)`);
+
+        // Backfill: every existing production row becomes a single-batch usage
+        // record against its current purchase_id, using that batch's real
+        // landed cost (purchase cost/transport are never edited post-entry,
+        // so this matches what was actually charged at the time). Idempotent —
+        // skips rows that already have a usage record.
+        const rows = await db.prepare(`
+          SELECT pr.id AS production_id, pr.kgs_used, pr.purchase_id,
+                 p.kgs_bought, p.cost_per_kg, p.transport_cost
+          FROM production pr
+          JOIN purchases p ON pr.purchase_id = p.id
+          WHERE pr.purchase_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM production_batch_usage pbu WHERE pbu.production_id = pr.id)
+        `).all();
+        for (const r of rows) {
+          const landedCost = r.kgs_bought > 0
+            ? (r.kgs_bought * r.cost_per_kg + r.transport_cost) / r.kgs_bought
+            : 0;
+          await db.prepare(
+            `INSERT INTO production_batch_usage(production_id,purchase_id,kgs_drawn,landed_cost_per_kg) VALUES(?,?,?,?)`
+          ).run(r.production_id, r.purchase_id, parseFloat(r.kgs_used) || 0, landedCost);
+        }
+      } catch (err) {
+        console.warn('Migration 007:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

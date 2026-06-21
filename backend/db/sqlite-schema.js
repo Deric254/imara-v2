@@ -259,6 +259,20 @@ const TABLE_STATEMENTS = [
     pieces_produced INTEGER NOT NULL CHECK(pieces_produced >= 0)
   )`,
 
+  // Per-batch FIFO draw record for a production entry. A single production
+  // row can draw from more than one wire batch (when the preferred/oldest
+  // batch alone doesn't cover kgs_used) — this table is the source of truth
+  // for exactly which batches were touched and how much, so deletes can
+  // reverse kgs_remaining correctly on EVERY batch involved, not just one.
+  `CREATE TABLE IF NOT EXISTS production_batch_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_id INTEGER NOT NULL REFERENCES production(id) ON DELETE CASCADE,
+    purchase_id INTEGER NOT NULL REFERENCES purchases(id),
+    kgs_drawn REAL NOT NULL CHECK(kgs_drawn > 0),
+    landed_cost_per_kg REAL NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
   `CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_date TEXT NOT NULL,
@@ -400,6 +414,8 @@ const INDEX_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_stock_reservations_status ON stock_reservations(status)`,
   `CREATE INDEX IF NOT EXISTS idx_sales_piece_type         ON sales(piece_type_id)`,
   `CREATE INDEX IF NOT EXISTS idx_production_items_prod_id ON production_items(production_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_pbu_production           ON production_batch_usage(production_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_pbu_purchase             ON production_batch_usage(purchase_id)`,
 ];
 
 // ── initDb ────────────────────────────────────────────────────────────────────

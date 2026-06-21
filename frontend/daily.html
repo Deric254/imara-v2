@@ -149,6 +149,35 @@ function invalidateBatchCache() {
   _batchCache = {};
 }
 
+// Mirrors the backend's FIFO cascade in POST /production exactly (preferred
+// batch first if it's still got stock, then the rest of the gauge's batches
+// oldest-first) so the preview shown here always matches what gets charged
+// on save — no surprises between what the user sees and what's recorded.
+// `batches` must already be FIFO-ordered (entry_date ASC, id ASC), which is
+// how GET /daily/batches returns them.
+function simulateCascade(batches, preferredId, kgNeeded) {
+  let drawOrder = batches;
+  const idx = batches.findIndex(b => b.id === preferredId);
+  if (idx !== -1) drawOrder = [batches[idx], ...batches.slice(0, idx), ...batches.slice(idx + 1)];
+
+  let need = kgNeeded;
+  const draws = [];
+  for (const b of drawOrder) {
+    if (need <= 0.001) break;
+    const take = Math.min(b.kgs_remaining, need);
+    if (take <= 0.001) continue;
+    draws.push({ batch: b, kgs_drawn: take });
+    need -= take;
+  }
+  const covered = kgNeeded - Math.max(need, 0);
+  const totalCost = draws.reduce((s, d) => s + d.kgs_drawn * d.batch.landed_cost_per_kg, 0);
+  return {
+    draws,
+    shortBy: Math.max(need, 0),
+    blendedRate: covered > 0.001 ? totalCost / covered : 0,
+  };
+}
+
 // Generic debounce
 function debounce(fn, ms) {
   let t;
@@ -568,12 +597,18 @@ function calcWireNeeded() {
     wireNote.textContent = 'Calculated from pieces produced';
   }
 
-  // Trigger overhead calculation synchronously
+  // Trigger overhead calculation synchronously with whatever batch data is
+  // already cached (instant feedback), then again once renderBatchSelectors
+  // resolves — that's when _selectedBatchByGauge/_batchCache actually get
+  // populated for a gauge seen for the first time. Without this second call,
+  // the preview gets stuck showing the generic config rate ("(est.)") until
+  // the user manually touches the dropdown, even though a real batch was
+  // already silently auto-selected behind the scenes.
   calcOverhead();
 
   // Show live gauge-specific availability — debounced, uses cache
   _calcWireWarningDebounced(perGauge);
-  renderBatchSelectors(perGauge);
+  renderBatchSelectors(perGauge).then(() => calcOverhead());
 }
 
 // Render one FIFO-defaulted, manually-overridable batch dropdown per gauge in use.
@@ -600,7 +635,7 @@ async function renderBatchSelectors(perGauge) {
       ${escHtml(b.label)} — ${fmt(b.kgs_remaining,1)} kg left @ KES ${fmt(b.landed_cost_per_kg,2)}/kg
     </option>`).join('');
     return `<div style="margin-bottom:.35rem">
-      <label class="label" style="font-size:.72rem">Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400"></span></label>
+      <label class="label" style="font-size:.72rem">Preferred Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400">(optional)</span></label>
       <select class="input" style="font-size:.8rem" onchange="_selectedBatchByGauge['${gauge}']=parseInt(this.value);calcOverhead();">${opts}</select>
     </div>`;
   }));
@@ -819,10 +854,19 @@ async function loadTabData(tab) {
       exportBtn.style.display = 'block';
       tb.innerHTML=rows.map(r=>{
         const pieces=(r.items||[]).map(i=>`${escHtml(i.piece_name)}: ${fmt(i.pieces_produced)}`).join('<br>');
+        // Honest batch display: show every batch this entry actually drew from
+        // (FIFO cascade can span more than one), with the true blended rate.
+        const batchList = r.batches || [];
+        const batchLabel = batchList.length > 1
+          ? `${escHtml(batchList[0].batch_label)} +${batchList.length - 1} more`
+          : escHtml(batchList[0]?.batch_label || (r.batch_name && r.batch_name.trim() ? r.batch_name : (r.purchase_id ? 'Batch #'+r.purchase_id : '—')));
+        const batchTooltip = batchList.length
+          ? batchList.map(b => `${escHtml(b.batch_label)}: ${fmt(b.kgs_drawn,2)} kg @ ${fmtMoneyExact(b.landed_cost_per_kg)}/kg`).join(' | ')
+          : (r.wire_cost_per_kg!=null ? fmtMoneyExact(r.wire_cost_per_kg)+'/kg' : '—');
         return `<tr>
           <td class="mono" title="${fmtKgExact(r.kgs_used)}">${fmt(r.kgs_used,1)} kg</td>
           <td>${escHtml(r.gauge||'—')}</td>
-          <td style="font-size:.8rem" title="${r.batch_landed_cost_per_kg!=null?fmtMoneyExact(r.batch_landed_cost_per_kg)+'/kg':'—'}">${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : (r.purchase_id?('Batch #'+r.purchase_id):'—'))}</td>
+          <td style="font-size:.8rem" title="${batchTooltip}">${batchLabel}</td>
           <td>${escHtml(r.operator_name||'—')}</td>
           <td>${escHtml(r.knuckler_name||'—')}</td>
           <td style="font-size:.8rem">${pieces||'—'}</td>
@@ -941,11 +985,14 @@ function exportDailyCSV(type) {
   } else if (type === 'production') {
     const data = window._lastProduction;
     if (!data || !data.length) return;
-    headers = ['Kgs Used', 'Gauge', 'Batch', 'Operator', 'Knuckler', 'Pieces Produced', 'Total Cost', 'Entered By'];
+    headers = ['Kgs Used', 'Gauge', 'Batches Used', 'Wire Cost/kg (blended)', 'Operator', 'Knuckler', 'Pieces Produced', 'Total Cost', 'Entered By'];
     rows = data.map(r => [
       r.kgs_used,
       r.gauge || '—',
-      r.batch_name || (r.purchase_id ? `Batch #${r.purchase_id}` : '—'),
+      (r.batches && r.batches.length)
+        ? r.batches.map(b => `${b.batch_label} (${b.kgs_drawn.toFixed(2)}kg @ ${b.landed_cost_per_kg})`).join('; ')
+        : (r.batch_name || (r.purchase_id ? `Batch #${r.purchase_id}` : '—')),
+      r.wire_cost_per_kg != null ? r.wire_cost_per_kg : '—',
       r.operator_name || '—', 
       r.knuckler_name || '—', 
       (r.items || []).map(i => `${i.piece_name}: ${i.pieces_produced}`).join('; '),
@@ -999,22 +1046,27 @@ function calcOverhead() {
 
   const kgsUsed = parseFloat(document.getElementById('pr_kgs').value) || 0;
 
-  // Real per-batch wire cost (rule 4) — sum each gauge's kg × its selected batch's
-  // actual landed cost. Falls back to the global average only as a transient
-  // preview placeholder before a batch has loaded/been picked; the server always
-  // recomputes from the real batch at submission time.
+  // Real per-batch wire cost (rule 4, extended) — simulate the same FIFO
+  // cascade the server runs at submission time, so the preview shows the
+  // true blended rate whenever one batch alone won't cover the kg needed,
+  // not just the preferred batch's own rate. Falls back to the global
+  // config estimate only when no batches have loaded yet at all.
   let wireCost = 0, wireCostLabel = '';
   const gaugeKeys = Object.keys(perGaugeKgs);
   if (gaugeKeys.length) {
     const parts = [];
     for (const gauge of gaugeKeys) {
       const kg = perGaugeKgs[gauge];
-      const batchId = _selectedBatchByGauge[gauge];
       const batches = (_batchCache[gauge] && _batchCache[gauge].batches) || [];
-      const batch = batches.find(b => b.id === batchId);
-      const rate = batch ? batch.landed_cost_per_kg : rates.wire_cost_per_kg;
-      wireCost += rate * kg;
-      parts.push(`${fmtMoney(rate)}/kg×${fmt(kg,1)}kg${batch?'':' (est.)'}`);
+      if (!batches.length) {
+        wireCost += rates.wire_cost_per_kg * kg;
+        parts.push(`${fmtMoney(rates.wire_cost_per_kg)}/kg×${fmt(kg,1)}kg (est.)`);
+        continue;
+      }
+      const sim = simulateCascade(batches, _selectedBatchByGauge[gauge], kg);
+      wireCost += sim.blendedRate * kg;
+      const multi = sim.draws.length > 1 ? ` (${sim.draws.length} batches)` : '';
+      parts.push(`${fmtMoney(sim.blendedRate)}/kg×${fmt(kg,1)}kg${multi}`);
     }
     wireCostLabel = parts.join(' + ');
   } else {
@@ -1156,12 +1208,12 @@ async function submitProduction() {
 
   if (!Object.keys(gaugeGroups).length) return showErr('pr_err','Add at least one piece type with pieces produced');
 
-  // Every gauge group must have a wire batch selected (rule 4 — no average costing)
-  for (const gauge of Object.keys(gaugeGroups)) {
-    if (!_selectedBatchByGauge[gauge]) {
-      return showErr('pr_err', `Select a wire batch for gauge ${gauge || '—'} before saving.`);
-    }
-  }
+  // No hard requirement to pick a batch here anymore — it's a PREFERENCE.
+  // The backend FIFO-cascades through a gauge's batches automatically
+  // (oldest first) if no preference is set, or if the preferred one alone
+  // doesn't cover kgs_used. The aggregate stock check just below is the
+  // real gate: it only blocks when the gauge genuinely doesn't have enough
+  // wire in total, never because of "wrong batch."
 
   // Acquire lock + disable button
   _productionSubmitting = true;
@@ -1184,7 +1236,7 @@ async function submitProduction() {
     if (prodBtn) prodBtn.textContent = '⏳ Saving…';
 
     // Submit one POST per gauge group — the backend handles each atomically,
-    // charging the REAL landed cost of the selected wire batch (rule 4).
+    // charging the true FIFO-cascaded, weighted-average landed cost (rule 4).
     const gaugeList = Object.keys(gaugeGroups);
     for (const gauge of gaugeList) {
       const items = gaugeGroups[gauge];
