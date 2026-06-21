@@ -789,7 +789,7 @@ async function loadTabData(tab) {
       tb.innerHTML=rows.map(r=>`<tr>
         <td>
           <span>${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : '—')}</span>
-          <button class="btn-icon" data-id="${r.id}" data-name="${escHtml(r.batch_name || '')}" onclick="renameBatch(this)" title="Rename batch" style="border:none;background:none;cursor:pointer;font-size:.75rem;opacity:.6;padding:0 0 0 .25rem">✏️</button>
+          <button class="btn-icon" data-id="${r.id}" data-name="${escHtml(r.batch_name || '')}" onclick="renameBatch(this)" title="Rename batch" style="border:none;background:none;cursor:pointer;font-size:.75rem;opacity:.6;padding:0 0 0 .25rem"></button>
         </td>
         <td>${escHtml(r.supplier_name)}</td>
         <td>${escHtml(r.gauge || '—')}</td>
