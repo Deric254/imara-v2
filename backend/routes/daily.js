@@ -43,6 +43,22 @@ async function getCfgNumber(db, key) {
   return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
 }
 
+// ── Default batch naming: SupplierName-mmmDDyyyy-N (N increments per supplier) ──
+function slugifySupplierName(name) {
+  return (name || 'Supplier').replace(/[^a-zA-Z0-9]+/g, '').slice(0, 24) || 'Supplier';
+}
+function batchDateCode(entryDateStr) {
+  const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const [y, m, d] = (entryDateStr || '').split('-');
+  const mi = Math.max(0, Math.min(11, (parseInt(m, 10) || 1) - 1));
+  return `${MONTHS[mi]}${String(d || '').padStart(2, '0')}${y || ''}`;
+}
+async function nextDefaultBatchName(db, supplierId, supplierName, entryDateStr) {
+  const seqRow = await db.prepare('SELECT COUNT(*) AS c FROM purchases WHERE supplier_id=?').get(supplierId);
+  const seq = (parseInt(seqRow?.c) || 0) + 1;
+  return `${slugifySupplierName(supplierName)}-${batchDateCode(entryDateStr)}-${seq}`;
+}
+
 async function getWeightedWireCostPerKg(db) {
   // Use landed cost: (kgs_bought * cost_per_kg + transport_cost) / kgs_bought
   const totals = await db.prepare(`
@@ -169,18 +185,29 @@ router.post('/purchases', authenticate, blockProductionStaff,
     try {
       const { entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost = 0, gauge = '', batch_name = '' } = req.body;
       const db = getDb();
-      if (!await db.prepare('SELECT id FROM suppliers WHERE id=? AND active=1').get(supplier_id))
+      const supplier = await db.prepare('SELECT id, name FROM suppliers WHERE id=? AND active=1').get(supplier_id);
+      if (!supplier)
         return res.status(404).json({ error: 'Supplier not found' });
 
-      // FIX: RETURNING id so PostgreSQL returns the new row's id
-      // kgs_remaining starts equal to kgs_bought — this batch's stock pool,
-      // drawn down only by production runs that explicitly select it (rule 4).
-      const result = await db.prepare(
-        'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name,kgs_remaining,entered_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id'
-      ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, batch_name, kgs_bought, req.user.id);
+      let newId;
+      await db.transaction(async () => {
+        // Default name when the user leaves Batch Name blank — they can rename
+        // it any time afterwards via PUT /purchases/:id/batch-name.
+        const finalBatchName = (batch_name || '').trim()
+          ? batch_name.trim()
+          : await nextDefaultBatchName(db, supplier_id, supplier.name, entry_date);
+
+        // FIX: RETURNING id so PostgreSQL returns the new row's id
+        // kgs_remaining starts equal to kgs_bought — this batch's stock pool,
+        // drawn down only by production runs that explicitly select it (rule 4).
+        const result = await db.prepare(
+          'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name,kgs_remaining,entered_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id'
+        ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, finalBatchName, kgs_bought, req.user.id);
+        newId = result.lastInsertRowid;
+      });
 
       await writeAudit(db, { userId: req.user.id, action: 'CREATE_PURCHASE', table: 'purchases',
-        recordId: result.lastInsertRowid, ip: req.ip });
+        recordId: newId, ip: req.ip });
 
       const row = await db.prepare(`
         SELECT p.*, s.name AS supplier_name, u.full_name AS entered_by_name,
@@ -191,10 +218,42 @@ router.post('/purchases', authenticate, blockProductionStaff,
         FROM purchases p
         JOIN suppliers s ON p.supplier_id=s.id
         JOIN users u ON p.entered_by=u.id
-        WHERE p.id=?`).get(result.lastInsertRowid);
+        WHERE p.id=?`).get(newId);
       res.status(201).json(row);
     } catch(e) {
       console.error('POST purchases error:', e);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+/* PUT /api/daily/purchases/:id/batch-name — rename a batch any time (default name is just a starting point) */
+router.put('/purchases/:id/batch-name', authenticate, blockProductionStaff,
+  body('batch_name').optional().trim().isLength({ max: 80 }).withMessage('Batch name must be 80 characters or fewer'),
+  async (req, res) => {
+    const errs = validationResult(req);
+    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
+    try {
+      const db = getDb();
+      const id = parseInt(req.params.id);
+      const batch_name = (req.body.batch_name || '').trim();
+      const existing = await db.prepare('SELECT id FROM purchases WHERE id=?').get(id);
+      if (!existing) return res.status(404).json({ error: 'Batch not found' });
+
+      await db.prepare('UPDATE purchases SET batch_name=? WHERE id=?').run(batch_name, id);
+      await writeAudit(db, { userId: req.user.id, action: 'RENAME_BATCH', table: 'purchases',
+        recordId: id, newVals: { batch_name }, ip: req.ip });
+
+      const row = await db.prepare(`
+        SELECT p.*, s.name AS supplier_name,
+          ROUND((p.kgs_bought*p.cost_per_kg+p.transport_cost),2) AS total_cost,
+          CASE WHEN p.kgs_bought>0
+            THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
+            ELSE 0 END AS landed_cost_per_kg
+        FROM purchases p JOIN suppliers s ON p.supplier_id=s.id WHERE p.id=?`).get(id);
+      res.json(row);
+    } catch(e) {
+      console.error('PUT batch-name error:', e);
       res.status(500).json({ error: 'Internal server error' });
     }
   }

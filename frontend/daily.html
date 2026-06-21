@@ -231,8 +231,8 @@ pg.innerHTML = `
           <input class="input" type="number" id="p_transport" min="0" step="1" placeholder="0">
         </div>
         <div class="form-group">
-          <label class="label">Batch Name <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-          <input class="input" type="text" id="p_batch_name" maxlength="80" placeholder="e.g. June G12 — Acme Steel">
+          <label class="label">Batch Name <span style="color:var(--muted);font-weight:400">(optional — auto-named if blank)</span></label>
+          <input class="input" type="text" id="p_batch_name" maxlength="80" placeholder="Leave blank to auto-name, e.g. AcmeSteel-jun052026-1">
         </div>
       </div>
       <div class="summary-box" id="p_summary" style="display:none">
@@ -787,7 +787,10 @@ async function loadTabData(tab) {
       }
       exportBtn.style.display = 'block';
       tb.innerHTML=rows.map(r=>`<tr>
-        <td>${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : '—')}</td>
+        <td>
+          <span>${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : '—')}</span>
+          <button class="btn-icon" data-id="${r.id}" data-name="${escHtml(r.batch_name || '')}" onclick="renameBatch(this)" title="Rename batch" style="border:none;background:none;cursor:pointer;font-size:.75rem;opacity:.6;padding:0 0 0 .25rem">✏️</button>
+        </td>
         <td>${escHtml(r.supplier_name)}</td>
         <td>${escHtml(r.gauge || '—')}</td>
         <td class="mono">${fmt(r.kgs_bought,1)}</td>
@@ -819,7 +822,7 @@ async function loadTabData(tab) {
         return `<tr>
           <td class="mono" title="${fmtKgExact(r.kgs_used)}">${fmt(r.kgs_used,1)} kg</td>
           <td>${escHtml(r.gauge||'—')}</td>
-          <td style="font-size:.8rem" title="Real landed cost: ${r.batch_landed_cost_per_kg!=null?fmtMoneyExact(r.batch_landed_cost_per_kg)+'/kg':'—'}">${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : (r.purchase_id?('Batch #'+r.purchase_id):'—'))}</td>
+          <td style="font-size:.8rem" title="${r.batch_landed_cost_per_kg!=null?fmtMoneyExact(r.batch_landed_cost_per_kg)+'/kg':'—'}">${escHtml(r.batch_name && r.batch_name.trim() ? r.batch_name : (r.purchase_id?('Batch #'+r.purchase_id):'—'))}</td>
           <td>${escHtml(r.operator_name||'—')}</td>
           <td>${escHtml(r.knuckler_name||'—')}</td>
           <td style="font-size:.8rem">${pieces||'—'}</td>
@@ -1031,7 +1034,7 @@ function calcOverhead() {
   if (el) {
     el.innerHTML = `
       <div style="display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;font-size:.82rem">
-        <span style="color:var(--muted)" title="Real batch landing cost(s), not an average">Wire — real landed cost (${wireCostLabel})</span><span class="mono">${fmtMoney(wireCost)}</span>
+        <span style="color:var(--muted)" title="Per-batch landed cost">Wire — landed cost (${wireCostLabel})</span><span class="mono">${fmtMoney(wireCost)}</span>
         <span style="color:var(--muted)">Operator (${fmtMoney(rates.operator_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(opCost)}</span>
         <span style="color:var(--muted)">Knuckler (${fmtMoney(rates.knuckler_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(knCost)}</span>
         <span style="color:var(--muted)">Sacks (${fmtMoney(rates.sack_rate)} × ${totalSacks} sacks)</span><span class="mono">${fmtMoney(sackCost)}</span>
@@ -1102,6 +1105,22 @@ async function submitPurchase() {
     // Release lock and re-enable ONLY after form is clear and list has reloaded
     _purchaseSubmitting = false;
     if (purchaseBtn) { purchaseBtn.disabled = false; purchaseBtn.textContent = 'Save Purchase'; }
+  }
+}
+
+// Rename a batch any time — the default name is just a starting point
+async function renameBatch(btn) {
+  const id = parseInt(btn.dataset.id);
+  const current = btn.dataset.name || '';
+  const next = prompt('Batch name:', current);
+  if (next === null || next.trim() === current) return; // cancelled or unchanged
+  try {
+    await api('PUT', `/daily/purchases/${id}/batch-name`, { batch_name: next.trim() });
+    invalidateBatchCache();
+    showToast('✅ Batch renamed');
+    loadTabData('purchases');
+  } catch(e) {
+    showToast(e.error || (e.errors && e.errors[0]?.msg) || 'Could not rename batch', 'error');
   }
 }
 
@@ -1224,7 +1243,7 @@ function _makeGaugeOptions(selectedGauge) {
 function _makePieceOptions(selectedId) {
   return `<option value="">— piece type —</option>` +
     pieceTypes.map(pt =>
-      `<option value="${pt.id}" data-price="${pt.default_price||''}" data-wt="${pt.weight_kg||0}" data-len="${pt.length_m||0}"${pt.id == selectedId ? ' selected' : ''}>${escHtml(pt.name)}</option>`
+      `<option value="${pt.id}" data-price="${pt.default_price != null ? pt.default_price : ''}" data-wt="${pt.weight_kg||0}" data-len="${pt.length_m||0}"${pt.id == selectedId ? ' selected' : ''}>${escHtml(pt.name)}</option>`
     ).join('');
 }
 
@@ -1283,10 +1302,29 @@ function onSaleRowPieceChange(rid, skipPriceOverwrite) {
   const sel = document.getElementById(`srow_pt_${rid}`);
   if (!sel) return;
   const opt = sel.options[sel.selectedIndex];
-  if (opt && opt.value && !skipPriceOverwrite) {
-    const priceEl = document.getElementById(`srow_price_${rid}`);
-    const defaultPrice = opt.dataset.price;
-    if (priceEl && defaultPrice) priceEl.value = parseFloat(defaultPrice).toFixed(2);
+  const priceEl = document.getElementById(`srow_price_${rid}`);
+  if (priceEl && !skipPriceOverwrite) {
+    if (opt && opt.value) {
+      const defaultPrice = opt.dataset.price;
+      priceEl.value = (defaultPrice !== '' && defaultPrice != null) ? parseFloat(defaultPrice).toFixed(2) : '';
+    } else {
+      priceEl.value = '';
+    }
+  }
+  // Default the gauge to whichever has the most stock for this piece — user can still change it.
+  const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
+  const ptId = opt && opt.value ? parseInt(opt.value) : 0;
+  if (gaugeEl && ptId && !gaugeEl.value) {
+    getAvailableInventoryCached().then(inv => {
+      if (gaugeEl.value) return; // user picked one while this was loading
+      const matches = (inv || []).filter(i => i.piece_type_id === ptId && i.available > 0);
+      if (!matches.length) return;
+      const best = matches.reduce((a, b) => (b.available > a.available ? b : a));
+      if ([...gaugeEl.options].some(o => o.value === best.gauge)) {
+        gaugeEl.value = best.gauge;
+        onSaleRowChange(rid);
+      }
+    }).catch(() => {});
   }
   onSaleRowChange(rid);
 }

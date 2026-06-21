@@ -930,7 +930,7 @@ async function loadDash(){
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
-      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent Expense (Selected Period)':'Revenue minus Cost of Sales · Rent hidden (enable in Configuration)'} · ${from} → ${to}">
+      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · ${from} → ${to}">
         <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
           <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
@@ -938,7 +938,7 @@ async function loadDash(){
           <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent expense on items SOLD this period':'Wire + labour + sacks + transport on items SOLD this period · Rent is a separate overhead'}. Wire portion uses a period weighted-average cost/kg (KES ${fmt(k.weighted_wire_cost_per_kg,2)}/kg) since sold pieces aren't traced to one wire batch — this is a different figure from the Production tab's per-batch real cost. · ${from} → ${to}">
+      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent on items sold':'Wire + labour + sacks + transport on items sold'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
@@ -946,7 +946,7 @@ async function loadDash(){
           <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
         </div>
       </div>
-      <div class="kpi" title="Wire used in production (real batch cost, same figure as the Production tab total) · ${from} → ${to}">
+      <div class="kpi" title="Wire used in production · ${from} → ${to}">
         <div class="kpi-icon">⚙️</div>
         <div class="kpi-body">
           <div class="kpi-label">Production</div>
