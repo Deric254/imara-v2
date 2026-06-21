@@ -231,8 +231,8 @@ pg.innerHTML = `
           <input class="input" type="number" id="p_transport" min="0" step="1" placeholder="0">
         </div>
         <div class="form-group">
-          <label class="label">Batch Name <span style="color:var(--muted);font-weight:400">(optional — auto-named if blank)</span></label>
-          <input class="input" type="text" id="p_batch_name" maxlength="80" placeholder="Leave blank to auto-name, e.g. AcmeSteel-jun052026-1">
+          <label class="label">Batch Name <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+          <input class="input" type="text" id="p_batch_name" maxlength="80" placeholder="e.g. AcmeSteel-jun052026-1">
         </div>
       </div>
       <div class="summary-box" id="p_summary" style="display:none">
@@ -600,7 +600,7 @@ async function renderBatchSelectors(perGauge) {
       ${escHtml(b.label)} — ${fmt(b.kgs_remaining,1)} kg left @ KES ${fmt(b.landed_cost_per_kg,2)}/kg
     </option>`).join('');
     return `<div style="margin-bottom:.35rem">
-      <label class="label" style="font-size:.72rem">Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400">(FIFO default, change if needed)</span></label>
+      <label class="label" style="font-size:.72rem">Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400"></span></label>
       <select class="input" style="font-size:.8rem" onchange="_selectedBatchByGauge['${gauge}']=parseInt(this.value);calcOverhead();">${opts}</select>
     </div>`;
   }));
