@@ -1065,7 +1065,7 @@ function calcOverhead() {
       }
       const sim = simulateCascade(batches, _selectedBatchByGauge[gauge], kg);
       wireCost += sim.blendedRate * kg;
-      const multi = sim.draws.length > 1 ? ` (${sim.draws.length} batches)` : '';
+      const multi ='';
       parts.push(`${fmtMoney(sim.blendedRate)}/kg×${fmt(kg,1)}kg${multi}`);
     }
     wireCostLabel = parts.join(' + ');
