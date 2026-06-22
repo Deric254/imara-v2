@@ -155,22 +155,10 @@ function invalidateBatchCache() {
 // on save — no surprises between what the user sees and what's recorded.
 // `batches` must already be FIFO-ordered (entry_date ASC, id ASC), which is
 // how GET /daily/batches returns them.
-// simulateCascade mirrors the backend draw logic exactly.
-// When preferredId is set (user explicitly chose a batch), that batch must
-// cover kgNeeded alone — no silent cascade. The cost preview and the submit
-// pre-flight both use this function so what you see is what gets recorded.
-// When preferredId is null/undefined, normal FIFO cascade applies.
 function simulateCascade(batches, preferredId, kgNeeded) {
   let drawOrder = batches;
-  if (preferredId) {
-    const idx = batches.findIndex(b => b.id === preferredId);
-    if (idx !== -1) {
-      // Explicit batch chosen — use it alone, no cascade to others
-      drawOrder = [batches[idx]];
-    }
-    // If idx === -1, batch is depleted/not found — drawOrder stays as allBatches
-    // so the shortBy calculation surfaces the problem rather than silently cascading
-  }
+  const idx = batches.findIndex(b => b.id === preferredId);
+  if (idx !== -1) drawOrder = [batches[idx], ...batches.slice(0, idx), ...batches.slice(idx + 1)];
 
   let need = kgNeeded;
   const draws = [];
@@ -632,15 +620,6 @@ async function renderBatchSelectors(perGauge) {
   const gauges = Object.keys(perGauge).filter(g => perGauge[g] > 0);
   if (!gauges.length) { wrap.style.display = 'none'; return; }
 
-  // Preserve any selections the user has already made in the current DOM
-  // before we rebuild it — without this, adding a new row on the same gauge
-  // wipes the dropdown back to FIFO default mid-session.
-  wrap.querySelectorAll('select[data-gauge]').forEach(sel => {
-    const g = sel.dataset.gauge;
-    const v = parseInt(sel.value);
-    if (g && v) _selectedBatchByGauge[g] = v;
-  });
-
   const blocks = await Promise.all(gauges.map(async gauge => {
     const batches = await getBatchesForGauge(gauge);
     if (!batches.length) {
@@ -657,7 +636,7 @@ async function renderBatchSelectors(perGauge) {
     </option>`).join('');
     return `<div style="margin-bottom:.35rem">
       <label class="label" style="font-size:.72rem">Preferred Wire Batch — Gauge ${escHtml(gauge||'—')} <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-      <select class="input" style="font-size:.8rem" data-gauge="${escHtml(gauge)}" onchange="_selectedBatchByGauge['${gauge}']=parseInt(this.value);calcOverhead();">${opts}</select>
+      <select class="input" style="font-size:.8rem" onchange="_selectedBatchByGauge['${gauge}']=parseInt(this.value);calcOverhead();">${opts}</select>
     </div>`;
   }));
 
@@ -1067,42 +1046,33 @@ function calcOverhead() {
 
   const kgsUsed = parseFloat(document.getElementById('pr_kgs').value) || 0;
 
-  // Wire cost must ALWAYS come from real purchase batch data — never from the
-  // config average rate. If no pieces are entered yet, or batches haven't
-  // loaded from the API yet, hide the summary and return. The async
-  // renderBatchSelectors().then(() => calcOverhead()) call will re-run this
-  // once real data is available.
+  // Real per-batch wire cost (rule 4, extended) — simulate the same FIFO
+  // cascade the server runs at submission time, so the preview shows the
+  // true blended rate whenever one batch alone won't cover the kg needed,
+  // not just the preferred batch's own rate. Falls back to the global
+  // config estimate only when no batches have loaded yet at all.
   let wireCost = 0, wireCostLabel = '';
   const gaugeKeys = Object.keys(perGaugeKgs);
-  if (!gaugeKeys.length) {
-    // No pieces entered — nothing to show yet
-    document.getElementById('pr_summary').style.display = 'none';
-    return;
-  }
-  const parts = [];
-  for (const gauge of gaugeKeys) {
-    const kg = perGaugeKgs[gauge];
-    const batches = (_batchCache[gauge] && _batchCache[gauge].batches) || [];
-    if (!batches.length) {
-      // Batch fetch still in-flight — wait for the async callback
-      document.getElementById('pr_summary').style.display = 'none';
-      return;
-    }
-    const sim = simulateCascade(batches, _selectedBatchByGauge[gauge], kg);
-    if (sim.shortBy > 0.001 && _selectedBatchByGauge[gauge]) {
-      // Chosen batch doesn't have enough — surface this immediately in the preview
-      const chosenBatch = batches.find(b => b.id === _selectedBatchByGauge[gauge]);
-      const bLabel = chosenBatch ? (chosenBatch.label || ('Batch #' + chosenBatch.id)) : 'selected batch';
-      parts.push('<span style="color:var(--red)">⚠ ' + escHtml(bLabel) + ': ' +
-        fmt(chosenBatch ? chosenBatch.kgs_remaining : 0, 2) + ' kg available, ' +
-        fmt(kg, 2) + ' kg needed</span>');
-      wireCost += 0;
-    } else {
+  if (gaugeKeys.length) {
+    const parts = [];
+    for (const gauge of gaugeKeys) {
+      const kg = perGaugeKgs[gauge];
+      const batches = (_batchCache[gauge] && _batchCache[gauge].batches) || [];
+      if (!batches.length) {
+        wireCost += rates.wire_cost_per_kg * kg;
+        parts.push(`${fmtMoney(rates.wire_cost_per_kg)}/kg×${fmt(kg,1)}kg (est.)`);
+        continue;
+      }
+      const sim = simulateCascade(batches, _selectedBatchByGauge[gauge], kg);
       wireCost += sim.blendedRate * kg;
-      parts.push(fmtMoney(sim.blendedRate) + '/kg×' + fmt(kg,1) + 'kg');
+      const multi ='';
+      parts.push(`${fmtMoney(sim.blendedRate)}/kg×${fmt(kg,1)}kg${multi}`);
     }
+    wireCostLabel = parts.join(' + ');
+  } else {
+    wireCost = rates.wire_cost_per_kg * kgsUsed;
+    wireCostLabel = `${fmtMoney(rates.wire_cost_per_kg)}/kg × ${fmt(kgsUsed,2)} kg (est.)`;
   }
-  wireCostLabel = parts.join(' + ');
 
   const opCost = rates.operator_rate * totalPieces;
   const knCost = rates.knuckler_rate * totalPieces;
@@ -1238,13 +1208,14 @@ async function submitProduction() {
 
   if (!Object.keys(gaugeGroups).length) return showErr('pr_err','Add at least one piece type with pieces produced');
 
-  // If the user explicitly chose a batch for a gauge, that batch must have
-  // enough wire on its own — the backend no longer silently cascades to other
-  // batches when a specific batch is selected. The pre-flight below catches
-  // this before the POST so the user gets an immediate, actionable error.
-  // When no batch is chosen, normal FIFO cascade applies across all batches.
+  // No hard requirement to pick a batch here anymore — it's a PREFERENCE.
+  // The backend FIFO-cascades through a gauge's batches automatically
+  // (oldest first) if no preference is set, or if the preferred one alone
+  // doesn't cover kgs_used. The aggregate stock check just below is the
+  // real gate: it only blocks when the gauge genuinely doesn't have enough
+  // wire in total, never because of "wrong batch."
 
-    // Acquire lock + disable button
+  // Acquire lock + disable button
   _productionSubmitting = true;
   const prodBtn = document.querySelector('button[onclick="submitProduction()"]');
   if (prodBtn) { prodBtn.disabled = true; prodBtn.textContent = '⏳ Checking stock…'; }
@@ -1259,23 +1230,6 @@ async function submitProduction() {
       if (kgsNeeded > available + 0.001) {
         showErr('pr_err', `Insufficient wire for gauge ${gauge}. Available: ${available.toFixed(2)} kg, Needed: ${kgsNeeded.toFixed(2)} kg. Buy more wire of this gauge first.`);
         return;
-      }
-      // If a specific batch was chosen, it must cover kgsNeeded on its own.
-      // The backend enforces this too — this check gives an immediate UI error.
-      const chosenBatchId = _selectedBatchByGauge[gauge];
-      if (chosenBatchId) {
-        const batches = (_batchCache[gauge] && _batchCache[gauge].batches) || [];
-        const chosenBatch = batches.find(b => b.id === chosenBatchId);
-        if (chosenBatch && kgsNeeded > parseFloat(chosenBatch.kgs_remaining) + 0.001) {
-          const bLabel = chosenBatch.label || ('Batch #' + chosenBatch.id);
-          showErr('pr_err',
-            'Selected batch for gauge ' + gauge + ' only has ' +
-            parseFloat(chosenBatch.kgs_remaining).toFixed(2) + ' kg remaining, but ' +
-            kgsNeeded.toFixed(2) + ' kg is needed. ' +
-            'Not enough wire in this batch. Choose a different batch or deselect to use available stock.'
-          );
-          return;
-        }
       }
     }
 

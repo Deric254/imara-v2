@@ -552,46 +552,27 @@ router.post('/production', authenticate, blockProductionStaff,
           ? (b.kgs_bought * b.cost_per_kg + b.transport_cost) / b.kgs_bought
           : 0;
 
-        // Build the draw order.
-        // RULE: If the user explicitly chose a batch (purchase_id is set), that
-        // batch MUST have enough wire on its own. We do NOT silently cascade to
-        // other batches — the user made a deliberate choice and we must honour it
-        // exactly or reject so they can pick a different batch or adjust the amount.
-        // Cascading without warning would corrupt per-batch cost accounting.
-        //
-        // If NO batch was explicitly chosen (purchase_id is null), the normal FIFO
-        // cascade applies: oldest batch first, overflow to next, etc.
+        // Build the draw order: the preferred batch goes first (if it's a real,
+        // still-stocked batch of this gauge), everything else follows in FIFO
+        // order. This respects an explicit/manual pick as far as it can stretch,
+        // then lets FIFO fill the rest — never blocks just because one specific
+        // batch alone wasn't enough.
         let drawOrder = allBatches;
         if (purchase_id) {
           const preferredIdx = allBatches.findIndex(b => b.id === purchase_id);
           if (preferredIdx === -1) {
-            // Batch not in stocked list — wrong gauge or already depleted.
-            const preferred = await db.prepare(`SELECT gauge, kgs_remaining FROM purchases WHERE id=?`).get(purchase_id);
+            // Could be wrong gauge (real error) or simply a batch that's already
+            // fully depleted (kgs_remaining ~0, just excluded above) — only the
+            // gauge mismatch is worth rejecting outright.
+            const preferred = await db.prepare(`SELECT gauge FROM purchases WHERE id=?`).get(purchase_id);
             if (!preferred || (preferred.gauge || '').trim() !== gaugeKey) {
               stockError = { error: 'INVALID_BATCH', message: 'Selected wire batch does not match this gauge.' };
               return;
             }
-            // Same gauge but fully depleted (kgs_remaining ~0).
-            stockError = {
-              error: 'INSUFFICIENT_BATCH_STOCK',
-              message: `Selected batch is empty. Choose a different batch or deselect to use available stock.`
-            };
-            return;
+            // exists, same gauge, just empty — fall through to plain FIFO order
+          } else {
+            drawOrder = [allBatches[preferredIdx], ...allBatches.slice(0, preferredIdx), ...allBatches.slice(preferredIdx + 1)];
           }
-          // Batch found — it must cover kgs_used alone. No silent cascade.
-          const preferredBatch = allBatches[preferredIdx];
-          if (parseFloat(kgs_used) > parseFloat(preferredBatch.kgs_remaining) + 0.001) {
-            const batchLabel = preferredBatch.batch_name && preferredBatch.batch_name.trim()
-              ? preferredBatch.batch_name
-              : `Batch #${preferredBatch.id}`;
-            stockError = {
-              error: 'INSUFFICIENT_BATCH_STOCK',
-              message: `"${batchLabel}" has ${parseFloat(preferredBatch.kgs_remaining).toFixed(3)} kg remaining — ${parseFloat(kgs_used).toFixed(3)} kg needed. Choose a batch with enough wire or deselect to use available stock.`
-            };
-            return;
-          }
-          // Sufficient — draw from this batch alone, no cascade.
-          drawOrder = [preferredBatch];
         }
 
         let need = parseFloat(kgs_used);

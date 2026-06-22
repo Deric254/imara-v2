@@ -12,8 +12,8 @@ async function getGaugeStock(db) {
   // All purchased gauges
   const purchased = await db.prepare(`
     SELECT COALESCE(gauge,'') AS gauge,
-           ROUND(SUM(kgs_bought),3) AS kgs_bought,
-           ROUND(SUM(kgs_bought * cost_per_kg),2) AS total_cost
+           ROUND(SUM(kgs_bought)::numeric,3) AS kgs_bought,
+           ROUND(SUM(kgs_bought * cost_per_kg)::numeric,2) AS total_cost
     FROM purchases
     GROUP BY gauge
     ORDER BY gauge
@@ -22,7 +22,7 @@ async function getGaugeStock(db) {
   // All used gauges
   const used = await db.prepare(`
     SELECT COALESCE(gauge,'') AS gauge,
-           ROUND(SUM(kgs_used),3) AS kgs_used
+           ROUND(SUM(kgs_used)::numeric,3) AS kgs_used
     FROM production
     GROUP BY gauge
   `).all();
@@ -132,7 +132,7 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
     const soldByGauge = await db.prepare(`
       SELECT COALESCE(gauge_source,'') AS gauge,
              SUM(quantity) AS pieces_sold,
-             ROUND(SUM(quantity * selling_price), 2) AS revenue
+             ROUND(SUM(quantity * selling_price)::numeric, 2) AS revenue
       FROM sales
       GROUP BY gauge_source
       ORDER BY gauge
