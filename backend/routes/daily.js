@@ -59,15 +59,16 @@ async function nextDefaultBatchName(db, supplierId, supplierName, entryDateStr) 
   return `${slugifySupplierName(supplierName)}-${batchDateCode(entryDateStr)}-${seq}`;
 }
 
-async function getWeightedWireCostPerKg(db) {
-  // Use landed cost: (kgs_bought * cost_per_kg + transport_cost) / kgs_bought
-  const totals = await db.prepare(`
+async function getActualWireCostPerKgFromProduction(db) {
+  const result = await db.prepare(`
     SELECT
-      COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost), 0) AS total_landed_cost,
-      COALESCE(SUM(kgs_bought), 0) AS total_kgs
-    FROM purchases
+      COALESCE(SUM(
+        total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation
+      ), 0) AS total_wire_cost,
+      COALESCE(SUM(kgs_used), 0) AS total_kgs
+    FROM production
   `).get();
-  if (totals.total_kgs > 0) return totals.total_landed_cost / totals.total_kgs;
+  if (result.total_kgs > 0) return result.total_wire_cost / result.total_kgs;
   return getCfgNumber(db, 'cost_per_kg');
 }
 
@@ -127,7 +128,7 @@ router.get('/production-cost-inputs', authenticate, async (req, res) => {
   try {
     const db = getDb();
     res.json({
-      wire_cost_per_kg: parseFloat((await getWeightedWireCostPerKg(db)).toFixed(2)),
+      wire_cost_per_kg: parseFloat((await getActualWireCostPerKgFromProduction(db)).toFixed(2)),
       operator_rate:    await getCfgNumber(db, 'operator_cost'),
       knuckler_rate:    await getCfgNumber(db, 'knuckler_cost'),
       sack_rate:        await getCfgNumber(db, 'sack_cost'),
