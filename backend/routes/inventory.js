@@ -177,6 +177,9 @@ router.get('/', authenticate, requireRole('owner', 'admin'), async (req, res) =>
 });
 
 // GET /api/inventory/worker — limited view for knuckler/operator
+// IMPORTANT: stock counts are gauge-aware to match the sale insertion check.
+// Showing a cross-gauge total would mislead a worker into thinking they have
+// stock when gauge-12 is exhausted but gauge-14 still has pieces.
 router.get('/worker', authenticate, async (req, res) => {
   try {
     const db = getDb();
@@ -184,25 +187,42 @@ router.get('/worker', authenticate, async (req, res) => {
     const { totals } = gaugeData;
 
     const finished_goods = await db.prepare(`
+      WITH produced AS (
+        SELECT
+          pi.piece_type_id,
+          COALESCE(NULLIF(p.gauge,''), 'Unspecified') AS gauge,
+          SUM(pi.pieces_produced) AS pieces_produced
+        FROM production_items pi
+        JOIN production p ON p.id = pi.production_id
+        GROUP BY pi.piece_type_id, COALESCE(NULLIF(p.gauge,''), 'Unspecified')
+      ),
+      sold AS (
+        SELECT
+          piece_type_id,
+          COALESCE(NULLIF(gauge_source,''), 'Unspecified') AS gauge,
+          SUM(quantity) AS pieces_sold
+        FROM sales
+        GROUP BY piece_type_id, COALESCE(NULLIF(gauge_source,''), 'Unspecified')
+      )
       SELECT
-        pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price,
-        COALESCE(SUM(pi.pieces_produced), 0)
-          - COALESCE((SELECT SUM(s.quantity) FROM sales s WHERE s.piece_type_id = pt.id), 0)
-          AS available_pieces,
+        pt.id,
+        pt.name,
+        pt.length_m,
+        pt.weight_kg,
+        pr.gauge,
+        COALESCE(pr.pieces_produced, 0)                                      AS total_produced,
+        COALESCE(so.pieces_sold, 0)                                          AS total_sold,
+        COALESCE(pr.pieces_produced, 0) - COALESCE(so.pieces_sold, 0)       AS available_pieces,
         CASE
-          WHEN COALESCE(SUM(pi.pieces_produced), 0)
-               - COALESCE((SELECT SUM(s.quantity) FROM sales s WHERE s.piece_type_id = pt.id), 0) <= 0
-            THEN 'out_of_stock'
-          WHEN COALESCE(SUM(pi.pieces_produced), 0)
-               - COALESCE((SELECT SUM(s.quantity) FROM sales s WHERE s.piece_type_id = pt.id), 0) <= 10
-            THEN 'low_stock'
+          WHEN COALESCE(pr.pieces_produced,0) - COALESCE(so.pieces_sold,0) <= 0  THEN 'out_of_stock'
+          WHEN COALESCE(pr.pieces_produced,0) - COALESCE(so.pieces_sold,0) <= 10 THEN 'low_stock'
           ELSE 'in_stock'
         END AS stock_status
       FROM piece_types pt
-      LEFT JOIN production_items pi ON pt.id = pi.piece_type_id
+      JOIN produced pr ON pr.piece_type_id = pt.id
+      LEFT JOIN sold so ON so.piece_type_id = pt.id AND so.gauge = pr.gauge
       WHERE pt.active = 1
-      GROUP BY pt.id, pt.name, pt.length_m, pt.weight_kg, pt.default_price
-      ORDER BY pt.name
+      ORDER BY pt.name, pr.gauge
     `).all();
 
     res.json({
@@ -217,6 +237,7 @@ router.get('/worker', authenticate, async (req, res) => {
       finished_goods: finished_goods.map(fg => ({
         ...fg,
         available_pieces: parseInt(fg.available_pieces) || 0,
+        gauge: fg.gauge || '—',
       })),
     });
   } catch (error) {

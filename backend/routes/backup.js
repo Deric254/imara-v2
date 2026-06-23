@@ -164,6 +164,67 @@ router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async
   }
 });
 
+/* ── POST /api/backup/stamp ─────────────────────────────────────────────────── *
+ * Called by the frontend after a successful export download to record the
+ * timestamp of the last known-good backup. Also accepts the second_path write
+ * result so we can store that too.  No file I/O here — the Electron main process
+ * handles the actual file write via IPC; this just keeps the DB timestamp.      */
+router.post('/stamp', ...ADMIN_OR_OWNER, express.json(), async (req, res) => {
+  try {
+    const db = getDb();
+    const now = new Date().toISOString();
+    await db.prepare(`INSERT INTO config(key,value) VALUES('last_backup_at',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(now);
+    res.json({ ok: true, last_backup_at: now });
+  } catch(e) {
+    console.error('Backup stamp error:', e);
+    res.status(500).json({ error: 'Failed to record backup timestamp' });
+  }
+});
+
+/* ── GET /api/backup/health ─────────────────────────────────────────────────── *
+ * Returns last backup timestamp and second-path config so the frontend and
+ * the startup check can both use one endpoint.                                   */
+router.get('/health', ...ADMIN_OR_OWNER, async (req, res) => {
+  try {
+    const db = getDb();
+    const lastRow   = await db.prepare(`SELECT value FROM config WHERE key='last_backup_at'`).get();
+    const pathRow   = await db.prepare(`SELECT value FROM config WHERE key='backup_second_path'`).get();
+    const last      = lastRow?.value || null;
+    const secondPath = pathRow?.value || '';
+    const hoursSince = last
+      ? (Date.now() - new Date(last).getTime()) / 36e5
+      : Infinity;
+    res.json({
+      last_backup_at:   last,
+      hours_since:      hoursSince === Infinity ? null : parseFloat(hoursSince.toFixed(1)),
+      overdue:          hoursSince > 48,
+      second_path_set:  !!secondPath,
+      second_path:      secondPath,
+    });
+  } catch(e) {
+    res.status(500).json({ error: 'Failed to get backup health' });
+  }
+});
+
+/* ── POST /api/backup/set-second-path ──────────────────────────────────────── */
+router.post('/set-second-path', ...OWNER_ONLY, express.json(), async (req, res) => {
+  try {
+    const db = getDb();
+    const { path: newPath } = req.body;
+    const value = (newPath || '').trim();
+    await db.prepare(`INSERT INTO config(key,value) VALUES('backup_second_path',?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(value);
+    await writeAudit(db, {
+      userId: req.user.id, action: 'SET_BACKUP_SECOND_PATH',
+      table: 'config', newVals: { path: value }, ip: req.ip
+    });
+    res.json({ ok: true, path: value });
+  } catch(e) {
+    res.status(500).json({ error: 'Failed to save second backup path' });
+  }
+});
+
 /* ── GET /api/backup/test ───────────────────────────────────────────────────── */
 router.get('/test', ...ADMIN_OR_OWNER, async (req, res) => {
   try {

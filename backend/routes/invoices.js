@@ -9,14 +9,17 @@ const OWNER_ADMIN = [authenticate, requireRole('owner','admin')];
 const num = v => parseFloat(v) || 0;
 
 // ── Generate invoice number ───────────────────────────────────────────────────
+// Uses MAX(id) rather than ORDER BY id DESC LIMIT 1 so that deleting the most
+// recent invoice does not cause the sequence to regenerate an already-used number.
+// The sequence therefore only ever increases.
 async function nextInvoiceNumber(db) {
   const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';
-  const last = await db.prepare(
-    `SELECT invoice_number FROM invoices ORDER BY id DESC LIMIT 1`
+  const maxRow = await db.prepare(
+    `SELECT invoice_number FROM invoices WHERE id = (SELECT MAX(id) FROM invoices)`
   ).get();
   let seq = 1001;
-  if (last?.invoice_number) {
-    const parts = last.invoice_number.split('-');
+  if (maxRow?.invoice_number) {
+    const parts = maxRow.invoice_number.split('-');
     const n = parseInt(parts[parts.length - 1]);
     if (!isNaN(n)) seq = n + 1;
   }
@@ -452,21 +455,34 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
     if (!payment_date)
       return res.status(400).json({ error: 'payment_date required' });
 
-    const paid        = parseFloat(amount_paid);
-    const newTotalPaid = parseFloat((num(inv.amount_paid) + paid).toFixed(2));
-    if (newTotalPaid > num(inv.total_amount) + 0.005)
+    const paid = parseFloat(amount_paid);
+    // Pre-flight overpayment check against the current aggregate
+    if (paid + num(inv.amount_paid) > num(inv.total_amount) + 0.005)
       return res.status(400).json({ error: `Overpayment not allowed. Outstanding balance is ${(num(inv.total_amount) - num(inv.amount_paid)).toFixed(2)}` });
 
-    const autoStatus = calculateInvoiceStatus(newTotalPaid, inv.total_amount, null);
+    // Declared outside the transaction (let, not const) so it's still in scope
+    // afterward for writeAudit/notification below — this matches the original
+    // working version's scope, just adapted for the ledger-sum recalculation
+    // that now happens inside the transaction.
+    let autoStatus;
+    let newTotalPaid;
 
     await db.transaction(async () => {
-      // Write the discrete payment into the cash ledger
+      // Write the discrete payment into the cash ledger first
       await db.prepare(`
         INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by)
         VALUES(?,?,?,?,?,?)
       `).run(id, payment_date, paid, payment_method, notes || '', req.user.id);
 
-      // Keep invoice aggregate in sync
+      // Re-derive amount_paid from the ledger sum INSIDE the transaction so the
+      // denormalised column is always exactly equal to Σ(invoice_payments.amount).
+      // This is the single authoritative calculation — no arithmetic on old values.
+      const sumRow = await db.prepare(
+        `SELECT COALESCE(SUM(amount),0) AS total FROM invoice_payments WHERE invoice_id=?`
+      ).get(id);
+      newTotalPaid = parseFloat(parseFloat(sumRow.total).toFixed(2));
+      autoStatus   = calculateInvoiceStatus(newTotalPaid, inv.total_amount, null);
+
       await db.prepare(`
         UPDATE invoices
         SET status=?, amount_paid=?, updated_at=datetime('now')

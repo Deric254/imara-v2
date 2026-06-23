@@ -3,6 +3,7 @@ node_modules/
 backend/node_modules/
 
 # ── Environment & secrets — NEVER commit these ────────────────────────────────
+.env
 backend/.env
 .env.local
 .env.*.local

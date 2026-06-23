@@ -202,6 +202,57 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '008-payment-integrity-view',
+    version: '2.4.0',
+    description: 'Add v_invoice_payment_integrity view so the owner can spot any drift between invoices.amount_paid and Σ(invoice_payments). Also heals any existing drift caused by the pre-fix arithmetic path.',
+    async up(db) {
+      try {
+        // Materialise a view that exposes discrepancies — zero rows = system is clean.
+        await db.exec(`
+          CREATE VIEW IF NOT EXISTS v_invoice_payment_integrity AS
+          SELECT
+            i.id,
+            i.invoice_number,
+            i.customer_name,
+            i.total_amount,
+            i.amount_paid            AS stored_amount_paid,
+            COALESCE(SUM(ip.amount),0) AS ledger_sum,
+            ROUND(i.amount_paid - COALESCE(SUM(ip.amount),0), 2) AS drift
+          FROM invoices i
+          LEFT JOIN invoice_payments ip ON ip.invoice_id = i.id
+          GROUP BY i.id
+          HAVING ABS(ROUND(i.amount_paid - COALESCE(SUM(ip.amount),0), 2)) > 0.005
+        `);
+        console.log('✅  v_invoice_payment_integrity view created');
+      } catch (err) {
+        console.warn('Migration 008 view:', err?.message);
+      }
+
+      // Heal any existing drift: re-derive amount_paid from the ledger for every invoice.
+      // This is safe and idempotent: if there is no drift the UPDATE changes nothing.
+      try {
+        await db.exec(`
+          UPDATE invoices
+          SET amount_paid = (
+            SELECT COALESCE(SUM(ip.amount), 0)
+            FROM invoice_payments ip
+            WHERE ip.invoice_id = invoices.id
+          )
+          WHERE ABS(
+            amount_paid - (
+              SELECT COALESCE(SUM(ip.amount), 0)
+              FROM invoice_payments ip
+              WHERE ip.invoice_id = invoices.id
+            )
+          ) > 0.005
+        `);
+        console.log('✅  Invoice payment drift healed');
+      } catch (err) {
+        console.warn('Migration 008 heal:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

@@ -82,6 +82,50 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
       balance_knuckler: parseFloat((w.accrued_knuckler - (w.paid_knuckler||0)).toFixed(2)),
     }));
 
+    // All-time per-worker accrued/paid — same reasoning as the supplier fix.
+    // The "Pay Op"/"Pay Kn" buttons must pre-fill an amount the all-time
+    // overpayment safeguard (below, in POST /payments) will actually accept.
+    // Pre-filling the period-scoped balance_operator/balance_knuckler caused
+    // false "Overpayment not allowed" errors whenever a wage payment for this
+    // worker landed in a different period than the work it was settling.
+    const allWagesAccruedRows = await db.prepare(`
+      SELECT operator_id, knuckler_id,
+             ROUND(SUM(operator_cost), 2) AS total_operator,
+             ROUND(SUM(knuckler_cost), 2) AS total_knuckler
+      FROM production
+      GROUP BY operator_id, knuckler_id
+    `).all([]);
+    const allWagesPaidRows = await db.prepare(`
+      SELECT payee_user_id, category, ROUND(SUM(amount), 2) AS paid
+      FROM payments
+      WHERE category IN ('wages_operator','wages_knuckler')
+      GROUP BY payee_user_id, category
+    `).all([]);
+    const allWageAccruedMap = {};
+    for (const r of allWagesAccruedRows) {
+      if (r.operator_id) {
+        allWageAccruedMap[r.operator_id] = allWageAccruedMap[r.operator_id] || { operator: 0, knuckler: 0 };
+        allWageAccruedMap[r.operator_id].operator += num(r.total_operator);
+      }
+      if (r.knuckler_id) {
+        allWageAccruedMap[r.knuckler_id] = allWageAccruedMap[r.knuckler_id] || { operator: 0, knuckler: 0 };
+        allWageAccruedMap[r.knuckler_id].knuckler += num(r.total_knuckler);
+      }
+    }
+    const allWagePaidMap = {};
+    for (const p of allWagesPaidRows) {
+      if (!p.payee_user_id) continue;
+      allWagePaidMap[p.payee_user_id] = allWagePaidMap[p.payee_user_id] || { operator: 0, knuckler: 0 };
+      if (p.category === 'wages_operator') allWagePaidMap[p.payee_user_id].operator = num(p.paid);
+      if (p.category === 'wages_knuckler') allWagePaidMap[p.payee_user_id].knuckler = num(p.paid);
+    }
+    for (const w of wages) {
+      const acc  = allWageAccruedMap[w.user_id] || { operator: 0, knuckler: 0 };
+      const paid = allWagePaidMap[w.user_id]    || { operator: 0, knuckler: 0 };
+      w.all_time_balance_operator = parseFloat((acc.operator - paid.operator).toFixed(2));
+      w.all_time_balance_knuckler = parseFloat((acc.knuckler - paid.knuckler).toFixed(2));
+    }
+
     // FIX: ROUND + add s.name to GROUP BY
     const supplierAccrued = await db.prepare(`
       SELECT p.supplier_id, s.name AS supplier_name,
@@ -105,12 +149,50 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
     const supplierPaidMap = {};
     for (const p of supplierPaid) supplierPaidMap[p.payee_supplier_id] = num(p.paid);
 
-    const suppliers = supplierAccrued.map(s => ({
-      supplier_id:   s.supplier_id,
-      supplier_name: s.supplier_name,
-      total_billed:  num(s.total_billed),
-      total_paid:    supplierPaidMap[s.supplier_id] || 0,
-      balance:       parseFloat((num(s.total_billed) - (supplierPaidMap[s.supplier_id] || 0)).toFixed(2)),
+    // All-time accrued/paid per supplier — used ONLY to decide settled vs owing,
+    // so a supplier paid in a different period than they were billed still
+    // correctly shows as paid. The period-scoped total_billed/total_paid/balance
+    // above are unchanged and still drive the "Billed/Paid this period" line.
+    const allSupplierAccrued = await db.prepare(`
+      SELECT supplier_id, ROUND(SUM(kgs_bought * cost_per_kg + transport_cost), 2) AS total
+      FROM purchases GROUP BY supplier_id
+    `).all([]);
+    const allSupplierPaid = await db.prepare(`
+      SELECT payee_supplier_id, ROUND(SUM(amount), 2) AS total
+      FROM payments WHERE category = 'supplier' GROUP BY payee_supplier_id
+    `).all([]);
+    const allSupplierAccruedMap = {};
+    for (const r of allSupplierAccrued) allSupplierAccruedMap[r.supplier_id] = num(r.total);
+    const allSupplierPaidMap = {};
+    for (const r of allSupplierPaid) allSupplierPaidMap[r.payee_supplier_id] = num(r.total);
+
+    // Names for suppliers who appear in payments but had no purchase in this
+    // period (so they wouldn't otherwise have a name available below).
+    const allSuppliersList = await db.prepare(`SELECT id, name FROM suppliers`).all([]);
+    const supplierNameMap = {};
+    for (const sp of allSuppliersList) supplierNameMap[sp.id] = sp.name;
+
+    const supplierAccruedMap = {};
+    for (const s of supplierAccrued) supplierAccruedMap[s.supplier_id] = num(s.total_billed);
+
+    // Union of supplier IDs with EITHER a purchase OR a payment in this period —
+    // previously only suppliers with a purchase in-period appeared, so a
+    // supplier who only paid this period (settling a bill from an earlier
+    // period) was invisible here even though they have real activity to show.
+    const periodSupplierIds = new Set([
+      ...supplierAccrued.map(s => s.supplier_id),
+      ...supplierPaid.map(p => p.payee_supplier_id).filter(id => id != null),
+    ]);
+
+    const suppliers = Array.from(periodSupplierIds).map(supplier_id => ({
+      supplier_id,
+      supplier_name: supplierNameMap[supplier_id] || 'Unknown Supplier',
+      total_billed:  supplierAccruedMap[supplier_id] || 0,
+      total_paid:    supplierPaidMap[supplier_id] || 0,
+      balance:       parseFloat(((supplierAccruedMap[supplier_id] || 0) - (supplierPaidMap[supplier_id] || 0)).toFixed(2)),
+      all_time_balance: parseFloat(
+        ((allSupplierAccruedMap[supplier_id] || 0) - (allSupplierPaidMap[supplier_id] || 0)).toFixed(2)
+      ),
     }));
 
     // FIX: ROUND
@@ -201,11 +283,20 @@ router.get('/summary', ...OWNER_ADMIN, async (req, res) => {
       period: { from, to },
       wages: { workers: wages, total_accrued: parseFloat(totalWagesAccrued.toFixed(2)), total_paid: parseFloat(totalWagesPaid.toFixed(2)), balance: totalWagesBalance },
       suppliers: { breakdown: suppliers, total_billed: parseFloat(totalSupplierBilled.toFixed(2)), total_paid: parseFloat(totalSupplierPaid.toFixed(2)), balance: totalSupplierBal },
-      sack: { accrued: parseFloat(num(sackAccrued?.total).toFixed(2)), paid: parseFloat(num(sackPaid?.total).toFixed(2)), balance: sackBalance },
+      sack: {
+        accrued: parseFloat(num(sackAccrued?.total).toFixed(2)),
+        paid:    parseFloat(num(sackPaid?.total).toFixed(2)),
+        balance: sackBalance,
+        // All-time balance — used by the UI to decide red/owing vs green/settled,
+        // so a sack cost incurred in one month but paid in another doesn't show
+        // as outstanding when the all-time books are actually settled.
+        all_time_balance: allSackBal,
+      },
       transport_to_market: {
-        accrued: parseFloat(num(transportAccrued?.total).toFixed(2)),
-        paid:    parseFloat(num(transportPaid?.total).toFixed(2)),
-        balance: transportBalance,
+        accrued:           parseFloat(num(transportAccrued?.total).toFixed(2)),
+        paid:              parseFloat(num(transportPaid?.total).toFixed(2)),
+        balance:           transportBalance,
+        all_time_balance:  allTransportBal,
       },
       rent: {
         months: rentMonths.map(r => ({
@@ -427,11 +518,36 @@ router.delete('/payments/:id', ...OWNER_ONLY, async (req, res) => {
     const row = await db.prepare('SELECT * FROM payments WHERE id=?').get(id);
     if (!row) return res.status(404).json({ error: 'Payment not found' });
 
-    // ACID: update rent_months and delete payment atomically so rent records
-    // are never left in a paid state pointing at a non-existent payment row.
+    // ACID: delete payment and recalculate rent_months status atomically.
+    // Blindly setting paid=0 on delete was wrong when multiple partial payments
+    // existed — deleting the last one cleared the flag even though earlier
+    // partials still remained, leaving the month status stale/incorrect.
+    // Now we recompute from the surviving payments after the delete.
     await db.transaction(async () => {
-      await db.prepare('UPDATE rent_months SET paid=0, payment_id=NULL WHERE payment_id=?').run(id);
       await db.prepare('DELETE FROM payments WHERE id=?').run(id);
+      if (row.category === 'rent' && row.rent_month) {
+        const month    = row.rent_month;
+        const rmRow    = await db.prepare('SELECT id, amount_due FROM rent_months WHERE month=?').get(month);
+        if (rmRow) {
+          const remaining = await db.prepare(`
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM payments WHERE category='rent'
+              AND (rent_month = ? OR (rent_month IS NULL AND SUBSTR(payment_date, 1, 7) = ?))
+          `).get(month, month);
+          const totalRemaining = num(remaining.total);
+          const fullyPaid      = totalRemaining >= num(rmRow.amount_due);
+          // Find the id of the most recent surviving payment for this month (for payment_id pointer)
+          const lastPmt = fullyPaid
+            ? await db.prepare(`
+                SELECT id FROM payments WHERE category='rent'
+                  AND (rent_month = ? OR (rent_month IS NULL AND SUBSTR(payment_date, 1, 7) = ?))
+                ORDER BY payment_date DESC, created_at DESC LIMIT 1
+              `).get(month, month)
+            : null;
+          await db.prepare('UPDATE rent_months SET paid=?, payment_id=? WHERE month=?')
+            .run(fullyPaid ? 1 : 0, lastPmt ? lastPmt.id : null, month);
+        }
+      }
     });
 
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_PAYMENT', table: 'payments', recordId: id, oldVals: row, ip: req.ip });
@@ -494,6 +610,90 @@ router.get('/workers', ...OWNER_ONLY, async (req, res) => {
     res.json(await getDb().prepare(
       "SELECT id, full_name, role FROM users WHERE active=1 AND role IN ('knuckler','operator','admin','owner') ORDER BY full_name"
     ).all());
+  } catch (e) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/reconciliation/accrual/worker/:id
+// All production runs involving this worker — all time, for full traceability
+router.get('/accrual/worker/:id', ...OWNER_ADMIN, async (req, res) => {
+  try {
+    const db  = getDb();
+    const uid = parseInt(req.params.id);
+    const rows = await db.prepare(`
+      SELECT pr.id, pr.entry_date, pr.kgs_used, pr.gauge,
+             pr.operator_cost, pr.knuckler_cost, pr.sack_cost,
+             uop.full_name AS operator_name,
+             ukn.full_name AS knuckler_name,
+             CASE WHEN pr.operator_id = ? THEN 'operator'
+                  WHEN pr.knuckler_id = ? THEN 'knuckler'
+                  ELSE 'both' END AS role_in_run
+      FROM production pr
+      LEFT JOIN users uop ON pr.operator_id = uop.id
+      LEFT JOIN users ukn ON pr.knuckler_id = ukn.id
+      WHERE pr.operator_id = ? OR pr.knuckler_id = ?
+      ORDER BY pr.entry_date ASC, pr.created_at ASC
+    `).all(uid, uid, uid, uid);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/reconciliation/accrual/supplier/:id
+// All purchases from this supplier — all time
+router.get('/accrual/supplier/:id', ...OWNER_ADMIN, async (req, res) => {
+  try {
+    const db  = getDb();
+    const sid = parseInt(req.params.id);
+    const rows = await db.prepare(`
+      SELECT p.id, p.entry_date, p.kgs_bought, p.cost_per_kg,
+             p.transport_cost,
+             ROUND(p.kgs_bought * p.cost_per_kg + p.transport_cost, 2) AS total_billed,
+             p.batch_name, p.gauge
+      FROM purchases p
+      WHERE p.supplier_id = ?
+      ORDER BY p.entry_date ASC, p.created_at ASC
+    `).all(sid);
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/reconciliation/accrual/sack
+// All production runs with sack cost — all time
+router.get('/accrual/sack', ...OWNER_ADMIN, async (req, res) => {
+  try {
+    const db = getDb();
+    const rows = await db.prepare(`
+      SELECT pr.id, pr.entry_date, pr.kgs_used, pr.gauge, pr.sack_cost,
+             uop.full_name AS operator_name
+      FROM production pr
+      LEFT JOIN users uop ON pr.operator_id = uop.id
+      WHERE pr.sack_cost > 0
+      ORDER BY pr.entry_date ASC, pr.created_at ASC
+    `).all();
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/reconciliation/accrual/transport
+// All sales with transport cost — all time
+router.get('/accrual/transport', ...OWNER_ADMIN, async (req, res) => {
+  try {
+    const db = getDb();
+    const rows = await db.prepare(`
+      SELECT s.id, s.entry_date, s.quantity, s.buyer_name,
+             s.transport_to_market, s.gauge_source
+      FROM sales s
+      WHERE s.transport_to_market > 0
+      ORDER BY s.entry_date ASC, s.created_at ASC
+    `).all();
+    res.json(rows);
   } catch (e) {
     res.status(500).json({ error: 'Internal server error' });
   }

@@ -510,4 +510,43 @@ ipcMain.on('app-info', (event) => {
     port: serverPort,
   });
 });
+
+// ── Backup resilience IPC handlers ───────────────────────────────────────────
+// These run in the main process so they have full Node.js fs access.
+// The renderer (backup.html) calls these via preload.js contextBridge.
+
+const fs = require('fs');
+
+// Open a native folder picker so the owner can choose a second backup location
+// (USB drive, network share, etc.) without typing a path manually.
+ipcMain.handle('backup:choose-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title:       'Choose Second Backup Location',
+    buttonLabel: 'Use This Folder',
+    properties:  ['openDirectory', 'createDirectory'],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+// Write backup JSON to the second path and verify it round-trips correctly.
+// Returns { ok, path, bytes, error? }
+ipcMain.handle('backup:write-second', async (_event, { folderPath, filename, jsonString }) => {
+  try {
+    if (!folderPath || !filename || !jsonString) {
+      return { ok: false, error: 'Missing parameters' };
+    }
+    const fullPath = path.join(folderPath, filename);
+    fs.writeFileSync(fullPath, jsonString, 'utf8');
+
+    // Verify: read back and parse — if it throws, the file is corrupt
+    const readBack = fs.readFileSync(fullPath, 'utf8');
+    JSON.parse(readBack); // throws if corrupt
+
+    const bytes = Buffer.byteLength(jsonString, 'utf8');
+    return { ok: true, path: fullPath, bytes };
+  } catch(e) {
+    return { ok: false, error: e.message };
+  }
+});
 //Triggering new version logic 

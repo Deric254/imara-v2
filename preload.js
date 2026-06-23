@@ -28,4 +28,8 @@ contextBridge.exposeInMainWorld('electron', {
   removeUpdateListener: (channel) => {
     ipcRenderer.removeAllListeners(channel);
   },
+
+  // Backup resilience
+  chooseBackupFolder: () => ipcRenderer.invoke('backup:choose-folder'),
+  writeBackupSecond:  (args) => ipcRenderer.invoke('backup:write-second', args),
 });

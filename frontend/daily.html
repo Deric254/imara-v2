@@ -125,6 +125,28 @@ async function getAvailableInventoryCached() {
 }
 
 // Invalidate caches after a successful save so next check is fresh
+// Disable Save Production if any gauge has insufficient wire.
+// Reads the warning divs that calcWireNeeded already populated — no extra fetch.
+function _updateProdSubmitBtn() {
+  const btn = document.querySelector('button[onclick="submitProduction()"]');
+  if (!btn) return;
+  let hasInsufficient = false;
+  document.querySelectorAll('#pr_items .pr-item-gauge').forEach(gaugeEl => {
+    const row = gaugeEl.closest('[data-pr-row]') || gaugeEl.closest('div');
+    if (!row) return;
+    const warnEl = row.querySelector('.pr-wire-warn');
+    if (warnEl && warnEl.textContent.includes('⚠')) hasInsufficient = true;
+  });
+  // Also check the summary availability div if present
+  const availDiv = document.getElementById('pr_availability');
+  if (availDiv && availDiv.textContent.includes('⚠ Insufficient')) hasInsufficient = true;
+
+  btn.disabled = hasInsufficient;
+  btn.title = hasInsufficient
+    ? 'Insufficient wire stock — buy more wire before saving this production'
+    : '';
+}
+
 function invalidateStockCaches() {
   _gaugeStockCache = null; _gaugeStockExpiry = 0;
   _invCache = null; _invCacheExpiry = 0;
@@ -608,6 +630,8 @@ function calcWireNeeded() {
   // (when _batchCache first populates for a new gauge).
   calcOverhead();
 
+  // Update Save Production button state based on live wire availability
+  _updateProdSubmitBtn();
   // Show live gauge-specific availability — debounced, uses cache
   _calcWireWarningDebounced(perGauge);
   renderBatchSelectors(perGauge).then(() => calcOverhead());
@@ -963,22 +987,64 @@ async function deleteRecord(type, id) {
 
   if (!confirm(confirmMsg)) return;
 
+  // ── Pre-flight checks before hitting the server ──────────────────────────────
+  // For purchases: check locally whether this wire gauge has been used in production.
+  // If it has, we know the delete will be blocked — tell the user now without a
+  // wasted round-trip or a confusing server error message.
+  if (type === 'purchases') {
+    const purchaseRow = (window._lastPurchases || []).find(r => r.id === id);
+    if (purchaseRow) {
+      const gauge = (purchaseRow.gauge || '').trim();
+      // Find all production records that used this same gauge
+      const prodUsingGauge = (window._lastProduction || []).filter(p =>
+        (p.gauge || '').trim() === gauge && parseFloat(p.kgs_used) > 0
+      );
+      if (prodUsingGauge.length > 0) {
+        const gLabel = gauge ? `Gauge ${gauge}` : 'This gauge';
+        const totalUsed = prodUsingGauge.reduce((s,p) => s + parseFloat(p.kgs_used||0), 0);
+        showToast(
+          `Cannot delete: ${gLabel} wire has already been used in ${prodUsingGauge.length} production record(s) totalling ${totalUsed.toFixed(1)} kg. Delete those production records first.`,
+          'error', 10000
+        );
+        return;
+      }
+    }
+  }
+
+  // For production records: check locally whether any pieces from this record were sold.
+  if (type === 'production') {
+    const prodRow = (window._lastProduction || []).find(r => r.id === id);
+    if (prodRow && prodRow.items) {
+      const soldItems = (window._lastSales || []).filter(s =>
+        prodRow.items.some(item => item.piece_type_id === s.piece_type_id)
+      );
+      if (soldItems.length > 0) {
+        showToast(
+          `Cannot delete: pieces produced in this batch have already been sold (${soldItems.length} sale record(s)). Delete those sales first.`,
+          'error', 10000
+        );
+        return;
+      }
+    }
+  }
+
   try {
     const result = await api('DELETE', `/daily/${type}/${id}`);
     showToast(result.message || 'Deleted successfully', 'success', 5000);
     // Production delete may return cost warnings (accrued wages not reversed)
     if (result.cost_warnings && result.cost_warnings.length) {
       result.cost_warnings.forEach((w, i) =>
-        setTimeout(() => showToast('⚠️ Cost remains: ' + w, 'warn', 8000), (i+1)*1000)
+        setTimeout(() => showToast('⚠️ Cost note: ' + w, 'warn', 8000), (i+1)*1000)
       );
     }
     loadTabData(_activeTab);
   } catch(e) {
-    // Surface exact backend integrity message — tells user exactly what is blocking and what to do
+    // This should rarely fire now that pre-flight catches most cases.
+    // If it does, show the server's exact message — it's always human-readable.
     const msg = e.error === 'INTEGRITY_VIOLATION'
-      ? (e.message || 'This record cannot be deleted — it is linked to other data.')
-      : (e.error || e.message || 'Delete failed');
-    showToast(msg, 'error', 8000);
+      ? (e.message || 'This record cannot be deleted — it is linked to other data. Please refresh and check.')
+      : (e.error || e.message || 'Delete failed. Please refresh and try again.');
+    showToast(msg, 'error', 10000);
   }
 }
 
@@ -1106,7 +1172,7 @@ function calcOverhead() {
       const total = wireCost + opCost + knCost + sackCost;
       el.innerHTML = `
         <div style="display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;font-size:.82rem">
-          <span style="color:var(--muted)" title="Per-batch landed cost">Wire — landed cost (${wireCostLabel})</span><span class="mono">${fmtMoney(wireCost)}</span>
+          <span style="color:var(--muted)" title="Per-batch landed cost">Total wire cost (${wireCostLabel})</span><span class="mono">${fmtMoney(wireCost)}</span>
           <span style="color:var(--muted)">Operator (${fmtMoney(rates.operator_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(opCost)}</span>
           <span style="color:var(--muted)">Knuckler (${fmtMoney(rates.knuckler_rate)} × ${totalPieces} pcs)</span><span class="mono">${fmtMoney(knCost)}</span>
           <span style="color:var(--muted)">Sacks (${fmtMoney(rates.sack_rate)} × ${totalSacks} sacks)</span><span class="mono">${fmtMoney(sackCost)}</span>
@@ -1324,6 +1390,36 @@ function _makeGaugeOptions(selectedGauge) {
     gauges.map(g => `<option value="${g}"${g === selectedGauge ? ' selected' : ''}>${g}</option>`).join('');
 }
 
+// After a piece type is selected, patch the gauge <select> so zero-stock options
+// are disabled and labelled — user cannot accidentally select an unavailable gauge.
+async function _patchGaugeOptionsForPiece(rid, pieceTypeId) {
+  const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
+  if (!gaugeEl || !pieceTypeId) return;
+  try {
+    const inv = await getAvailableInventoryCached();
+    const availByGauge = {};
+    (inv || []).filter(i => i.piece_type_id === pieceTypeId).forEach(i => {
+      availByGauge[i.gauge] = (availByGauge[i.gauge] || 0) + i.available;
+    });
+    [...gaugeEl.options].forEach(opt => {
+      if (!opt.value) return; // keep the placeholder
+      const avail = availByGauge[opt.value] || 0;
+      if (avail <= 0) {
+        opt.disabled = true;
+        opt.textContent = `${opt.value} — OUT OF STOCK`;
+      } else {
+        opt.disabled = false;
+        opt.textContent = `${opt.value}  (${avail} in stock)`;
+      }
+    });
+    // If the currently selected gauge is now disabled, reset to placeholder
+    if (gaugeEl.value && gaugeEl.options[gaugeEl.selectedIndex]?.disabled) {
+      gaugeEl.value = '';
+      onSaleRowChange(rid);
+    }
+  } catch(_) { /* non-fatal — UI degrades gracefully */ }
+}
+
 function _makePieceOptions(selectedId) {
   return `<option value="">— piece type —</option>` +
     pieceTypes.map(pt =>
@@ -1395,18 +1491,24 @@ function onSaleRowPieceChange(rid, skipPriceOverwrite) {
       priceEl.value = '';
     }
   }
-  // Default the gauge to whichever has the most stock for this piece — user can still change it.
+  // Immediately disable zero-stock gauges for this piece type so the user
+  // cannot accidentally select a gauge with no available inventory.
   const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
   const ptId = opt && opt.value ? parseInt(opt.value) : 0;
-  if (gaugeEl && ptId && !gaugeEl.value) {
-    getAvailableInventoryCached().then(inv => {
-      if (gaugeEl.value) return; // user picked one while this was loading
-      const matches = (inv || []).filter(i => i.piece_type_id === ptId && i.available > 0);
-      if (!matches.length) return;
-      const best = matches.reduce((a, b) => (b.available > a.available ? b : a));
-      if ([...gaugeEl.options].some(o => o.value === best.gauge)) {
-        gaugeEl.value = best.gauge;
-        onSaleRowChange(rid);
+  if (gaugeEl && ptId) {
+    _patchGaugeOptionsForPiece(rid, ptId).then(() => {
+      // After patching, default to the gauge with the most stock (if not already set)
+      if (!gaugeEl.value) {
+        getAvailableInventoryCached().then(inv => {
+          if (gaugeEl.value) return;
+          const matches = (inv || []).filter(i => i.piece_type_id === ptId && i.available > 0);
+          if (!matches.length) return;
+          const best = matches.reduce((a, b) => (b.available > a.available ? b : a));
+          if ([...gaugeEl.options].some(o => o.value === best.gauge && !o.disabled)) {
+            gaugeEl.value = best.gauge;
+            onSaleRowChange(rid);
+          }
+        }).catch(() => {});
       }
     }).catch(() => {});
   }
@@ -1415,32 +1517,74 @@ function onSaleRowPieceChange(rid, skipPriceOverwrite) {
 
 async function onSaleRowChange(rid) {
   calcSaleTotals();
-  // Availability hint
-  const sel = document.getElementById(`srow_pt_${rid}`);
+  const sel    = document.getElementById(`srow_pt_${rid}`);
   const gaugeEl = document.getElementById(`srow_gauge_${rid}`);
-  const qtyEl = document.getElementById(`srow_qty_${rid}`);
+  const qtyEl  = document.getElementById(`srow_qty_${rid}`);
   const availDiv = document.getElementById(`srow_avail_${rid}`);
   if (!sel || !availDiv) return;
-  const ptId = parseInt(sel.value) || 0;
+  const ptId  = parseInt(sel.value) || 0;
   const gauge = gaugeEl ? gaugeEl.value.trim() : '';
-  const qty = parseInt(qtyEl ? qtyEl.value : 0) || 0;
-  if (!ptId || !gauge) { availDiv.textContent = ''; return; }
+  const qty   = parseInt(qtyEl ? qtyEl.value : 0) || 0;
+  if (!ptId || !gauge) {
+    availDiv.textContent = '';
+    if (qtyEl) qtyEl.removeAttribute('max');
+    _updateSaleSubmitBtn();
+    return;
+  }
   try {
     const inv = await getAvailableInventoryCached();
-    // Guard: row may have been removed while awaiting
-    if (!document.getElementById(`srow_avail_${rid}`)) return;
+    if (!document.getElementById(`srow_avail_${rid}`)) return; // row removed
     const match = (inv || []).find(i => i.piece_type_id === ptId && i.gauge === gauge);
     const avail = match ? match.available : 0;
-    if (avail <= 0) {
-      availDiv.innerHTML = `<span style="color:var(--red)">❌ Out of stock in gauge ${gauge}</span>`;
-    } else if (qty > avail) {
-      availDiv.innerHTML = `<span style="color:var(--red)">⚠ Only ${avail} available, need ${qty}</span>`;
-    } else if (avail < 5) {
-      availDiv.innerHTML = `<span style="color:#b45309">⚠ Low: ${avail} in stock${qty ? ' — need '+qty : ''}</span>`;
-    } else {
-      availDiv.innerHTML = `<span style="color:var(--g600)">✅ ${avail} in stock${qty ? ' — need '+qty : ''}</span>`;
+
+    // ── Hard cap: set max= so the browser prevents entering more than stock ──
+    if (qtyEl) {
+      if (avail > 0) {
+        qtyEl.setAttribute('max', avail);
+        // Silently clamp an already-entered qty rather than letting user proceed wrong
+        if (qty > avail) {
+          qtyEl.value = avail;
+          calcSaleTotals();
+        }
+      } else {
+        qtyEl.setAttribute('max', 0);
+        qtyEl.value = '';
+        calcSaleTotals();
+      }
     }
-  } catch(e) { if (document.getElementById(`srow_avail_${rid}`)) availDiv.textContent = ''; }
+
+    if (avail <= 0) {
+      availDiv.innerHTML = `<span style="color:var(--red)">❌ Out of stock in gauge ${gauge} — choose a different gauge</span>`;
+    } else if (avail < 5) {
+      availDiv.innerHTML = `<span style="color:#b45309">⚠ Only ${avail} left in gauge ${gauge}</span>`;
+    } else {
+      availDiv.innerHTML = `<span style="color:var(--g600)">✅ ${avail} available in gauge ${gauge}</span>`;
+    }
+  } catch(e) {
+    if (document.getElementById(`srow_avail_${rid}`)) availDiv.textContent = '';
+  }
+  _updateSaleSubmitBtn();
+}
+
+// Disable the Submit Sale button if any row has a stock problem or missing fields,
+// so the user cannot even attempt to submit an impossible sale.
+function _updateSaleSubmitBtn() {
+  const submitBtn = document.getElementById('s_submit_btn') ||
+                    document.querySelector('button[onclick*="submitSale"],button[onclick*="submitAllSales"]');
+  if (!submitBtn) return;
+  const rows = document.querySelectorAll('#sale_items_container > div[id^="srow_"]');
+  let blocked = false;
+  rows.forEach(row => {
+    const rid = row.id.slice(5);
+    const qtyEl  = document.getElementById(`srow_qty_${rid}`);
+    if (!qtyEl) return;
+    const max = parseInt(qtyEl.getAttribute('max'));
+    const val = parseInt(qtyEl.value) || 0;
+    if (!isNaN(max) && max === 0) blocked = true;       // out of stock
+    if (!isNaN(max) && val > max) blocked = true;       // over stock (shouldn't happen after clamp, belt+suspenders)
+  });
+  submitBtn.disabled = blocked;
+  submitBtn.title = blocked ? 'One or more items are out of stock — adjust quantities or gauges' : '';
 }
 
 function calcSaleTotals() {

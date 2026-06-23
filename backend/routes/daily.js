@@ -329,7 +329,6 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
     }
 
     // ACID: re-validate stock and delete atomically to prevent concurrent-request races
-    let blocked = false;
     await db.transaction(async () => {
       const tb = (await db.prepare(
         `SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases WHERE COALESCE(gauge,'')=?`
@@ -338,25 +337,22 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
         `SELECT COALESCE(SUM(kgs_used),0) AS v FROM production WHERE COALESCE(gauge,'')=?`
       ).get(gaugeKey)).v;
       if (parseFloat(tb) - parseFloat(row.kgs_bought) - parseFloat(tu) < -0.001) {
-        blocked = true;
-        return; // causes rollback
+        const e = new Error('BLOCKED');
+        e.purchaseBlocked = true;
+        throw e;
       }
       await db.prepare('DELETE FROM purchases WHERE id=?').run(id);
     });
-
-    if (blocked) {
-      const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'this gauge';
-      return res.status(400).json({
-        error: 'INTEGRITY_VIOLATION',
-        message: `Cannot delete this purchase — wire (${gLabel}) was used in production concurrently. Please refresh and try again.`
-      });
-    }
 
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_PURCHASE', table: 'purchases',
       recordId: id, oldVals: row, ip: req.ip });
     const gLabel = gaugeKey ? ` (gauge ${row.gauge})` : '';
     res.json({ message: `Purchase deleted. ${parseFloat(row.kgs_bought).toFixed(1)} kg${gLabel} removed from raw material stock.` });
   } catch(e) {
+    if (e.purchaseBlocked) {
+      const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'this gauge';
+      return res.status(400).json({ error: 'INTEGRITY_VIOLATION', message: `Cannot delete this purchase — wire (${gLabel}) was used in production concurrently. Please refresh and try again.` });
+    }
     console.error('DELETE purchase error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -509,7 +505,11 @@ router.post('/production', authenticate, blockProductionStaff,
       // This eliminates the TOCTOU race where two rapid requests both pass the
       // check before either writes — the second will now fail at the DB level.
       let pid;
-      let stockError = null;
+      // IMPORTANT: we use throw inside the transaction callback for ALL error paths.
+      // Returning early (return;) commits whatever has already been written — throwing
+      // triggers the ROLLBACK branch in transaction() so no partial writes survive.
+      // We catch the known stock-error shape below and convert it to a 400 response;
+      // anything else re-throws and becomes a 500.
       await db.transaction(async () => {
         // Re-read stock INSIDE the transaction — this is the authoritative check
         const rawBoughtGauge = (await db.prepare(
@@ -522,11 +522,9 @@ router.post('/production', authenticate, blockProductionStaff,
 
         if (parseFloat(kgs_used) > currentRawStock + 0.001) {
           const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'unspecified gauge';
-          stockError = {
-            error: 'INSUFFICIENT_RAW_STOCK',
-            message: `Insufficient wire for ${gLabel}. Available: ${currentRawStock.toFixed(3)} kg, Requested: ${parseFloat(kgs_used).toFixed(3)} kg. You can only use wire you have purchased of this gauge.`
-          };
-          return; // abort transaction without throwing
+          const e = new Error(`Insufficient wire for ${gLabel}. Available: ${currentRawStock.toFixed(3)} kg, Requested: ${parseFloat(kgs_used).toFixed(3)} kg. You can only use wire you have purchased of this gauge.`);
+          e.stockError = { error: 'INSUFFICIENT_RAW_STOCK', message: e.message };
+          throw e;
         }
 
         // Resolve wire batches via FIFO CASCADE (rule 4, extended): a preferred
@@ -544,8 +542,9 @@ router.post('/production', authenticate, blockProductionStaff,
         ).all(gaugeKey);
 
         if (!allBatches.length) {
-          stockError = { error: 'INVALID_BATCH', message: `No wire batch found for ${gaugeKey ? 'gauge ' + gaugeKey : 'this gauge'}.` };
-          return;
+          const e = new Error(`No wire batch found for ${gaugeKey ? 'gauge ' + gaugeKey : 'this gauge'}.`);
+          e.stockError = { error: 'INVALID_BATCH', message: e.message };
+          throw e;
         }
 
         const landedCostOf = b => b.kgs_bought > 0
@@ -563,21 +562,22 @@ router.post('/production', authenticate, blockProductionStaff,
           if (preferredIdx === -1) {
             const preferred = await db.prepare(`SELECT gauge, kgs_remaining FROM purchases WHERE id=?`).get(purchase_id);
             if (!preferred || (preferred.gauge || '').trim() !== gaugeKey) {
-              stockError = { error: 'INVALID_BATCH', message: 'Selected wire batch does not match this gauge.' };
-              return;
+              const e = new Error('Selected wire batch does not match this gauge.');
+              e.stockError = { error: 'INVALID_BATCH', message: e.message };
+              throw e;
             }
             // Same gauge but depleted.
-            stockError = { error: 'INSUFFICIENT_BATCH_STOCK',
-              message: `Selected batch is empty. Choose a different batch or deselect to use available stock.` };
-            return;
+            const e2 = new Error(`Selected batch is empty. Choose a different batch or deselect to use available stock.`);
+            e2.stockError = { error: 'INSUFFICIENT_BATCH_STOCK', message: e2.message };
+            throw e2;
           }
           const preferredBatch = allBatches[preferredIdx];
           if (parseFloat(kgs_used) > parseFloat(preferredBatch.kgs_remaining) + 0.001) {
             const bLabel = (preferredBatch.batch_name && preferredBatch.batch_name.trim())
               ? preferredBatch.batch_name : `Batch #${preferredBatch.id}`;
-            stockError = { error: 'INSUFFICIENT_BATCH_STOCK',
-              message: `"${bLabel}" has ${parseFloat(preferredBatch.kgs_remaining).toFixed(3)} kg — ${parseFloat(kgs_used).toFixed(3)} kg needed. Choose a batch with enough wire or deselect to use available stock.` };
-            return;
+            const e = new Error(`"${bLabel}" has ${parseFloat(preferredBatch.kgs_remaining).toFixed(3)} kg — ${parseFloat(kgs_used).toFixed(3)} kg needed. Choose a batch with enough wire or deselect to use available stock.`);
+            e.stockError = { error: 'INSUFFICIENT_BATCH_STOCK', message: e.message };
+            throw e;
           }
           // Sufficient — draw from this batch only.
           drawOrder = [preferredBatch];
@@ -597,11 +597,9 @@ router.post('/production', authenticate, blockProductionStaff,
           // Defensive only — the aggregate currentRawStock check above should
           // already have caught this. Surfaces clearly if it ever doesn't.
           const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'unspecified gauge';
-          stockError = {
-            error: 'INSUFFICIENT_RAW_STOCK',
-            message: `Insufficient wire for ${gLabel} across all batches. Short by ${need.toFixed(3)} kg.`
-          };
-          return;
+          const e = new Error(`Insufficient wire for ${gLabel} across all batches. Short by ${need.toFixed(3)} kg.`);
+          e.stockError = { error: 'INSUFFICIENT_RAW_STOCK', message: e.message };
+          throw e;
         }
 
         // True weighted-average landed cost across every batch actually drawn
@@ -642,9 +640,6 @@ router.post('/production', authenticate, blockProductionStaff,
         for (const item of items) await insItem.run(pid, item.piece_type_id, item.pieces_produced);
       });
 
-      if (stockError) return res.status(400).json(stockError);
-
-
       const record = await db.prepare(`
         SELECT pr.*, u.full_name AS entered_by_name,
           ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
@@ -658,6 +653,8 @@ router.post('/production', authenticate, blockProductionStaff,
       checkAndNotifyStock(db, req.user.id).catch(() => {});
       res.status(201).json({ ...record, items: outItems });
     } catch(e) {
+      // Stock / batch validation errors are thrown inside the transaction so ROLLBACK fires.
+      if (e.stockError) return res.status(400).json(e.stockError);
       console.error('POST production error:', e);
       if (e.message && e.message.includes('Piece type')) return res.status(400).json({ error: e.message });
       res.status(500).json({ error: 'Internal server error' });
@@ -719,7 +716,6 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
 
     // ACID: delete production_items + production atomically so inventory never shows
     // a partial state where the parent row is gone but items remain or vice-versa
-    let prodBlocked = false;
     await db.transaction(async () => {
       // Re-validate inside the transaction to guard against concurrent sales
       for (const item of items) {
@@ -733,8 +729,9 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
           `SELECT COALESCE(SUM(quantity),0) AS v FROM sales WHERE piece_type_id=? AND COALESCE(gauge_source,'')=?`
         ).get(item.piece_type_id, rowGauge)).v;
         if (parseInt(pg) - item.pieces_produced - parseInt(sg) < 0) {
-          prodBlocked = true;
-          return; // rollback
+          const e = new Error('PROD_BLOCKED');
+          e.prodBlocked = true;
+          throw e;
         }
       }
       await db.prepare('DELETE FROM production_items WHERE production_id=?').run(id);
@@ -746,13 +743,6 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
       }
     });
 
-    if (prodBlocked) {
-      return res.status(400).json({
-        error: 'INTEGRITY_VIOLATION',
-        message: 'Cannot delete this production record — pieces were sold concurrently. Please refresh and try again.'
-      });
-    }
-
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_PRODUCTION', table: 'production',
       recordId: id, oldVals: row, ip: req.ip });
 
@@ -762,6 +752,7 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
     }
     res.json({ message: msg, cost_warnings: costWarnings });
   } catch(e) {
+    if (e.prodBlocked) return res.status(400).json({ error: 'INTEGRITY_VIOLATION', message: 'Cannot delete this production record — pieces were sold concurrently. Please refresh and try again.' });
     console.error('DELETE production error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -848,7 +839,6 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
         };
       });
 
-      let stockError = null;
       const saleIds = [];
       let autoInvoiceId = null;
 
@@ -874,15 +864,12 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
 
           if (row.quantity > available) {
             const gaugeLabel = row.gauge_source || 'unspecified gauge';
-            stockError = {
-              error: 'INSUFFICIENT_STOCK_FOR_GAUGE',
-              message: `Cannot sell ${row.quantity} pieces of ${row.pt.name} (${gaugeLabel}). Available: ${available}.`,
-              inventory: { produced, sold, available, requested: row.quantity }
-            };
-            return; // rollback
+            const e = new Error(`Cannot sell ${row.quantity} pieces of ${row.pt.name} (${gaugeLabel}). Available: ${available}.`);
+            e.stockError = { error: 'INSUFFICIENT_STOCK_FOR_GAUGE', message: e.message,
+              inventory: { produced, sold, available, requested: row.quantity } };
+            throw e;
           }
         }
-        if (stockError) return;
 
         // 2. Insert each sale row
         for (const row of enriched) {
@@ -897,7 +884,7 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
 
         // 3. Create ONE invoice for all items
         const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';
-        const last   = await db.prepare('SELECT invoice_number FROM invoices ORDER BY id DESC LIMIT 1').get();
+        const last   = await db.prepare('SELECT invoice_number FROM invoices WHERE id = (SELECT MAX(id) FROM invoices)').get();
         let seq = 1001;
         if (last?.invoice_number) {
           const parts = last.invoice_number.split('-');
@@ -940,8 +927,6 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
         }
       });
 
-      if (stockError) return res.status(400).json(stockError);
-
       checkAndNotifyStock(db, req.user.id).catch(() => {});
 
       await writeAudit(db, {
@@ -953,6 +938,7 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
       // Return count and invoice info so frontend can refresh
       res.status(201).json({ saved: saleIds.length, invoice_id: autoInvoiceId });
     } catch(e) {
+      if (e.stockError) return res.status(400).json(e.stockError);
       console.error('POST sales/batch error:', e);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -990,7 +976,6 @@ router.post('/sales', authenticate, blockProductionStaff,
 
       const price_overridden = parseFloat(selling_price) !== parseFloat(pt.default_price) ? 1 : 0;
 
-      let stockError = null;
       let result;
       let autoInvoiceId = null;
 
@@ -1019,12 +1004,10 @@ router.post('/sales', authenticate, blockProductionStaff,
 
         if (parseInt(quantity) > available) {
           const gaugeLabel = gaugeKey || 'unspecified gauge';
-          stockError = {
-            error: 'INSUFFICIENT_STOCK_FOR_GAUGE',
-            message: `Cannot sell ${quantity} pieces. Inventory for ${pt.name} (${gaugeLabel}): Produced=${produced}, Sold=${sold}, Available=${available} pieces.`,
-            inventory: { produced, sold, available, requested: parseInt(quantity) }
-          };
-          return; // abort transaction, do not insert
+          const _e = new Error(`Cannot sell ${quantity} pieces. Inventory for ${pt.name} (${gaugeLabel}): Produced=${produced}, Sold=${sold}, Available=${available} pieces.`);
+          _e.stockError = { error: 'INSUFFICIENT_STOCK_FOR_GAUGE', message: _e.message,
+            inventory: { produced, sold, available, requested: parseInt(quantity) } };
+          throw _e;
         }
 
         result = await db.prepare(
@@ -1034,7 +1017,7 @@ router.post('/sales', authenticate, blockProductionStaff,
 
         // ── Auto-generate invoice INSIDE the transaction (atomic with the sale) ──
         const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';
-        const last   = await db.prepare(`SELECT invoice_number FROM invoices ORDER BY id DESC LIMIT 1`).get();
+        const last   = await db.prepare(`SELECT invoice_number FROM invoices WHERE id = (SELECT MAX(id) FROM invoices)`).get();
         let seq = 1001;
         if (last?.invoice_number) {
           const parts = last.invoice_number.split('-');
@@ -1077,8 +1060,6 @@ router.post('/sales', authenticate, blockProductionStaff,
         }
       });
 
-      if (stockError) return res.status(400).json(stockError);
-
       await writeAudit(db, {
         userId: req.user.id,
         action: price_overridden ? 'PRICE_OVERRIDE' : 'CREATE_SALE',
@@ -1103,6 +1084,7 @@ router.post('/sales', authenticate, blockProductionStaff,
       checkAndNotifyStock(db, req.user.id).catch(() => {});
       res.status(201).json(row);
     } catch(e) {
+      if (e.stockError) return res.status(400).json(e.stockError);
       console.error('POST sales error:', e);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -1133,14 +1115,14 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
 
     // ACID: re-check payment status inside transaction and cascade-delete atomically.
     // This prevents a race where a payment is recorded between the pre-flight check and the delete.
-    let paymentRace = false;
     await db.transaction(async () => {
       if (linkedInvoice) {
         // Re-read invoice inside transaction for authoritative payment status
         const inv = await db.prepare('SELECT amount_paid, status FROM invoices WHERE id=?').get(linkedInvoice.id);
         if (inv && (inv.status === 'paid' || parseFloat(inv.amount_paid) > 0)) {
-          paymentRace = true;
-          return; // rollback
+          const e = new Error(`A payment was recorded against invoice ${linkedInvoice.invoice_number} concurrently. Please refresh and cancel the invoice first before deleting the sale.`);
+          e.paymentRace = true;
+          throw e;
         }
         await db.prepare('DELETE FROM invoice_payments WHERE invoice_id=?').run(linkedInvoice.id);
         await db.prepare('DELETE FROM invoice_items WHERE invoice_id=?').run(linkedInvoice.id);
@@ -1148,13 +1130,6 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
       }
       await db.prepare('DELETE FROM sales WHERE id=?').run(id);
     });
-
-    if (paymentRace) {
-      return res.status(400).json({
-        error: 'INTEGRITY_VIOLATION',
-        message: `A payment was recorded against invoice ${linkedInvoice.invoice_number} concurrently. Please refresh and cancel the invoice first before deleting the sale.`
-      });
-    }
 
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_SALE', table: 'sales',
       recordId: id, oldVals: row,
@@ -1166,6 +1141,7 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
       : 'Sale deleted successfully.';
     res.json({ message: msg });
   } catch(e) {
+    if (e.paymentRace) return res.status(400).json({ error: 'INTEGRITY_VIOLATION', message: e.message });
     console.error('DELETE sale error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }

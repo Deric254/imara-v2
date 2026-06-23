@@ -251,6 +251,16 @@ async function init() {
 </div>
 
 <!-- ══ Pay Modal ══ -->
+<div class="modal-overlay" id="drillModal" style="display:none" onclick="if(event.target===this)closeDrillModal()">
+  <div class="modal" style="max-width:700px;max-height:88vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+      <div class="modal-title" id="drillTitle" style="margin:0"></div>
+      <button class="btn btn-secondary btn-sm" onclick="closeDrillModal()">Close</button>
+    </div>
+    <div id="drillContent"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="payModal" style="display:none" onclick="if(event.target===this)closePayModal()">
   <div class="modal" style="max-width:520px">
     <div class="modal-title" id="payModalTitle">Record Payment</div>
@@ -548,52 +558,223 @@ function renderGrandBanner() {
   document.getElementById('gWages').textContent    = 'KES ' + fmt(Math.max(0, s.wages.balance), 2);
   document.getElementById('gSupplier').textContent = 'KES ' + fmt(Math.max(0, s.suppliers.balance), 2);
   document.getElementById('gRent').textContent     = 'KES ' + fmt(Math.max(0, s.rent.balance), 2);
-  document.getElementById('gSack').textContent     = 'KES ' + fmt(Math.max(0, s.sack.balance), 2);
+  document.getElementById('gSack').textContent     = 'KES ' + fmt(s.sack.all_time_balance ?? Math.max(0, s.sack.balance), 2);
   document.getElementById('gTransport').textContent = 'KES ' + fmt(Math.max(0, (s.transport_to_market||{balance:0}).balance), 2);
 }
 
 function renderTransport() {
   const t  = _summary.transport_to_market || { accrued: 0, paid: 0, balance: 0 };
   const el = document.getElementById('transportDetail');
-  const overpaid = t.paid > t.accrued;
+  const atBal = t.all_time_balance ?? Math.max(0, t.balance);
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
-      <div class="kpi">
-        <div class="kpi-label">Accrued This Period</div>
-        <div class="kpi-value mono">${fmt(t.accrued,2)}</div>
-        <div class="kpi-sub">Transport saved on sales</div>
-      </div>
-      <div class="kpi">
-        <div class="kpi-label">Paid This Period</div>
-        <div class="kpi-value mono" style="color:#16a34a">${fmt(t.paid,2)}</div>
-        <div class="kpi-sub">Cash paid out${overpaid?' (incl. older debts)':''}</div>
-      </div>
-      <div class="kpi ${!overpaid && t.balance>0?'danger':''}">
-        <div class="kpi-label">${overpaid?'Period Net':'Outstanding'}</div>
-        <div class="kpi-value mono">
-          ${overpaid
-            ? `<span style="color:var(--g600);font-size:.85rem">KES ${fmt(t.paid-t.accrued,2)} extra — clearing old balance</span>`
-            : fmt(Math.max(0,t.balance),2)}
-        </div>
-      </div>
+      <div class="kpi"><div class="kpi-label">Accrued</div><div class="kpi-value mono">${fmt(t.accrued,2)}</div></div>
+      <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(t.paid,2)}</div></div>
+      <div class="kpi ${atBal>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(atBal,2)}</div></div>
     </div>
-    <div class="liability-card ${t.balance<=0?'settled':t.paid>0?'partial':'overdue'}" style="margin-bottom:.75rem">
-      <div class="liability-row">
-        <div>
-          <div class="liability-name">Transport to Market</div>
-          <div class="liability-meta">Total accrued from sales: KES ${fmt(t.accrued,2)} &middot; Paid: KES ${fmt(t.paid,2)}</div>
-        </div>
-        <div class="liability-amounts">
-          <div class="amt-block">
-            <div class="amt-label">Balance</div>
-            <div class="amt-value ${t.balance>0?'red':'green'}">KES ${fmt(Math.max(0,t.balance),2)}</div>
-          </div>
-          ${t.balance>0
-            ? `<button class="settle-btn" onclick="openPayModal('transport_to_market',null,null,null,${t.balance})">Record Payment</button>`
-            : `<span class="badge badge-green">✓ Settled</span>`}
-        </div>
+    <div class="liability-card ${atBal<=0?'settled':'overdue'}" style="margin-bottom:.75rem"><div class="liability-row">
+      <div style="cursor:pointer" onclick="openTransportDrill()"><div class="liability-name">Transport to Market</div><div class="liability-meta">From all sales</div></div>
+      <div class="liability-amounts">
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${atBal>0?'red':'green'}">KES ${fmt(atBal,2)}</div></div>
+        ${atBal>0?`<button class="settle-btn" onclick="openPayModal('transport_to_market',null,null,null,${atBal})">Record Payment</button>`:`<span class="badge badge-green" style="cursor:pointer" onclick="showTransportPaidDate()">✓ Settled</span>`}
       </div>
-    </div>`;
+    </div></div>`;
+}
+
+async function showTransportPaidDate() {
+  try {
+    const payments = await api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=transport_to_market`);
+    if (!payments.length) { showToast('Transport: no payment found.', 'warn', 4000); return; }
+    const latest = payments[0];
+    showToast(`Transport paid KES ${fmt(latest.amount,2)} on ${latest.payment_date}.`, 'success', 5000);
+  } catch (e) {
+    showToast('Could not load payment date: ' + (e.message || e.error || 'Unknown error'), 'error');
+  }
+}
+
+function closeDrillModal() {
+  document.getElementById('drillModal').style.display = 'none';
+  document.getElementById('drillContent').innerHTML   = '';
+}
+
+function _drillTable(cols, rows, totals) {
+  if (!rows.length) return '<div style="color:var(--muted);padding:1rem 0">No records found.</div>';
+  let t = '<table class="inv-items-table"><thead><tr>' + cols.map(c=>`<th style="${c.r?'text-align:right':''}">${c.label}</th>`).join('') + '</tr></thead><tbody>';
+  for (const r of rows) {
+    t += '<tr>' + cols.map(c=>`<td style="${c.r?'text-align:right;font-family:var(--font-mono)':''}${c.muted?';color:var(--muted);font-size:.82rem':''}">${c.val(r)}</td>`).join('') + '</tr>';
+  }
+  if (totals) {
+    t += '<tr style="font-weight:700;border-top:2px solid var(--border)">' + totals.map(v=>`<td style="${v&&v.r?'text-align:right;font-family:var(--font-mono)':''}">${v?v.label:''}</td>`).join('') + '</tr>';
+  }
+  t += '</tbody></table>';
+  return t;
+}
+
+async function openWorkerDrill(userId) {
+  const name = (_summary?.wages?.workers||[]).find(w=>w.user_id===userId)?.name || 'Worker';
+  document.getElementById('drillTitle').textContent = name + ' — Production History (All Time)';
+  document.getElementById('drillContent').innerHTML = '<div style="padding:1rem;color:var(--muted)">Loading…</div>';
+  document.getElementById('drillModal').style.display = 'flex';
+  try {
+    const [rows, payments] = await Promise.all([
+      api('GET', `/reconciliation/accrual/worker/${userId}`),
+      Promise.all([
+        api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=wages_operator`),
+        api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=wages_knuckler`),
+      ]).then(([op, kn]) => [...op, ...kn].filter(p => p.payee_user_id === userId)
+          .sort((a,b) => (a.payment_date+a.created_at).localeCompare(b.payment_date+b.created_at))),
+    ]);
+    const myPayments = payments;
+    const cols = [
+      { label: 'Date',       val: r => r.entry_date },
+      { label: 'Gauge',      val: r => r.gauge, muted: true },
+      { label: 'Kgs',        val: r => fmt(r.kgs_used,1), r: true },
+      { label: 'Op Cost',    val: r => r.operator_cost  > 0 ? 'KES '+fmt(r.operator_cost,2)  : '—', r: true },
+      { label: 'Kn Cost',    val: r => r.knuckler_cost  > 0 ? 'KES '+fmt(r.knuckler_cost,2)  : '—', r: true },
+    ];
+    const totalOp  = rows.reduce((s,r)=>s+r.operator_cost,0);
+    const totalKn  = rows.reduce((s,r)=>s+r.knuckler_cost,0);
+    const paidOp   = myPayments.filter(p=>p.category==='wages_operator').reduce((s,p)=>s+p.amount,0);
+    const paidKn   = myPayments.filter(p=>p.category==='wages_knuckler').reduce((s,p)=>s+p.amount,0);
+    const totals   = [
+      null,null,null,
+      { label: 'KES '+fmt(totalOp,2), r:true },
+      { label: 'KES '+fmt(totalKn,2), r:true },
+    ];
+    let html = _drillTable(cols, rows, totals);
+    html += '<div style="margin-top:1rem"><div class="inv-party-label">Payments Made</div>';
+    if (!myPayments.length) {
+      html += '<div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">No payments recorded.</div>';
+    } else {
+      html += '<table class="inv-items-table"><thead><tr><th>Date</th><th>Category</th><th style="text-align:right">Amount</th><th>Notes</th></tr></thead><tbody>';
+      for (const p of myPayments) {
+        html += `<tr><td>${p.payment_date}</td><td>${p.category}</td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(p.amount,2)}</td><td style="color:var(--muted);font-size:.82rem">${escHtml(p.notes||'—')}</td></tr>`;
+      }
+      const totalPaid = myPayments.reduce((s,p)=>s+p.amount,0);
+      html += `<tr style="font-weight:700;border-top:2px solid var(--border)"><td colspan="2"></td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(totalPaid,2)}</td><td></td></tr>`;
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    document.getElementById('drillContent').innerHTML = html;
+  } catch(e) {
+    document.getElementById('drillContent').innerHTML = '<div style="color:var(--red)">Failed to load: '+(e.error||e.message||'')+'</div>';
+  }
+}
+
+async function openSupplierDrill(supplierId) {
+  const name = (_summary?.suppliers?.breakdown||[]).find(s=>s.supplier_id===supplierId)?.supplier_name || 'Supplier';
+  document.getElementById('drillTitle').textContent = name + ' — Purchase History (All Time)';
+  document.getElementById('drillContent').innerHTML = '<div style="padding:1rem;color:var(--muted)">Loading…</div>';
+  document.getElementById('drillModal').style.display = 'flex';
+  try {
+    const [rows, payments] = await Promise.all([
+      api('GET', `/reconciliation/accrual/supplier/${supplierId}`),
+      api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=supplier`),
+    ]);
+    const myPayments = payments.filter(p => p.payee_supplier_id === supplierId);
+    const cols = [
+      { label: 'Date',          val: r => r.entry_date },
+      { label: 'Batch',         val: r => r.batch_name||'—', muted: true },
+      { label: 'Kgs',           val: r => fmt(r.kgs_bought,1), r: true },
+      { label: 'Rate/Kg',       val: r => 'KES '+fmt(r.cost_per_kg,2), r: true },
+      { label: 'Transport',     val: r => r.transport_cost > 0 ? 'KES '+fmt(r.transport_cost,2) : '—', r: true },
+      { label: 'Total Billed',  val: r => 'KES '+fmt(r.total_billed,2), r: true },
+    ];
+    const totalBilled = rows.reduce((s,r)=>s+r.total_billed,0);
+    const totalPaid   = myPayments.reduce((s,p)=>s+p.amount,0);
+    const totals = [null,null,null,null,null,{ label:'KES '+fmt(totalBilled,2), r:true }];
+    let html = _drillTable(cols, rows, totals);
+    html += '<div style="margin-top:1rem"><div class="inv-party-label">Payments Made</div>';
+    if (!myPayments.length) {
+      html += '<div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">No payments recorded.</div>';
+    } else {
+      html += '<table class="inv-items-table"><thead><tr><th>Date</th><th style="text-align:right">Amount</th><th>Notes</th></tr></thead><tbody>';
+      for (const p of myPayments) {
+        html += `<tr><td>${p.payment_date}</td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(p.amount,2)}</td><td style="color:var(--muted);font-size:.82rem">${escHtml(p.notes||'—')}</td></tr>`;
+      }
+      html += `<tr style="font-weight:700;border-top:2px solid var(--border)"><td></td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(totalPaid,2)}</td><td></td></tr>`;
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    document.getElementById('drillContent').innerHTML = html;
+  } catch(e) {
+    document.getElementById('drillContent').innerHTML = '<div style="color:var(--red)">Failed to load: '+(e.error||e.message||'')+'</div>';
+  }
+}
+
+async function openSackDrill() {
+  document.getElementById('drillTitle').textContent = 'Sack Costs — Production History (All Time)';
+  document.getElementById('drillContent').innerHTML = '<div style="padding:1rem;color:var(--muted)">Loading…</div>';
+  document.getElementById('drillModal').style.display = 'flex';
+  try {
+    const [rows, payments] = await Promise.all([
+      api('GET', `/reconciliation/accrual/sack`),
+      api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=sack`),
+    ]);
+    const cols = [
+      { label: 'Date',       val: r => r.entry_date },
+      { label: 'Operator',   val: r => r.operator_name||'—', muted: true },
+      { label: 'Gauge',      val: r => r.gauge, muted: true },
+      { label: 'Kgs',        val: r => fmt(r.kgs_used,1), r: true },
+      { label: 'Sack Cost',  val: r => 'KES '+fmt(r.sack_cost,2), r: true },
+    ];
+    const totalAccrued = rows.reduce((s,r)=>s+r.sack_cost,0);
+    const totals = [null,null,null,null,{ label:'KES '+fmt(totalAccrued,2), r:true }];
+    let html = _drillTable(cols, rows, totals);
+    html += '<div style="margin-top:1rem"><div class="inv-party-label">Payments Made</div>';
+    if (!payments.length) {
+      html += '<div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">No payments recorded.</div>';
+    } else {
+      html += '<table class="inv-items-table"><thead><tr><th>Date</th><th style="text-align:right">Amount</th><th>Notes</th></tr></thead><tbody>';
+      const totalPaid = payments.reduce((s,p)=>s+p.amount,0);
+      for (const p of payments) {
+        html += `<tr><td>${p.payment_date}</td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(p.amount,2)}</td><td style="color:var(--muted);font-size:.82rem">${escHtml(p.notes||'—')}</td></tr>`;
+      }
+      html += `<tr style="font-weight:700;border-top:2px solid var(--border)"><td></td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(totalPaid,2)}</td><td></td></tr>`;
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    document.getElementById('drillContent').innerHTML = html;
+  } catch(e) {
+    document.getElementById('drillContent').innerHTML = '<div style="color:var(--red)">Failed to load: '+(e.error||e.message||'')+'</div>';
+  }
+}
+
+async function openTransportDrill() {
+  document.getElementById('drillTitle').textContent = 'Transport to Market — Sales History (All Time)';
+  document.getElementById('drillContent').innerHTML = '<div style="padding:1rem;color:var(--muted)">Loading…</div>';
+  document.getElementById('drillModal').style.display = 'flex';
+  try {
+    const [rows, payments] = await Promise.all([
+      api('GET', `/reconciliation/accrual/transport`),
+      api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=transport_to_market`),
+    ]);
+    const cols = [
+      { label: 'Date',       val: r => r.entry_date },
+      { label: 'Buyer',      val: r => escHtml(r.buyer_name||'—'), muted: true },
+      { label: 'Qty',        val: r => r.quantity, r: true },
+      { label: 'Transport',  val: r => 'KES '+fmt(r.transport_to_market,2), r: true },
+    ];
+    const totalAccrued = rows.reduce((s,r)=>s+r.transport_to_market,0);
+    const totals = [null,null,null,{ label:'KES '+fmt(totalAccrued,2), r:true }];
+    let html = _drillTable(cols, rows, totals);
+    html += '<div style="margin-top:1rem"><div class="inv-party-label">Payments Made</div>';
+    if (!payments.length) {
+      html += '<div style="color:var(--muted);font-size:.85rem;padding:.5rem 0">No payments recorded.</div>';
+    } else {
+      html += '<table class="inv-items-table"><thead><tr><th>Date</th><th style="text-align:right">Amount</th><th>Notes</th></tr></thead><tbody>';
+      const totalPaid = payments.reduce((s,p)=>s+p.amount,0);
+      for (const p of payments) {
+        html += `<tr><td>${p.payment_date}</td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(p.amount,2)}</td><td style="color:var(--muted);font-size:.82rem">${escHtml(p.notes||'—')}</td></tr>`;
+      }
+      html += `<tr style="font-weight:700;border-top:2px solid var(--border)"><td></td><td style="text-align:right;font-family:var(--font-mono)">KES ${fmt(totalPaid,2)}</td><td></td></tr>`;
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    document.getElementById('drillContent').innerHTML = html;
+  } catch(e) {
+    document.getElementById('drillContent').innerHTML = '<div style="color:var(--red)">Failed to load: '+(e.error||e.message||'')+'</div>';
+  }
 }
 
 function renderWages() {
@@ -607,11 +788,18 @@ function renderWages() {
   </div>`;
   for (const wk of w.workers) {
     const ta = wk.accrued_operator + wk.accrued_knuckler;
-    const tp = wk.paid_operator    + wk.paid_knuckler;
-    const bal = wk.balance_operator + wk.balance_knuckler;
+    // Card status/color/button amounts now driven by the TRUE all-time
+    // balance, not the period balance. The period balance can be paid off
+    // in cash before/after the slice you're viewing, which previously
+    // caused "Pay Op"/"Pay Kn" to pre-fill an amount larger than what the
+    // all-time overpayment safeguard would accept — triggering a false
+    // "Overpayment not allowed" error even though nothing was wrong.
+    const atOp = wk.all_time_balance_operator  ?? wk.balance_operator;
+    const atKn = wk.all_time_balance_knuckler  ?? wk.balance_knuckler;
+    const bal = atOp + atKn;
     const cls = bal <= 0 ? 'settled' : bal < ta ? 'partial' : 'overdue';
     html += `<div class="liability-card ${cls}"><div class="liability-row">
-      <div><div class="liability-name">${escHtml(wk.name||'Unknown')}</div>
+      <div style="cursor:pointer" onclick="openWorkerDrill(${wk.user_id})"><div class="liability-name">${escHtml(wk.name||'Unknown')}</div>
         <div class="liability-meta">
           ${(wk.accrued_operator>0||wk.paid_operator>0)?`Op: KES ${fmt(wk.accrued_operator,2)} accrued / KES ${fmt(wk.paid_operator,2)} paid`:''}
           ${(wk.accrued_operator>0||wk.paid_operator>0)&&(wk.accrued_knuckler>0||wk.paid_knuckler>0)?' · ':''}
@@ -620,13 +808,39 @@ function renderWages() {
       <div class="liability-amounts">
         <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${bal>0?'red':'green'}">KES ${fmt(Math.max(0,bal),2)}</div></div>
         ${bal>0?`<div style="display:flex;flex-direction:column;gap:.3rem">
-          ${wk.accrued_operator>0&&wk.balance_operator>0?`<button class="settle-btn" onclick="openPayModal('wages_operator',${wk.user_id},null,null,${wk.balance_operator})">Pay Op</button>`:''}
-          ${wk.accrued_knuckler>0&&wk.balance_knuckler>0?`<button class="settle-btn" onclick="openPayModal('wages_knuckler',${wk.user_id},null,null,${wk.balance_knuckler})">Pay Kn</button>`:''}
-        </div>`:`<span class="badge badge-green">✓ Settled</span>`}
+          ${atOp>0?`<button class="settle-btn" onclick="openPayModal('wages_operator',${wk.user_id},null,null,${atOp})">Pay Op</button>`:''}
+          ${atKn>0?`<button class="settle-btn" onclick="openPayModal('wages_knuckler',${wk.user_id},null,null,${atKn})">Pay Kn</button>`:''}
+        </div>`:`<span class="badge badge-green" style="cursor:pointer" onclick="showWorkerPaidDate(${wk.user_id})">✓ Settled</span>`}
       </div>
     </div></div>`;
   }
   el.innerHTML = html;
+}
+
+// Shows when a settled worker was last paid, mirroring showSupplierPaidDate.
+// Looks across all time so it agrees with the now all-time-based Settled
+// badge above — a worker paid in a different period than the work they did
+// must still show "Settled" and the correct payment date when sliced narrow.
+async function showWorkerPaidDate(userId) {
+  const wk = (_summary.wages?.workers || []).find(x => x.user_id === userId);
+  const name = wk?.name || 'Worker';
+  try {
+    const [opPayments, knPayments] = await Promise.all([
+      api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=wages_operator`),
+      api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=wages_knuckler`),
+    ]);
+    const matches = [...opPayments, ...knPayments]
+      .filter(p => p.payee_user_id === userId)
+      .sort((a,b) => (b.payment_date+b.created_at).localeCompare(a.payment_date+a.created_at));
+    if (!matches.length) {
+      showToast(`${name}: no payment found.`, 'warn', 4000);
+      return;
+    }
+    const latest = matches[0];
+    showToast(`${name} paid KES ${fmt(latest.amount,2)} on ${latest.payment_date}.`, 'success', 5000);
+  } catch (e) {
+    showToast('Could not load payment date: ' + (e.message || e.error || 'Unknown error'), 'error');
+  }
 }
 
 function renderSuppliers() {
@@ -660,17 +874,39 @@ function renderSuppliers() {
       </div>
     </div>`;
   for (const sup of s.breakdown) {
-    const cls = sup.balance<=0?'settled':sup.balance<sup.total_billed?'partial':'overdue';
+    const atBal = sup.all_time_balance ?? sup.balance;
+    const cls = atBal<=0?'settled':atBal<sup.total_billed?'partial':'overdue';
     html += `<div class="liability-card ${cls}"><div class="liability-row">
-      <div><div class="liability-name">${escHtml(sup.supplier_name)}</div>
+      <div style="cursor:pointer" onclick="openSupplierDrill(${sup.supplier_id})"><div class="liability-name">${escHtml(sup.supplier_name)}</div>
         <div class="liability-meta">Billed: KES ${fmt(sup.total_billed,2)} &middot; Paid: KES ${fmt(sup.total_paid,2)}</div></div>
       <div class="liability-amounts">
-        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${sup.balance>0?'red':'green'}">KES ${fmt(Math.max(0,sup.balance),2)}</div></div>
-        ${sup.balance>0?`<button class="settle-btn" onclick="openPayModal('supplier',null,${sup.supplier_id},null,${sup.balance})">Pay</button>`:`<span class="badge badge-green">✓ Settled</span>`}
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${atBal>0?'red':'green'}">KES ${fmt(Math.max(0,atBal),2)}</div></div>
+        ${atBal>0?`<button class="settle-btn" onclick="openPayModal('supplier',null,${sup.supplier_id},null,${atBal})">Pay</button>`:`<span class="badge badge-green" style="cursor:pointer" onclick="showSupplierPaidDate(${sup.supplier_id})">✓ Settled</span>`}
       </div>
     </div></div>`;
   }
   el.innerHTML = html;
+}
+
+// Shows when a settled supplier was last paid. Looks across all time (not
+// just the visible slice) so it matches the Settled badge above, which is
+// now also based on the supplier's all-time balance — paying off a May bill
+// in June must still show "Settled" and the correct June date when sliced to May.
+async function showSupplierPaidDate(supplierId) {
+  const sup = (_summary.suppliers?.breakdown || []).find(s => s.supplier_id === supplierId);
+  const supplierName = sup?.supplier_name || 'Supplier';
+  try {
+    const payments = await api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=supplier`);
+    const matches = payments.filter(p => p.payee_supplier_id === supplierId);
+    if (!matches.length) {
+      showToast(`${supplierName}: no payment found.`, 'warn', 4000);
+      return;
+    }
+    const latest = matches[0]; // already ordered DESC by payment_date, created_at
+    showToast(`${supplierName} paid KES ${fmt(latest.amount,2)} on ${latest.payment_date}.`, 'success', 5000);
+  } catch (e) {
+    showToast('Could not load payment date: ' + (e.message || e.error || 'Unknown error'), 'error');
+  }
 }
 
 function renderRent() {
@@ -722,19 +958,40 @@ function renderRent() {
 
 function renderSack() {
   const s = _summary.sack, el = document.getElementById('sackDetail');
+  // Outstanding/Balance/button now driven by the TRUE all-time balance, not
+  // the period balance — a sack cost incurred in one month but paid in
+  // another previously showed as outstanding here even when fully settled.
+  const atBal = s.all_time_balance ?? Math.max(0, s.balance);
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;margin-bottom:1.25rem">
       <div class="kpi"><div class="kpi-label">Accrued</div><div class="kpi-value mono">${fmt(s.accrued,2)}</div></div>
       <div class="kpi"><div class="kpi-label">Paid</div><div class="kpi-value mono" style="color:#16a34a">${fmt(s.paid,2)}</div></div>
-      <div class="kpi ${s.balance>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(Math.max(0,s.balance),2)}</div></div>
+      <div class="kpi ${atBal>0?'danger':''}"><div class="kpi-label">Outstanding</div><div class="kpi-value mono">${fmt(atBal,2)}</div></div>
     </div>
-    <div class="liability-card ${s.balance<=0?'settled':'overdue'}"><div class="liability-row">
-      <div><div class="liability-name">Sack Costs</div><div class="liability-meta">From all production runs</div></div>
+    <div class="liability-card ${atBal<=0?'settled':'overdue'}"><div class="liability-row">
+      <div style="cursor:pointer" onclick="openSackDrill()"><div class="liability-name">Sack Costs</div><div class="liability-meta">From all production runs</div></div>
       <div class="liability-amounts">
-        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${s.balance>0?'red':'green'}">KES ${fmt(Math.max(0,s.balance),2)}</div></div>
-        ${s.balance>0?`<button class="settle-btn" onclick="openPayModal('sack',null,null,null,${s.balance})">Record Payment</button>`:`<span class="badge badge-green">✓ Settled</span>`}
+        <div class="amt-block"><div class="amt-label">Balance</div><div class="amt-value ${atBal>0?'red':'green'}">KES ${fmt(atBal,2)}</div></div>
+        ${atBal>0?`<button class="settle-btn" onclick="openPayModal('sack',null,null,null,${atBal})">Record Payment</button>`:`<span class="badge badge-green" style="cursor:pointer" onclick="showSackPaidDate()">✓ Settled</span>`}
       </div>
     </div></div>`;
+}
+
+// Shows when sack costs were last paid, mirroring showSupplierPaidDate.
+// Looks across all time so it agrees with the now all-time-based Settled
+// badge above.
+async function showSackPaidDate() {
+  try {
+    const payments = await api('GET', `/reconciliation/payments?from=2000-01-01&to=2099-12-31&category=sack`);
+    if (!payments.length) {
+      showToast('Sack Costs: no payment found.', 'warn', 4000);
+      return;
+    }
+    const latest = payments[0]; // already ordered DESC by payment_date, created_at
+    showToast(`Sack Costs paid KES ${fmt(latest.amount,2)} on ${latest.payment_date}.`, 'success', 5000);
+  } catch (e) {
+    showToast('Could not load payment date: ' + (e.message || e.error || 'Unknown error'), 'error');
+  }
 }
 
 async function openReconStatement() {

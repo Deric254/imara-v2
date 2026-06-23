@@ -125,23 +125,37 @@ function getDb() {
     },
 
     // True ACID transaction — BEGIN / COMMIT / ROLLBACK
+    //
+    // WHY THE REWRITE: the old implementation used _db.serialize(async () => { … }).
+    // sqlite3's serialize() only serialises *synchronous* _db.run() callbacks; once fn()
+    // hits its first `await`, the serialize queue releases and other in-flight requests
+    // can inject queries between BEGIN and COMMIT, breaking atomicity entirely.
+    //
+    // THE FIX: we serialise at the JavaScript level using a per-database Promise chain
+    // (_txQueue). Every transaction call appends to the tail of the chain so that:
+    //   • only one transaction runs at a time
+    //   • BEGIN, every statement inside fn(), and COMMIT/ROLLBACK all execute
+    //     sequentially without any other request's statements interleaving
+    //   • the queue advances regardless of success or failure (always resolves)
     async transaction(fn) {
-      return new Promise((resolve, reject) => {
-        _db.serialize(async () => {
-          _db.run('BEGIN TRANSACTION', async (err) => {
-            if (err) return reject(err);
-            try {
-              const result = await fn();
-              _db.run('COMMIT', (err) => {
-                if (err) reject(err);
-                else resolve(result);
-              });
-            } catch (e) {
-              _db.run('ROLLBACK', () => reject(e));
-            }
-          });
+      // Advance the tail; if a previous transaction is still running we wait for it.
+      const run = () => new Promise((resolve, reject) => {
+        const exec = (sql, cb) => _db.run(sql, cb);
+        exec('BEGIN TRANSACTION', (err) => {
+          if (err) return reject(err);
+          fn().then(
+            (result) => exec('COMMIT', (e) => (e ? reject(e) : resolve(result))),
+            (e)      => exec('ROLLBACK', () => reject(e)),
+          );
         });
       });
+
+      // Chain onto the tail so this transaction waits for any in-progress one.
+      _db._txQueue = (_db._txQueue || Promise.resolve()).then(
+        () => run(),
+        () => run(),  // previous tx failed — still run this one
+      );
+      return _db._txQueue;
     },
 
     close() {
@@ -453,6 +467,9 @@ async function initDb() {
     ['transport_to_market','0'],
     ['invoice_prefix',    'INV'],
     ['invoice_tax_pct',   '0'],
+    // Backup resilience — added v2.4
+    ['backup_second_path', ''],   // owner-set second save location (USB / network share)
+    ['last_backup_at',     ''],   // ISO timestamp of last successful export
   ];
 
   for (const [k, v] of configKeys) {
@@ -481,8 +498,56 @@ async function initDb() {
 
   console.log(`✅  IMARA LINKS DB ready (SQLite3 Local) — Database: ${dbPath}`);
 
-  // ── Startup hygiene — runs silently on every boot ────────────────────────────
-  // 1. Delete expired password reset tokens (they're useless after expiry)
+  // ── Startup integrity check — payment drift ──────────────────────────────────
+  // If invoices.amount_paid differs from Σ(invoice_payments) by more than half a
+  // shilling, log a warning so the owner can investigate.  This is diagnostic
+  // only — the live cash-payment route now derives amount_paid from the ledger
+  // sum inside the transaction, so drift should not accumulate going forward.
+  try {
+    const drifted = await db.prepare(`
+      SELECT i.invoice_number, i.customer_name,
+             ROUND(i.amount_paid - COALESCE(SUM(ip.amount),0), 2) AS drift
+      FROM invoices i
+      LEFT JOIN invoice_payments ip ON ip.invoice_id = i.id
+      GROUP BY i.id
+      HAVING ABS(ROUND(i.amount_paid - COALESCE(SUM(ip.amount),0), 2)) > 0.005
+    `).all();
+    if (drifted && drifted.length) {
+      console.warn(`⚠️   Payment integrity: ${drifted.length} invoice(s) have amount_paid drift > 0.005 — run migration 008 to heal.`);
+      for (const d of drifted) {
+        console.warn(`    ${d.invoice_number}  ${d.customer_name}  drift=${d.drift}`);
+      }
+    }
+  } catch (_) { /* non-fatal */ }
+
+  // ── Startup backup health check ──────────────────────────────────────────────
+  // Write a notification if no backup has been exported in 48+ hours.
+  // Never blocks startup. The notification shows on the owner's dashboard bell.
+  try {
+    const lastBkRow  = await db.prepare(`SELECT value FROM config WHERE key='last_backup_at'`).get();
+    const lastBk     = lastBkRow?.value || null;
+    const hoursSince = lastBk ? (Date.now() - new Date(lastBk).getTime()) / 36e5 : Infinity;
+    if (hoursSince > 48) {
+      const existing = await db.prepare(
+        `SELECT id FROM notifications WHERE type='BACKUP_OVERDUE' AND read=0 LIMIT 1`
+      ).get();
+      if (!existing) {
+        const daysOver = lastBk ? Math.floor(hoursSince / 24) : null;
+        const msg = daysOver
+          ? `⚠️ No backup exported in ${daysOver} day(s). Go to Backup page and export one now.`
+          : `⚠️ No backup has ever been exported from this system. Go to the Backup page now.`;
+        const ownerRow = await db.prepare(`SELECT id FROM users WHERE role='owner' LIMIT 1`).get();
+        if (ownerRow) {
+          await db.prepare(
+            `INSERT INTO notifications(user_id, type, message, created_at)
+             VALUES(?, 'BACKUP_OVERDUE', ?, datetime('now'))`
+          ).run(ownerRow.id, msg);
+          console.warn(`⚠️  ${msg}`);
+        }
+      }
+    }
+  } catch(_) { /* non-fatal — never block startup */ }
+
   try {
     const tokenCleanup = await db.prepare(
       "DELETE FROM password_reset_tokens WHERE expires_at < datetime('now')"
