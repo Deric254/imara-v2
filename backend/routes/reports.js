@@ -142,29 +142,28 @@ async function getCfgNumber(db, key) {
   return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
 }
 
-// Actual blended wire cost per kg for P&L COGS, derived from production records
-// in the period. Uses the wire component stored in production.total_cost at the
-// time each batch was entered — the same number the Production page shows.
-// Formula: SUM(total_cost - operator - knuckler - sack - rent) / SUM(kgs_used).
-// Falls back to config cost_per_kg if no production exists in the period
-// (e.g. a sales-only period drawing from prior-period produced stock).
-async function getActualWireCostPerKgFromProduction(db, fromDate, toDate) {
+// Wire cost per kg for a given piece_type_id up to toDate — used only by
+// getLandingCost (suggested price preview). Reads from stored production records.
+async function getWireCostPerKgForPieceType(db, pieceTypeId, toDate) {
   const result = await db.prepare(`
     SELECT
       COALESCE(SUM(
-        total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation
+        pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation
       ), 0) AS total_wire_cost,
-      COALESCE(SUM(kgs_used), 0) AS total_kgs
-    FROM production
-    WHERE entry_date BETWEEN ? AND ?
-  `).get(fromDate, toDate);
+      COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+    FROM production pr
+    JOIN production_items pi ON pi.production_id = pr.id
+    WHERE pi.piece_type_id = ?
+      AND pr.entry_date <= ?
+  `).get(pieceTypeId, toDate);
 
   if (result.total_kgs > 0) return result.total_wire_cost / result.total_kgs;
-  return getCfgNumber(db, 'cost_per_kg');
+  return 0;
 }
 
 async function getLandingCost(db, pt) {
-  const wireCostPerKg = await getActualWireCostPerKgFromProduction(db, '1970-01-01', new Date().toISOString().slice(0, 10));
+  const today         = new Date().toISOString().slice(0, 10);
+  const wireCostPerKg = await getWireCostPerKgForPieceType(db, pt.id, today);
   const operator      = await getCfgNumber(db, 'operator_cost');
   const knuckler      = await getCfgNumber(db, 'knuckler_cost');
   const sack          = await getCfgNumber(db, 'sack_cost');
@@ -176,22 +175,11 @@ async function getLandingCost(db, pt) {
 // Revenue  = cash received on invoice_payments in the period
 // Cost     = cost of goods sold in the period — uses sales.entry_date (accrual for cost)
 // transport_to_market is read from the SAVED sale snapshot (§2, §3, §11, §12).
-// It is never recalculated from config here. Config only sets the default at
-// insert time (in daily.js). Once saved, the value is permanent.
+// wire_cost_per_kg is read from the SAVED sale snapshot — written at insert time
+// from actual production records for that piece type. Immutable after insert.
 // Cost of Sales = wire + labour + sacks + market transport (rent excluded — §4).
-//
-// Wire cost per kg: uses the ACTUAL blended batch cost from production records
-// in the period (not a lifetime purchase average). This matches what the
-// Production page shows and makes COGS reflect what was physically spent on
-// the wire that went into production, not a distorted historical average.
 // ─────────────────────────────────────────────────────────────────────────────
 async function getSalesCostSummary(db, fromDate, toDate) {
-  const wireCostPerKg          = await getActualWireCostPerKgFromProduction(db, fromDate, toDate);
-  const operatorRate           = await getCfgNumber(db, 'operator_cost');
-  const knucklerRate           = await getCfgNumber(db, 'knuckler_cost');
-  const sackRate               = await getCfgNumber(db, 'sack_cost');
-  const conversionCostPerPiece = operatorRate + knucklerRate + (sackRate * 2);
-
   // CASH-BASIS: revenue = money actually received in this period
   const cashReceived = await db.prepare(`
     SELECT COALESCE(SUM(ip.amount), 0) AS total
@@ -202,32 +190,41 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   `).get(fromDate, toDate);
   const revenue = parseFloat(cashReceived.total) || 0;
 
-  // COST OF SALES — accrual, fixed at time of sale.
-  // transport_to_market: read from the SAVED sales row (§11, §12).
-  // This is the single source of truth — never derived from current config.
-  const costRows = await db.prepare(`
+  // CASH-BASIS COSTS: money actually paid out in this period, by category.
+  // Source of truth is the payments table — same source as dashboard and reconciliation.
+  // This ensures dashboard, P&L, and reconciliation always show the same numbers.
+  const [wirePaid, operatorPaid, knucklerPaid, sackPaid, transportPaid] = await Promise.all([
+    db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='supplier'           AND payment_date BETWEEN ? AND ?`).get(fromDate, toDate),
+    db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='wages_operator'    AND payment_date BETWEEN ? AND ?`).get(fromDate, toDate),
+    db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='wages_knuckler'    AND payment_date BETWEEN ? AND ?`).get(fromDate, toDate),
+    db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='sack'              AND payment_date BETWEEN ? AND ?`).get(fromDate, toDate),
+    db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM payments WHERE category='transport_to_market' AND payment_date BETWEEN ? AND ?`).get(fromDate, toDate),
+  ]);
+
+  const wireCost      = parseFloat(wirePaid.total)       || 0;
+  const operatorCost  = parseFloat(operatorPaid.total)   || 0;
+  const knucklerCost  = parseFloat(knucklerPaid.total)   || 0;
+  const sackCost      = parseFloat(sackPaid.total)       || 0;
+  const transportCost = parseFloat(transportPaid.total)  || 0;
+  const convCost      = operatorCost + knucklerCost + sackCost;
+
+  // Operational metrics — pieces and kgs sold in period (for insights/reporting only,
+  // not used to compute costs which come from payments above)
+  const salesMetrics = await db.prepare(`
     SELECT
-      s.quantity,
-      pt.weight_kg,
-      COALESCE(s.transport_to_market, 0) AS transport_to_market
+      COALESCE(SUM(s.quantity), 0)               AS pieces_sold,
+      COALESCE(SUM(s.quantity * pt.weight_kg), 0) AS kgs_sold
     FROM sales s
     JOIN piece_types pt ON pt.id = s.piece_type_id
     WHERE s.entry_date BETWEEN ? AND ?
-  `).all(fromDate, toDate);
+  `).get(fromDate, toDate);
 
-  let piecesSold = 0, kgsSold = 0, transportCost = 0;
-  for (const row of costRows) {
-    const qty       = parseInt(row.quantity, 10) || 0;
-    const wkg       = parseFloat(row.weight_kg) || 0;
-    const transport = parseFloat(row.transport_to_market) || 0;
-    piecesSold    += qty;
-    kgsSold       += qty * wkg;
-    transportCost += transport;
-  }
+  const piecesSold    = parseInt(salesMetrics.pieces_sold)      || 0;
+  const kgsSold       = parseFloat(salesMetrics.kgs_sold)       || 0;
+  const wireCostPerKg = kgsSold > 0 ? wireCost / kgsSold : 0;
+  const convCostPerPc = piecesSold > 0 ? convCost / piecesSold : 0;
 
-  const wireCost    = kgsSold * wireCostPerKg;
-  const convCost    = piecesSold * conversionCostPerPiece;
-  const directCosts = wireCost + convCost + transportCost; // §4 — no rent
+  const directCosts = wireCost + convCost + transportCost;
   const grossProfit = revenue - directCosts;
 
   return {
@@ -235,10 +232,10 @@ async function getSalesCostSummary(db, fromDate, toDate) {
     pieces_sold:               piecesSold,
     kgs_sold:                  kgsSold,
     wire_cost_per_kg:          wireCostPerKg,
-    operator_rate:             operatorRate,
-    knuckler_rate:             knucklerRate,
-    sack_rate:                 sackRate,
-    conversion_cost_per_piece: conversionCostPerPiece,
+    operator_rate:             piecesSold > 0 ? operatorCost / piecesSold : 0,
+    knuckler_rate:             piecesSold > 0 ? knucklerCost / piecesSold : 0,
+    sack_rate:                 piecesSold > 0 ? sackCost / piecesSold : 0,
+    conversion_cost_per_piece: convCostPerPc,
     wire_cost:                 wireCost,
     conversion_cost:           convCost,
     transport_to_market_cost:  transportCost,

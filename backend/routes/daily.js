@@ -59,17 +59,22 @@ async function nextDefaultBatchName(db, supplierId, supplierName, entryDateStr) 
   return `${slugifySupplierName(supplierName)}-${batchDateCode(entryDateStr)}-${seq}`;
 }
 
-async function getActualWireCostPerKgFromProduction(db) {
+// Wire cost per kg for a piece type at a point in time — resolved from all
+// production runs for that piece type up to and including entryDate.
+// Uses production.total_cost minus overheads: the exact stored cost from
+// actual FIFO batch draws. Written to sales.wire_cost_per_kg at insert time
+// and never changed — permanent record of cost at point of sale.
+async function resolveWireCostPerKgForSale(db, pieceTypeId, entryDate) {
   const result = await db.prepare(`
     SELECT
-      COALESCE(SUM(
-        total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation
-      ), 0) AS total_wire_cost,
-      COALESCE(SUM(kgs_used), 0) AS total_kgs
-    FROM production
-  `).get();
-  if (result.total_kgs > 0) return result.total_wire_cost / result.total_kgs;
-  return getCfgNumber(db, 'cost_per_kg');
+      COALESCE(SUM(pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation), 0) AS total_wire_cost,
+      COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+    FROM production pr
+    JOIN production_items pi ON pi.production_id = pr.id
+    WHERE pi.piece_type_id = ?
+      AND pr.entry_date <= ?
+  `).get(pieceTypeId, entryDate);
+  return result.total_kgs > 0 ? result.total_wire_cost / result.total_kgs : 0;
 }
 
 async function getProductionCostBreakdown(db, totalPieces, kgsUsed, wireCostPerKg) {
@@ -127,8 +132,19 @@ router.post('/dismiss-warning', authenticate, async (req, res) => {
 router.get('/production-cost-inputs', authenticate, async (req, res) => {
   try {
     const db = getDb();
+    const today = new Date().toISOString().slice(0, 10);
+    const result = await db.prepare(`
+      SELECT
+        COALESCE(SUM(total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation), 0) AS total_wire_cost,
+        COALESCE(SUM(kgs_used), 0) AS total_kgs
+      FROM production
+      WHERE entry_date <= ?
+    `).get(today);
+    const wireCostPerKg = result.total_kgs > 0
+      ? parseFloat((result.total_wire_cost / result.total_kgs).toFixed(2))
+      : 0;
     res.json({
-      wire_cost_per_kg: parseFloat((await getActualWireCostPerKgFromProduction(db)).toFixed(2)),
+      wire_cost_per_kg: wireCostPerKg,
       operator_rate:    await getCfgNumber(db, 'operator_cost'),
       knuckler_rate:    await getCfgNumber(db, 'knuckler_cost'),
       sack_rate:        await getCfgNumber(db, 'sack_cost'),
@@ -874,12 +890,13 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
 
         // 2. Insert each sale row
         for (const row of enriched) {
+          const wireCostPerKg = await resolveWireCostPerKgForSale(db, row.piece_type_id, entry_date);
           const saleRes = await db.prepare(
-            `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by)
-             VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`
+            `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
           ).run(entry_date, row.piece_type_id, row.quantity, row.selling_price,
                 row.pt.default_price, row.price_overridden, row.transport_to_market,
-                customerName, row.gauge_source, req.user.id);
+                customerName, row.gauge_source, req.user.id, wireCostPerKg);
           saleIds.push(saleRes.lastInsertRowid);
         }
 
@@ -1011,10 +1028,11 @@ router.post('/sales', authenticate, blockProductionStaff,
           throw _e;
         }
 
+        const wireCostPerKg = await resolveWireCostPerKgForSale(db, piece_type_id, entry_date);
         result = await db.prepare(
-          `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by)
-           VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id`
-        ).run(entry_date, piece_type_id, quantity, selling_price, pt.default_price, price_overridden, transport_to_market, buyer_name || '', gauge_source || '', req.user.id);
+          `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+        ).run(entry_date, piece_type_id, quantity, selling_price, pt.default_price, price_overridden, transport_to_market, buyer_name || '', gauge_source || '', req.user.id, wireCostPerKg);
 
         // ── Auto-generate invoice INSIDE the transaction (atomic with the sale) ──
         const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';

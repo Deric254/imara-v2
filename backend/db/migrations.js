@@ -253,6 +253,49 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '009-sales-wire-cost-per-kg',
+    version: '2.6.0',
+    description: 'Add wire_cost_per_kg to sales table. Stores the actual blended wire cost per kg at the time of sale, resolved by FIFO from production records for that piece type. Immutable after insert — permanent record of cost at point of sale.',
+    async up(db) {
+      try {
+        const cols = await db.prepare('PRAGMA table_info(sales)').all();
+        if (!cols.some(c => c.name === 'wire_cost_per_kg')) {
+          await db.exec('ALTER TABLE sales ADD COLUMN wire_cost_per_kg REAL NOT NULL DEFAULT 0');
+        }
+
+        // Backfill existing sales rows: for each sale, compute the blended wire
+        // cost per kg from all production runs for that piece_type_id up to and
+        // including the sale's entry_date. Uses production.total_cost minus
+        // overheads — the exact stored cost from actual FIFO batch draws.
+        const sales = await db.prepare(
+          `SELECT id, piece_type_id, entry_date FROM sales WHERE wire_cost_per_kg = 0`
+        ).all();
+
+        for (const sale of sales) {
+          const result = await db.prepare(`
+            SELECT
+              COALESCE(SUM(pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation), 0) AS total_wire_cost,
+              COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+            FROM production pr
+            JOIN production_items pi ON pi.production_id = pr.id
+            WHERE pi.piece_type_id = ?
+              AND pr.entry_date <= ?
+          `).get(sale.piece_type_id, sale.entry_date);
+
+          const wireCostPerKg = result.total_kgs > 0
+            ? result.total_wire_cost / result.total_kgs
+            : 0;
+
+          await db.prepare(
+            `UPDATE sales SET wire_cost_per_kg = ? WHERE id = ?`
+          ).run(wireCostPerKg, sale.id);
+        }
+      } catch (err) {
+        console.warn('Migration 009:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied
