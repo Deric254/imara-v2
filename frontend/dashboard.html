@@ -25,7 +25,7 @@
 .chart-pair{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
 .chart-pair>.card{min-width:0;overflow:hidden}
 @media(max-width:720px){.chart-pair{grid-template-columns:1fr}}
-.chart-container{position:relative;height:290px;width:100%;overflow:auto;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+.chart-container{position:relative;height:290px;width:100%;overflow:hidden;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
 .chart-reset-btn{position:absolute;top:6px;right:6px;background:rgba(255,255,255,.92);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.2rem .55rem;font-size:.72rem;font-weight:600;color:var(--muted);cursor:pointer;font-family:var(--font);display:none;z-index:10;transition:all .15s}
 .chart-reset-btn:hover{background:var(--g50);color:var(--g700);border-color:var(--g400)}
 .chart-reset-btn.visible{display:block}
@@ -1065,6 +1065,7 @@ async function loadDash(){
       },
       options: cartesianOpts({
         indexAxis:'y',
+        interaction: { mode: 'y', intersect: false },
         plugins:{
           datalabels: endLabel('#1e9a62'),
           tooltip:{ callbacks:{ label: ctx=>{
@@ -1177,6 +1178,7 @@ async function loadDash(){
     const bdColors = showRent
       ? ['#dc2626','#f59e0b','#3b82f6','#8b5cf6','#10b981']
       : ['#dc2626','#f59e0b','#3b82f6','#10b981'];
+    setChartViewport('revenueBreakdownChart', { circularItems: bdLabels.length });
     chartRegistry.set('revenueBreakdownChart', new Chart(document.getElementById('revenueBreakdownChart'),{
       type:'doughnut',
       data:{
@@ -1207,6 +1209,7 @@ async function loadDash(){
     const barColors = showRent
       ? ['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)','rgba(139,92,246,.65)']
       : ['rgba(220,38,38,.65)','rgba(245,158,11,.65)','rgba(59,130,246,.65)'];
+    setChartViewport('costAnalysisChart');
     chartRegistry.set('costAnalysisChart', new Chart(document.getElementById('costAnalysisChart'),{
       type:'bar',
       data:{
