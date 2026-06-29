@@ -996,11 +996,13 @@ async function loadDash(){
         </div>
       </div>`;
 
-    const trendRows = compactTrendData(d.trends || [])
-      .filter(t => t.revenue > 0 || t.production > 0); // skip days with no activity
-    const labels = trendRows.map(t=>t.label);
-    const revs   = trendRows.map(t=>t.revenue);
-    const prods  = trendRows.map(t=>t.production);
+    const trendRows = compactTrendData(d.trends || []);
+    const revenueRows = trendRows.filter(t => t.revenue > 0);
+    const productionRows = trendRows.filter(t => t.production > 0);
+    const labels = revenueRows.map(t=>t.label);
+    const revs   = revenueRows.map(t=>t.revenue);
+    const prodLabels = productionRows.map(t=>t.label);
+    const prods  = productionRows.map(t=>t.production);
 
     /* Revenue trend — line */
     destroyChart('revenueChart');
@@ -1030,25 +1032,25 @@ async function loadDash(){
 
     /* Production — bar */
     destroyChart('prodChart');
-    const prodHasData = labels.length > 0;
-    setChartViewport('prodChart', { xPoints: labels.length });
+    const prodHasData = prodLabels.length > 0;
+    setChartViewport('prodChart', { xPoints: prodLabels.length });
     if (!prodHasData) {
       showNoData('prodChart');
     } else {
       chartRegistry.set('prodChart', new Chart(document.getElementById('prodChart'),{
         type:'bar',
-        data:{ labels, datasets:[{
+        data:{ labels: prodLabels, datasets:[{
           label:'Wire Used', data:prods,
-          backgroundColor:'rgba(217,119,6,.65)', borderRadius:labels.length > 30 ? 2 : 4,
+          backgroundColor:'rgba(217,119,6,.65)', borderRadius:prodLabels.length > 30 ? 2 : 4,
           hoverBackgroundColor:'rgba(217,119,6,.85)'
         }]},
         options: cartesianOpts({
           plugins:{
-            datalabels: labels.length > 30 ? { display: false } : endLabelKg('#d97706'),
+            datalabels: prodLabels.length > 30 ? { display: false } : endLabelKg('#d97706'),
             tooltip:{ callbacks:{ label: ctx=> ctx.parsed.y !== null ? 'Wire: '+fmtKgExact(ctx.parsed.y) : 'No data' }}
           },
           scales:{ x:BASE_SCALES.x, y:{...BASE_SCALES.y, min:0, ticks:{...BASE_SCALES.y.ticks, callback:v=>fmtKg(v)}} }
-        }, labels.length)
+        }, prodLabels.length)
       }));
     }
 

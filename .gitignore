@@ -39,6 +39,7 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+.kilo/
 *.swp
 *.swo
 

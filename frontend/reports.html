@@ -241,7 +241,7 @@ async function loadAll() {
       <div class="kpi best"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Best Seller</div><span>💎</span></div>
         <div class="kpi-value" style="font-size:1rem">${escHtml(topProduct[0])}</div><div class="kpi-sub">${tipSpan(fmt(topProduct[1]), fmtMoneyExact(topProduct[1]))} KES generated</div></div>`;
 
-    const trends = dash?.trends || [];
+    const trends = (dash?.trends || []).filter(t => (parseFloat(t.revenue) || 0) > 0 || (parseFloat(t.kgs_produced) || 0) > 0);
     document.getElementById('trendLabel').textContent = `(${from} → ${to})`;
     if (_trendChart) _trendChart.destroy();
     if (trends.length) {
@@ -250,7 +250,7 @@ async function loadAll() {
           labels: trends.map(t=>t.date.slice(5)),
           datasets:[
             {label:'Revenue (KES)',data:trends.map(t=>t.revenue),backgroundColor:'rgba(30,154,98,.7)',borderRadius:3,yAxisID:'y'},
-            {label:'Kgs Produced',data:trends.map(t=>t.kgs_produced),type:'line',borderColor:'#d97706',borderWidth:2,pointRadius:2,fill:false,tension:0.4,yAxisID:'y2'},
+            {label:'Kgs Produced',data:trends.map(t=>(parseFloat(t.kgs_produced)||0)>0?t.kgs_produced:null),type:'line',borderColor:'#d97706',borderWidth:2,pointRadius:2,fill:false,tension:0.4,yAxisID:'y2'},
           ]
         },
         options:{responsive:true,maintainAspectRatio:true,
