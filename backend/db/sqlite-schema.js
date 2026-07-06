@@ -406,6 +406,35 @@ const TABLE_STATEMENTS = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME
   )`,
+
+  // Customer orders — a request placed before it becomes a real sale. Pending
+  // orders do NOT reserve stock (checked by user decision); availability is
+  // checked at the moment an order is converted to a sale, same as any normal
+  // sale entry. Converting an order calls the exact same sale-creation logic
+  // used by /daily/sales/batch, so a converted order's sales are indistinguishable
+  // from a normal sale everywhere downstream (reconciliation, reports, invoices).
+  `CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_date TEXT NOT NULL,
+    buyer_name TEXT NOT NULL DEFAULT 'Walk-in Customer',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'converted', 'cancelled')),
+    notes TEXT DEFAULT '',
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    converted_at DATETIME,
+    invoice_id INTEGER REFERENCES invoices(id)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
+    quantity INTEGER NOT NULL CHECK(quantity > 0),
+    selling_price REAL,
+    gauge_source TEXT DEFAULT '',
+    transport_to_market REAL,
+    sale_id INTEGER REFERENCES sales(id)
+  )`,
 ];
 
 // ── Indexes ──────────────────────────────────────────────────────────────────

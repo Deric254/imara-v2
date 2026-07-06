@@ -227,6 +227,22 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   const directCosts = wireCost + convCost + transportCost;
   const grossProfit = revenue - directCosts;
 
+  // COGS-MATCHED wire cost: uses the wire_cost_per_kg snapshot saved on each sale
+  // (resolved by FIFO from production at time of sale — immutable). This reflects
+  // only wire actually embedded in pieces that have been SOLD, so a bulk supplier
+  // payment for stock still sitting in the store does not distort profit.
+  // Cash-basis wire_cost above is left untouched — reconciliation and payables
+  // tracking still key off it, per the existing cash-basis contract.
+  const cogsWireSales = await db.prepare(`
+    SELECT COALESCE(SUM(s.quantity * pt.weight_kg * s.wire_cost_per_kg), 0) AS total
+    FROM sales s
+    JOIN piece_types pt ON pt.id = s.piece_type_id
+    WHERE s.entry_date BETWEEN ? AND ?
+  `).get(fromDate, toDate);
+  const cogsWireCost   = parseFloat(cogsWireSales.total) || 0;
+  const cogsDirectCosts = cogsWireCost + convCost + transportCost;
+  const cogsGrossProfit = revenue - cogsDirectCosts;
+
   return {
     revenue,
     pieces_sold:               piecesSold,
@@ -241,6 +257,9 @@ async function getSalesCostSummary(db, fromDate, toDate) {
     transport_to_market_cost:  transportCost,
     direct_costs:              directCosts,
     gross_profit:              grossProfit,
+    cogs_wire_cost:            cogsWireCost,
+    cogs_direct_costs:         cogsDirectCosts,
+    cogs_gross_profit:         cogsGrossProfit,
   };
 }
 
@@ -560,6 +579,13 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
     const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
+    // COGS-matched equivalents — wire cost tied to what was actually sold, not
+    // raw cash paid to suppliers this period. See getSalesCostSummary for detail.
+    const cogsGrossProfit = salesSummary.cogs_gross_profit;
+    const cogsNetProfit   = cogsGrossProfit - rentCost;
+    const cogsGrossMargin = salesSummary.revenue > 0 ? (cogsGrossProfit / salesSummary.revenue * 100) : 0;
+    const cogsNetMargin   = salesSummary.revenue > 0 ? (cogsNetProfit   / salesSummary.revenue * 100) : 0;
+
     // Best piece by cash received
     const best = await db.prepare(`
       SELECT pt.name, ROUND(COALESCE(SUM(ip_agg.amount),0),2) AS revenue
@@ -831,6 +857,12 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
         net_profit:                parseFloat(netProfit.toFixed(2)),
         net_margin_pct:            parseFloat(netMargin.toFixed(1)),
         profit_margin_pct:         parseFloat(netMargin.toFixed(1)),
+        cogs_wire_cost:            parseFloat(salesSummary.cogs_wire_cost.toFixed(2)),
+        cogs_direct_costs_sold:    parseFloat(salesSummary.cogs_direct_costs.toFixed(2)),
+        cogs_gross_profit:         parseFloat(cogsGrossProfit.toFixed(2)),
+        cogs_gross_margin_pct:     parseFloat(cogsGrossMargin.toFixed(1)),
+        cogs_net_profit:           parseFloat(cogsNetProfit.toFixed(2)),
+        cogs_net_margin_pct:       parseFloat(cogsNetMargin.toFixed(1)),
         sold_wire_cost:            parseFloat(salesSummary.wire_cost.toFixed(2)),
         sold_conversion_cost:      parseFloat(salesSummary.conversion_cost.toFixed(2)),
         sales_transport_cost:      parseFloat(salesSummary.transport_to_market_cost.toFixed(2)),
@@ -952,16 +984,19 @@ router.get('/piece-types', authenticate, async (_req, res) => {
 router.post('/piece-types', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { name, length_m, weight_kg, default_price } = req.body;
-    if (!name || !length_m || !weight_kg)
+    const parsedLength = parseFloat(length_m);
+    const parsedWeight = parseFloat(weight_kg);
+    if (!name || length_m === undefined || length_m === null || length_m === '' ||
+        weight_kg === undefined || weight_kg === null || weight_kg === '')
       return res.status(400).json({ error: 'name, length_m, weight_kg required' });
-    if (parseFloat(length_m)  <= 0) return res.status(400).json({ error: 'length_m must be > 0' });
-    if (parseFloat(weight_kg) <= 0) return res.status(400).json({ error: 'weight_kg must be > 0' });
+    if (isNaN(parsedLength) || parsedLength <= 0) return res.status(400).json({ error: 'length_m must be a valid number > 0' });
+    if (isNaN(parsedWeight) || parsedWeight <= 0) return res.status(400).json({ error: 'weight_kg must be a valid number > 0' });
     const db    = getDb();
     const price = parseFloat(default_price) || 0;
     const r = await db.prepare(
       'INSERT INTO piece_types(name, length_m, weight_kg, default_price) VALUES(?,?,?,?) RETURNING id'
-    ).run(name, length_m, weight_kg, price);
-    res.status(201).json({ id: r.lastInsertRowid, name, length_m, weight_kg, default_price: price, active: 1 });
+    ).run(name, parsedLength, parsedWeight, price);
+    res.status(201).json({ id: r.lastInsertRowid, name, length_m: parsedLength, weight_kg: parsedWeight, default_price: price, active: 1 });
   } catch (e) {
     if (e.message?.includes('UNIQUE')) return res.status(409).json({ error: 'Piece type name already exists' });
     res.status(500).json({ error: 'Internal server error' });
@@ -971,15 +1006,20 @@ router.post('/piece-types', authenticate, requireRole('owner', 'admin'), async (
 router.put('/piece-types/:id', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { name, length_m, weight_kg, default_price } = req.body;
-    if (!name || !length_m || !weight_kg)
+    const parsedLength = parseFloat(length_m);
+    const parsedWeight = parseFloat(weight_kg);
+    if (!name || length_m === undefined || length_m === null || length_m === '' ||
+        weight_kg === undefined || weight_kg === null || weight_kg === '')
       return res.status(400).json({ error: 'name, length_m, weight_kg required' });
+    if (isNaN(parsedLength) || parsedLength <= 0) return res.status(400).json({ error: 'length_m must be a valid number > 0' });
+    if (isNaN(parsedWeight) || parsedWeight <= 0) return res.status(400).json({ error: 'weight_kg must be a valid number > 0' });
     const db       = getDb();
     const existing = await db.prepare('SELECT id FROM piece_types WHERE id=?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Piece type not found' });
     const price = parseFloat(default_price) || 0;
     await db.prepare('UPDATE piece_types SET name=?, length_m=?, weight_kg=?, default_price=? WHERE id=?')
-      .run(name, length_m, weight_kg, price, req.params.id);
-    res.json({ message: 'Updated', id: req.params.id, name, length_m, weight_kg, default_price: price });
+      .run(name, parsedLength, parsedWeight, price, req.params.id);
+    res.json({ message: 'Updated', id: req.params.id, name, length_m: parsedLength, weight_kg: parsedWeight, default_price: price });
   } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
 
@@ -1030,7 +1070,10 @@ router.post('/suppliers', authenticate, requireRole('owner', 'admin'), async (re
 
 router.delete('/suppliers/:id', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
-    await getDb().prepare('UPDATE suppliers SET active=0 WHERE id=?').run(req.params.id);
+    const db = getDb();
+    const existing = await db.prepare('SELECT id FROM suppliers WHERE id=?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Supplier not found' });
+    await db.prepare('UPDATE suppliers SET active=0 WHERE id=?').run(req.params.id);
     res.json({ message: 'Supplier deactivated' });
   } catch (e) { res.status(500).json({ error: 'Internal server error' }); }
 });
@@ -1366,15 +1409,34 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
     const wireCostPerKg = salesSummary.wire_cost_per_kg;
     const convPerPiece  = salesSummary.conversion_cost_per_piece;
 
-    const wireCostDetails = detailRows.map(r => ({
+    // Wire cost drill-down: sourced from the SAME population and formula as the
+    // COGS top-line above (sales entered in period, each row's own saved
+    // wire_cost_per_kg) so these rows always sum to cost_breakdown.wire_cost.amount.
+    // Deliberately separate from detailRows below, which is cash-received based
+    // and still correctly backs conversion_cost/transport_cost (those remain
+    // cash-basis, unchanged).
+    const wireDetailRows = await db.prepare(`
+      SELECT s.entry_date      AS entry_date,
+             pt.name            AS piece_name,
+             s.quantity         AS quantity,
+             pt.weight_kg       AS weight_kg,
+             s.wire_cost_per_kg AS wire_cost_per_kg,
+             s.selling_price    AS selling_price
+      FROM sales s
+      JOIN piece_types pt ON pt.id = s.piece_type_id
+      WHERE s.entry_date BETWEEN ? AND ?
+      ORDER BY s.entry_date DESC
+    `).all(fromDate, toDate);
+
+    const wireCostDetails = wireDetailRows.map(r => ({
       entry_date:    r.entry_date,
       piece_name:    r.piece_name,
-      quantity:      Math.round(r.quantity * r.ratio),
+      quantity:      r.quantity,
       weight_kg:     r.weight_kg,
-      kgs_sold:      parseFloat((r.quantity * r.weight_kg * r.ratio).toFixed(3)),
-      wire_cost:     parseFloat((r.quantity * r.weight_kg * r.ratio * wireCostPerKg).toFixed(2)),
+      kgs_sold:      parseFloat((r.quantity * r.weight_kg).toFixed(3)),
+      wire_cost:     parseFloat((r.quantity * r.weight_kg * r.wire_cost_per_kg).toFixed(2)),
       selling_price: r.selling_price,
-      revenue:       parseFloat(r.paid_in_period.toFixed(2)),
+      revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
     }));
 
     const conversionCostDetails = detailRows.map(r => ({
@@ -1404,12 +1466,12 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       ORDER BY month
     `).all(fromDate.slice(0, 7), toDate.slice(0, 7));
 
-    const grossProfit = salesSummary.gross_profit;
+    const grossProfit = salesSummary.cogs_gross_profit;
     const netProfit   = grossProfit - rentCost;
     const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
     const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
-    const wireCostPct      = salesSummary.revenue > 0 ? (salesSummary.wire_cost / salesSummary.revenue * 100) : 0;
+    const wireCostPct      = salesSummary.revenue > 0 ? (salesSummary.cogs_wire_cost / salesSummary.revenue * 100) : 0;
     const convCostPct      = salesSummary.revenue > 0 ? (salesSummary.conversion_cost / salesSummary.revenue * 100) : 0;
     const transportCostPct = salesSummary.revenue > 0 ? (salesSummary.transport_to_market_cost / salesSummary.revenue * 100) : 0;
     const netProfitPct     = salesSummary.revenue > 0 ? (netProfit / salesSummary.revenue * 100) : 0;
@@ -1418,7 +1480,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       period: { from: fromDate, to: toDate },
       summary: {
         total_revenue: parseFloat(salesSummary.revenue.toFixed(2)),
-        total_costs:   parseFloat((salesSummary.direct_costs + rentCost).toFixed(2)),
+        total_costs:   parseFloat((salesSummary.cogs_direct_costs + rentCost).toFixed(2)),
         rent_cost:     parseFloat(rentCost.toFixed(2)),
         net_profit:    parseFloat(netProfit.toFixed(2)),
         gross_margin:  parseFloat(grossMargin.toFixed(1)),
@@ -1426,7 +1488,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       },
       cost_breakdown: {
         wire_cost: {
-          amount:      parseFloat(salesSummary.wire_cost.toFixed(2)),
+          amount:      parseFloat(salesSummary.cogs_wire_cost.toFixed(2)),
           percentage:  parseFloat(wireCostPct.toFixed(1)),
           description: 'Cost of raw wire materials (actual blended batch cost from production)',
           details:     wireCostDetails,

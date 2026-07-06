@@ -256,7 +256,7 @@ pg.innerHTML = `
   <div class="tab-bar">
     <button class="tab active" onclick="switchTab('purchases')">Purchases</button>
     <button class="tab" onclick="switchTab('production')">Production</button>
-    <button class="tab" onclick="switchTab('sales')">Sales</button>
+    <button class="tab" onclick="switchTab('sales')">Orders</button>
   </div>
 
   <!-- PURCHASES -->
@@ -373,17 +373,23 @@ pg.innerHTML = `
     </div>
   </div>
 
-  <!-- SALES -->
+  <!-- ORDERS (progresses to a Sale on Finalize) -->
   <div class="section" id="tab-sales">
     <div class="card">
-      <div class="card-title">Sale Entry</div>
+      <div class="card-title">Order Entry</div>
 
-      <!-- Buyer name — shared for all items in this sale -->
-      <div class="form-group" style="margin-bottom:1rem">
-        <label class="label">Buyer Name <span style="color:var(--red)">*</span></label>
-        <div class="autocomplete-container" style="position:relative">
-          <input class="input" type="text" id="s_buyer_name" placeholder="Type customer name…" autocomplete="off" oninput="onBuyerInput(this.value)">
-          <div id="s_buyer_name_suggestions" class="suggestions-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:200px;overflow-y:auto;z-index:100;box-shadow:var(--shadow)"></div>
+      <!-- Buyer name + transport — one entry each per order, not per line item -->
+      <div class="form-row" style="display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
+        <div class="form-group" style="flex:2;min-width:200px">
+          <label class="label">Buyer Name <span style="color:var(--red)">*</span></label>
+          <div class="autocomplete-container" style="position:relative">
+            <input class="input" type="text" id="s_buyer_name" placeholder="Type customer name…" autocomplete="off" oninput="onBuyerInput(this.value)">
+            <div id="s_buyer_name_suggestions" class="suggestions-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:200px;overflow-y:auto;z-index:100;box-shadow:var(--shadow)"></div>
+          </div>
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px">
+          <label class="label">Transport (KES)</label>
+          <input class="input" type="number" id="s_transport" min="0" step="0.01" placeholder="auto">
         </div>
       </div>
 
@@ -407,8 +413,27 @@ pg.innerHTML = `
 
       <div id="s_err" class="err"></div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.85rem">
-        <button class="btn btn-primary" onclick="submitAllSales()" id="queue_submit_btn" style="background:#083d28">✅ Submit Sale</button>
+        <button class="btn btn-primary" onclick="finalizeOrderNow()" id="queue_submit_btn" style="background:#083d28">✅ Finalize Order</button>
+        <button class="btn btn-secondary" onclick="saveOrderPending()" id="save_order_btn">💾 Save Order</button>
         <button class="btn btn-secondary" onclick="resetSaleForm()">✕ Clear Form</button>
+      </div>
+    </div>
+
+    <div style="margin-top:1.5rem">
+      <div class="kpi-row" style="display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-bottom:1rem">
+        <div class="kpi"><div class="kpi-body"><div class="kpi-label">Pending Orders</div><div class="kpi-value" id="ord_kpi_pending">—</div></div></div>
+        <div class="kpi"><div class="kpi-body"><div class="kpi-label">Finalized Orders</div><div class="kpi-value" id="ord_kpi_finalized">—</div></div></div>
+        <div class="kpi"><div class="kpi-body"><div class="kpi-label">Cancelled Orders</div><div class="kpi-value" id="ord_kpi_cancelled">—</div></div></div>
+      </div>
+      <div class="section-header" style="margin-bottom:.75rem">
+        <div class="section-title" style="font-size:.9rem">Orders</div>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr>
+          <th>Date</th><th>Buyer</th><th>Items</th><th>Status</th><th></th>
+        </tr></thead>
+        <tbody id="o_list"><tr class="loading-row"><td colspan="5"><div class="spinner"></div></td></tr></tbody>
+        </table>
       </div>
     </div>
 
@@ -921,21 +946,60 @@ async function loadTabData(tab) {
       window._lastSales = rows;
       if (!rows||!rows.length) {
         tb.innerHTML=`<tr><td colspan="${canDelete?9:8}" class="empty"><div class="empty-text">No sales yet for ${d}</div></td></tr>`;
-        return;
+      } else {
+        exportBtn.style.display = 'block';
+        tb.innerHTML=rows.map(r=>`<tr>
+          <td>${escHtml(r.piece_name)}</td>
+          <td class="mono">${fmt(r.quantity)}</td>
+          <td class="mono">${fmt(r.selling_price,2)}</td>
+          <td class="mono">${fmt(r.revenue,2)}</td>
+          <td class="mono">${fmt(r.kgs_sold,2)}</td>
+          <td class="mono">${fmt(r.meters_sold,1)}</td>
+          <td>${escHtml(r.buyer_name || '—')}</td>
+          <td>${escHtml(r.gauge_source || '—')}</td>
+          ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('sales',${r.id})">✕</button></td>`:''}
+        </tr>`).join('');
       }
-      exportBtn.style.display = 'block';
-      tb.innerHTML=rows.map(r=>`<tr>
-        <td>${escHtml(r.piece_name)}</td>
-        <td class="mono">${fmt(r.quantity)}</td>
-        <td class="mono">${fmt(r.selling_price,2)}</td>
-        <td class="mono">${fmt(r.revenue,2)}</td>
-        <td class="mono">${fmt(r.kgs_sold,2)}</td>
-        <td class="mono">${fmt(r.meters_sold,1)}</td>
-        <td>${escHtml(r.buyer_name || '—')}</td>
-        <td>${escHtml(r.gauge_source || '—')}</td>
-        ${canDelete?`<td><button class="btn btn-danger btn-sm" onclick="deleteRecord('sales',${r.id})">✕</button></td>`:''}
-      </tr>`).join('');
     } catch(e){ tb.innerHTML=`<tr><td colspan="${canDelete?9:8}" class="empty"><div class="empty-text">Error loading data</div></td></tr>`; PageProgress.error(); return; }
+
+    // Orders — KPI counts + tracked list, same tab as sales since an order
+    // simply progresses into a sale once finalized.
+    const otb = document.getElementById('o_list');
+    otb.innerHTML = `<tr class="skel-row">${Array(5).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
+    try {
+      const ores = await api('GET', '/orders');
+      const orows = ores.orders || [];
+      window._lastOrders = orows;
+      const sum = ores.summary || {};
+      document.getElementById('ord_kpi_pending').textContent   = sum.pending_orders   ?? 0;
+      document.getElementById('ord_kpi_finalized').textContent = sum.converted_orders ?? 0;
+      document.getElementById('ord_kpi_cancelled').textContent = sum.cancelled_orders ?? 0;
+
+      if (!orows.length) {
+        otb.innerHTML = `<tr><td colspan="5" class="empty"><div class="empty-text">No orders yet</div></td></tr>`;
+      } else {
+        const canManage = user.role === 'owner' || user.role === 'admin';
+        otb.innerHTML = orows.map(o => {
+          const itemsSummary = (o.items || []).map(it => `${escHtml(it.piece_name)} × ${fmt(it.quantity)}`).join(', ') || '—';
+          const statusBadge = o.status === 'pending'
+            ? `<span style="color:var(--amber,#b45309);font-weight:600">Pending</span>`
+            : o.status === 'converted'
+              ? `<span style="color:var(--g600);font-weight:600">Finalized</span>`
+              : `<span style="color:var(--muted);font-weight:600">Cancelled</span>`;
+          const actions = o.status === 'pending'
+            ? `<button class="btn btn-primary btn-sm" onclick="convertOrder(${o.id})">Finalize Order</button>` +
+              (canManage ? ` <button class="btn btn-danger btn-sm" onclick="cancelOrder(${o.id})">Cancel</button>` : '')
+            : '—';
+          return `<tr>
+            <td>${escHtml(o.order_date)}</td>
+            <td>${escHtml(o.buyer_name)}</td>
+            <td style="font-size:.82rem">${itemsSummary}</td>
+            <td>${statusBadge}</td>
+            <td>${actions}</td>
+          </tr>`;
+        }).join('');
+      }
+    } catch(e){ otb.innerHTML=`<tr><td colspan="5" class="empty"><div class="empty-text">Error loading orders</div></td></tr>`; }
   }
   PageProgress.done();
 }
@@ -1619,6 +1683,7 @@ function calcSaleTotals() {
 function resetSaleForm() {
   document.getElementById('sale_items_container').innerHTML = '';
   document.getElementById('s_buyer_name').value = '';
+  document.getElementById('s_transport').value = '';
   document.getElementById('s_buyer_name_suggestions').style.display = 'none';
   document.getElementById('s_summary').style.display = 'none';
   showErr('s_err', '');
@@ -1650,6 +1715,19 @@ function _getSaleRows() {
   return items;
 }
 
+// Applies the single order-level Transport field (if any) to a set of rows.
+// Blank = every row falls back to its own normal default calc, unchanged.
+// A typed value (incl. 0) is charged ONCE for the whole order — placed on the
+// first row only, with every other row explicitly set to 0 — so multi-item
+// orders are never silently charged transport more than once.
+function _applyOrderLevelTransport(rows) {
+  const el = document.getElementById('s_transport');
+  const raw = el ? el.value.trim() : '';
+  if (raw === '') return rows; // no override — every row uses its own default
+  const total = parseFloat(raw) || 0;
+  return rows.map((r, i) => ({ ...r, transport_to_market: i === 0 ? total : 0 }));
+}
+
 // Main submit — validates all rows, checks live stock, writes each to DB
 async function submitAllSales() {
   if (_saleSubmitting) return;
@@ -1658,10 +1736,8 @@ async function submitAllSales() {
   const buyer_name = document.getElementById('s_buyer_name').value.trim();
   if (!buyer_name) return showErr('s_err', 'Buyer name is required');
 
-  const rows = _getSaleRows();
+  const rows = _applyOrderLevelTransport(_getSaleRows());
   if (!rows.length) return showErr('s_err', 'Add at least one item');
-
-  // Validate all rows first — highlight the specific problem row
   for (const r of rows) {
     const rowEl = document.getElementById(`srow_${r.rid}`);
     const highlight = (fieldId) => {
@@ -1720,6 +1796,7 @@ async function submitAllSales() {
         quantity:      r.quantity,
         selling_price: r.selling_price,
         gauge_source:  r.gauge_source,
+        ...(r.transport_to_market !== undefined ? { transport_to_market: r.transport_to_market } : {}),
       })),
     });
 
@@ -1753,6 +1830,78 @@ async function submitAllSales() {
 
 // Keep submitSale as alias for Ctrl+Enter shortcut compatibility
 async function submitSale() { return submitAllSales(); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORDERS — one form drives both outcomes:
+//   Finalize Order → same proven path as the old "Submit Sale" (unchanged),
+//                     stock checked immediately, sale created immediately.
+//   Save Order     → stored as a pending order, stock NOT checked yet;
+//                     finalized or cancelled later from the list below.
+// Both read the exact same rows via _getSaleRows() — one form, no duplication.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// "Finalize Order" is the same action as before, just relabeled to match the
+// new order-first language. No new code path — same validation, same result.
+async function finalizeOrderNow() { return submitAllSales(); }
+
+async function saveOrderPending() {
+  showErr('s_err', '');
+  const buyer_name = document.getElementById('s_buyer_name').value.trim();
+  const rows = _applyOrderLevelTransport(_getSaleRows());
+  if (!rows.length) return showErr('s_err', 'Add at least one item');
+  for (const r of rows) {
+    if (!r.piece_type_id) return showErr('s_err', 'Select a piece type for every row');
+    if (!r.quantity || r.quantity < 1) return showErr('s_err', 'Enter a valid quantity (≥ 1) for every row');
+  }
+
+  const btn = document.getElementById('save_order_btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+
+  try {
+    const d = document.getElementById('entryDate').value;
+    const items = rows.map(r => ({
+      piece_type_id: r.piece_type_id,
+      quantity:      r.quantity,
+      gauge_source:  r.gauge_source,
+      selling_price: r.selling_price,
+      ...(r.transport_to_market !== undefined ? { transport_to_market: r.transport_to_market } : {}),
+    }));
+    await api('POST', '/orders', { order_date: d, buyer_name, items });
+    showToast('✅ Order saved (pending)');
+    resetSaleForm();
+    await loadTabData('sales');
+  } catch(e) {
+    const msg = e.error || (e.errors && e.errors[0]?.msg) || 'Save failed';
+    showErr('s_err', `Failed: ${msg}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Save Order'; }
+  }
+}
+
+async function convertOrder(orderId) {
+  try {
+    const d = document.getElementById('entryDate').value;
+    await api('POST', `/orders/${orderId}/convert`, { entry_date: d });
+    showToast('✅ Order finalized');
+    invalidateStockCaches();
+    await loadTabData('sales');
+  } catch(e) {
+    const msg = e.error || 'Finalize failed';
+    showToast(`❌ ${msg}`, 'error', 5000);
+  }
+}
+
+async function cancelOrder(orderId) {
+  if (!confirm('Cancel this order? This cannot be undone.')) return;
+  try {
+    await api('POST', `/orders/${orderId}/cancel`, {});
+    showToast('Order cancelled');
+    await loadTabData('sales');
+  } catch(e) {
+    const msg = e.error || 'Cancel failed';
+    showToast(`❌ ${msg}`, 'error', 5000);
+  }
+}
 
 // Stub — no longer used but referenced by old gauge-source listener setup
 function fillSalePrice() {}

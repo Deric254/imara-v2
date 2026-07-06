@@ -291,6 +291,7 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use('/api/database',       require('./backend/routes/database'));
     backendApp.use('/api/invoices',       require('./backend/routes/invoices'));
     backendApp.use('/api/inventory',      require('./backend/routes/inventory'));
+    backendApp.use('/api',                require('./backend/routes/orders'));
     backendApp.use('/api',                require('./backend/routes/reports'));
 
     backendApp.get('/health', (_req, res) => res.json({ status: 'ok', version: app.getVersion() }));

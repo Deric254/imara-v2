@@ -698,7 +698,12 @@ if (user.role === 'admin') {
   </div>
   <div class="chart-pair">
     <div class="card"><div class="card-title">Where Revenue Goes</div>
-      <div class="chart-container"><canvas id="revenueBreakdownChart"></canvas></div></div>
+      <div class="chart-container"><canvas id="revenueBreakdownChart"></canvas></div>
+      <div style="text-align:center;margin-top:.5rem">
+        <button type="button" id="wireDetailsToggleBtn" onclick="toggleWireCostDetails()" style="background:none;border:none;color:var(--muted);font-size:.78rem;cursor:pointer;text-decoration:underline;padding:.2rem">View wire cost details</button>
+      </div>
+      <div id="wireCostDetailsPanel" style="display:none;margin-top:.5rem;max-height:220px;overflow-y:auto;font-size:.78rem"></div>
+    </div>
     <div class="card"><div class="card-title">Cost Breakdown</div>
       <div class="chart-container"><canvas id="costAnalysisChart"></canvas></div></div>
   </div>
@@ -850,6 +855,48 @@ function _granularity(from, to) {
 
 
 let _dashLoading = false;
+let _wireCostDetailsData = [];
+
+// Click to show the wire cost drill-down, click again to hide it.
+// Pure show/hide toggle — no refetch, no chart interaction, nothing else touched.
+function toggleWireCostDetails() {
+  const panel = document.getElementById('wireCostDetailsPanel');
+  const btn   = document.getElementById('wireDetailsToggleBtn');
+  if (!panel) return;
+
+  const isOpen = panel.style.display !== 'none';
+  if (isOpen) {
+    panel.style.display = 'none';
+    if (btn) btn.textContent = 'View wire cost details';
+    return;
+  }
+
+  if (!_wireCostDetailsData.length) {
+    panel.innerHTML = '<div style="padding:.5rem;color:var(--muted)">No wire cost detail for this period.</div>';
+  } else {
+    const rows = _wireCostDetailsData.map(r => `
+      <tr>
+        <td style="padding:.3rem .5rem">${escHtml(r.entry_date || '')}</td>
+        <td style="padding:.3rem .5rem">${escHtml(r.piece_name || '')}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${r.quantity}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${compactKES(r.wire_cost)}</td>
+      </tr>`).join('');
+    panel.innerHTML = `
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="color:var(--muted);text-align:left">
+            <th style="padding:.3rem .5rem">Date</th>
+            <th style="padding:.3rem .5rem">Piece</th>
+            <th style="padding:.3rem .5rem;text-align:right">Qty</th>
+            <th style="padding:.3rem .5rem;text-align:right">Wire Cost</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+  panel.style.display = 'block';
+  if (btn) btn.textContent = 'Hide wire cost details';
+}
 async function loadDash(){
   if(_dashLoading) return;
   if(user.role!=='owner') return;
@@ -868,23 +915,28 @@ async function loadDash(){
   if(gw&&gb){gw.style.display='flex';gb.textContent=gran;}
 
   try {
-    // Fire all 5 fetches in parallel; update progress as each resolves
+    // Fire all 6 fetches in parallel; update progress as each resolves
     PageProgress.show(12, 'Fetching KPIs…');
-    const [d, inv, wp, sp, rb] = await Promise.all([
-      api('GET',`/dashboard?from=${from}&to=${to}`).then(r=>{ PageProgress.show(35,'Loading inventory…'); return r; }),
-      api('GET','/inventory').then(r=>{ PageProgress.show(50,'Loading worker data…'); return r; }),
-      api('GET',`/worker-production?from=${from}&to=${to}`).then(r=>{ PageProgress.show(65,'Loading sales mix…'); return r; }),
-      api('GET',`/sales-by-piece?from=${from}&to=${to}`).then(r=>{ PageProgress.show(80,'Loading revenue breakdown…'); return r; }),
-      api('GET',`/revenue-breakdown?from=${from}&to=${to}`).then(r=>{ PageProgress.show(92,'Rendering charts…'); return r; }),
+    const [d, inv, wp, sp, rb, ord] = await Promise.all([
+      api('GET',`/dashboard?from=${from}&to=${to}`).then(r=>{ PageProgress.show(30,'Loading inventory…'); return r; }),
+      api('GET','/inventory').then(r=>{ PageProgress.show(45,'Loading worker data…'); return r; }),
+      api('GET',`/worker-production?from=${from}&to=${to}`).then(r=>{ PageProgress.show(60,'Loading sales mix…'); return r; }),
+      api('GET',`/sales-by-piece?from=${from}&to=${to}`).then(r=>{ PageProgress.show(72,'Loading revenue breakdown…'); return r; }),
+      api('GET',`/revenue-breakdown?from=${from}&to=${to}`).then(r=>{ PageProgress.show(85,'Loading orders…'); return r; }),
+      api('GET','/orders').then(r=>{ PageProgress.show(92,'Rendering charts…'); return r; }),
     ]);
 
     // api() returns null when the server responds with 401 (session expired).
     // The handle401() in shared.js already shows the modal and redirects —
     // just stop here silently so we don't crash into "Failed to load dashboard data".
     if (!d || !inv || !wp || !sp || !rb) return;
+    const orderSummary = (ord && ord.summary) || { pending_orders: 0, converted_orders: 0, cancelled_orders: 0, total_orders: 0 };
 
-    // Check for zero-data period (all KPIs are zero, no trends)
-    const hasData = d.kpis && (d.kpis.total_revenue > 0 || d.kpis.total_purchases > 0 || d.kpis.total_production > 0);
+    // Check for zero-data period (all KPIs are zero, no trends, AND no order
+    // activity at all — a pending order is real activity even before it's
+    // finalized into a sale, so it should never be hidden behind this message)
+    const hasData = (d.kpis && (d.kpis.total_revenue > 0 || d.kpis.total_purchases > 0 || d.kpis.total_production > 0))
+      || orderSummary.total_orders > 0;
     if (!hasData && (!d.trends || d.trends.length === 0)) {
       document.getElementById('kpiGrid').innerHTML = `
         <div style="grid-column:1/-1;text-align:center;padding:2.5rem 1rem;color:var(--muted)">
@@ -930,20 +982,28 @@ async function loadDash(){
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
-      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · ${from} → ${to}">
-        <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
+      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · cost of items actually sold · ${from} → ${to}">
+        <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
           <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?k.net_profit:k.gross_profit), fmtMoneyExact(showRent?k.net_profit:k.gross_profit))}</div>
-          <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
+          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
       <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent on items sold':'Wire + labour + sacks + transport on items sold'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold), fmtMoneyExact(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold))}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold), fmtMoneyExact(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.cogs_net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
+        </div>
+      </div>
+      <div class="kpi" title="Order pipeline — pending / finalized / cancelled, all-time snapshot">
+        <div class="kpi-icon">📝</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Orders</div>
+          <div class="kpi-value">${orderSummary.pending_orders} pending</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${orderSummary.converted_orders} finalized · ${orderSummary.cancelled_orders} cancelled</span></div>
         </div>
       </div>
       <div class="kpi" title="Wire used in production · ${from} → ${to}">
@@ -1167,6 +1227,16 @@ async function loadDash(){
        Controlled by show_rent_dashboard config — no backend logic changed. */
     destroyChart('revenueBreakdownChart');
     const bd=rb.cost_breakdown;
+
+    // Wire cost drill-down data for the toggle panel below the chart.
+    // Reset to closed on every reload so a stale open panel from a previous
+    // date range never lingers with old figures.
+    _wireCostDetailsData = bd.wire_cost?.details || [];
+    const wireDetailsPanel = document.getElementById('wireCostDetailsPanel');
+    const wireDetailsBtn   = document.getElementById('wireDetailsToggleBtn');
+    if (wireDetailsPanel) { wireDetailsPanel.style.display = 'none'; wireDetailsPanel.innerHTML = ''; }
+    if (wireDetailsBtn)   { wireDetailsBtn.textContent = 'View wire cost details'; }
+
     const bdLabels = showRent
       ? ['Wire Cost','Labour & Sacks','Transport to Market','Rent Expense (Period)','Net Profit']
       : ['Wire Cost','Labour & Sacks','Transport to Market','Gross Profit'];
@@ -1525,11 +1595,11 @@ async function exportPnLPDF() {
 
     // Figures
     const revenue     = parseFloat(k.total_revenue)            || 0;
-    const costOfSales = parseFloat(k.direct_costs_sold)        || 0;
-    const grossProfit = parseFloat(k.gross_profit)             || 0;
-    const grossMargin = parseFloat(k.gross_margin_pct)         || 0;
-    const netProfit   = parseFloat(k.net_profit)               || 0;
-    const netMargin   = parseFloat(k.net_margin_pct)           || 0;
+    const costOfSales = parseFloat(k.cogs_direct_costs_sold)   || 0;
+    const grossProfit = parseFloat(k.cogs_gross_profit)        || 0;
+    const grossMargin = parseFloat(k.cogs_gross_margin_pct)    || 0;
+    const netProfit   = parseFloat(k.cogs_net_profit)          || 0;
+    const netMargin   = parseFloat(k.cogs_net_margin_pct)      || 0;
     const wireCost    = parseFloat(bd.wire_cost?.amount)       || 0;
     const convCost    = parseFloat(bd.conversion_cost?.amount) || 0;
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;

@@ -63,6 +63,7 @@ app.use('/api/backup',                       require('./routes/backup'));
 app.use('/api/database',                     require('./routes/database'));
 app.use('/api/invoices',                     require('./routes/invoices'));
 app.use('/api/inventory',                    require('./routes/inventory'));
+app.use('/api',                              require('./routes/orders'));
 app.use('/api',                              require('./routes/reports'));
 
 app.get('/health', (_req, res) =>

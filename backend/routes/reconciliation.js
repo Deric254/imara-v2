@@ -356,10 +356,13 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
     const db = getDb();
     const { payment_date, category, amount, notes = '', payee_user_id, payee_supplier_id, payee_name } = req.body;
 
-    if (!payment_date) return res.status(400).json({ error: 'payment_date required' });
+    if (!payment_date || !/^\d{4}-\d{2}-\d{2}$/.test(payment_date) || isNaN(Date.parse(payment_date)))
+      return res.status(400).json({ error: 'payment_date must be a valid date in YYYY-MM-DD format' });
     const validCats = ['wages_operator','wages_knuckler','rent','supplier','sack','transport_to_market','other'];
     if (!validCats.includes(category)) return res.status(400).json({ error: 'Invalid category' });
-    if (!amount || parseFloat(amount) <= 0) return res.status(400).json({ error: 'amount must be > 0' });
+    const parsedAmount = parseFloat(amount);
+    if (amount === undefined || amount === null || amount === '' || isNaN(parsedAmount) || parsedAmount <= 0)
+      return res.status(400).json({ error: 'amount must be a valid number greater than 0' });
     if ((category === 'wages_operator' || category === 'wages_knuckler') && !payee_user_id)
       return res.status(400).json({ error: 'payee_user_id required for wage payments' });
     if (category === 'supplier' && !payee_supplier_id)

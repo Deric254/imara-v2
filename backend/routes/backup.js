@@ -15,6 +15,7 @@ const ALL_TABLES = [
   'purchases', 'production', 'production_items',
   'sales',
   'invoices', 'invoice_items', 'invoice_payments',
+  'orders', 'order_items',
   'payments', 'rent_months',
   'stock_reservations',
   'notifications', 'audit_log'
@@ -272,6 +273,8 @@ router.post('/reset-data', authenticate, requireRole('owner'), async (req, res) 
     await db.transaction(async () => {
       await db.exec('DELETE FROM invoice_payments');
       await db.exec('DELETE FROM invoice_items');
+      await db.exec('DELETE FROM order_items');
+      await db.exec('DELETE FROM orders');
       await db.exec('DELETE FROM invoices');
       await db.exec('DELETE FROM stock_reservations');
       await db.exec('DELETE FROM audit_log');
