@@ -982,20 +982,20 @@ async function loadDash(){
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
-      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · cost of items actually sold · ${from} → ${to}">
-        <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'📈'}</div>
+      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · cash basis — matches P&L PDF and Reconciliation · ${from} → ${to}">
+        <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
           <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
-          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?k.net_profit:k.gross_profit), fmtMoneyExact(showRent?k.net_profit:k.gross_profit))}</div>
+          <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent on items sold':'Wire + labour + sacks + transport on items sold'} · ${from} → ${to}">
+      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent, cash paid this period':'Wire + labour + sacks + transport, cash paid this period'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold), fmtMoneyExact(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold))}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.cogs_net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold), fmtMoneyExact(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
         </div>
       </div>
       <div class="kpi" title="Order pipeline — pending / finalized / cancelled, all-time snapshot">
@@ -1594,12 +1594,15 @@ async function exportPnLPDF() {
     const bizSlogan = getConfig('business_slogan', 'Built Strong By IMARA') || 'Built Strong By IMARA';
 
     // Figures
-    const revenue     = parseFloat(k.total_revenue)            || 0;
-    const costOfSales = parseFloat(k.cogs_direct_costs_sold)   || 0;
-    const grossProfit = parseFloat(k.cogs_gross_profit)        || 0;
-    const grossMargin = parseFloat(k.cogs_gross_margin_pct)    || 0;
-    const netProfit   = parseFloat(k.cogs_net_profit)          || 0;
-    const netMargin   = parseFloat(k.cogs_net_margin_pct)      || 0;
+    // CASH-BASIS — matches the on-screen Dashboard KPIs and Reconciliation's
+    // payments export exactly, so this PDF, the Dashboard, and Reconciliation
+    // always show the same figure for the same period.
+    const revenue     = parseFloat(k.total_revenue)      || 0;
+    const costOfSales = parseFloat(k.direct_costs_sold)  || 0;
+    const grossProfit = parseFloat(k.gross_profit)       || 0;
+    const grossMargin = parseFloat(k.gross_margin_pct)   || 0;
+    const netProfit   = parseFloat(k.net_profit)         || 0;
+    const netMargin   = parseFloat(k.net_margin_pct)     || 0;
     const wireCost    = parseFloat(bd.wire_cost?.amount)       || 0;
     const convCost    = parseFloat(bd.conversion_cost?.amount) || 0;
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;

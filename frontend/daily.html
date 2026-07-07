@@ -1465,22 +1465,19 @@ async function _patchGaugeOptionsForPiece(rid, pieceTypeId) {
     (inv || []).filter(i => i.piece_type_id === pieceTypeId).forEach(i => {
       availByGauge[i.gauge] = (availByGauge[i.gauge] || 0) + i.available;
     });
+    // NOTE: options are labelled but never disabled. Orders must be placeable
+    // even when a gauge is fully out of stock (stock is only enforced at
+    // Finalize/immediate-sale time, inside submitAllSales()) — a disabled
+    // <option> can't be selected by the browser at all, which silently
+    // blocked the "Save Order" (pending) path whenever every gauge was at
+    // zero stock. Real stock integrity is untouched: it still gets checked,
+    // just later, at the moment stock is actually committed.
     [...gaugeEl.options].forEach(opt => {
       if (!opt.value) return; // keep the placeholder
       const avail = availByGauge[opt.value] || 0;
-      if (avail <= 0) {
-        opt.disabled = true;
-        opt.textContent = `${opt.value} — OUT OF STOCK`;
-      } else {
-        opt.disabled = false;
-        opt.textContent = `${opt.value}  (${avail} in stock)`;
-      }
+      opt.disabled = false;
+      opt.textContent = avail <= 0 ? `${opt.value} — OUT OF STOCK` : `${opt.value}  (${avail} in stock)`;
     });
-    // If the currently selected gauge is now disabled, reset to placeholder
-    if (gaugeEl.value && gaugeEl.options[gaugeEl.selectedIndex]?.disabled) {
-      gaugeEl.value = '';
-      onSaleRowChange(rid);
-    }
   } catch(_) { /* non-fatal — UI degrades gracefully */ }
 }
 

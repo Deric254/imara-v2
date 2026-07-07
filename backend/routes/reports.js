@@ -1466,12 +1466,17 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       ORDER BY month
     `).all(fromDate.slice(0, 7), toDate.slice(0, 7));
 
-    const grossProfit = salesSummary.cogs_gross_profit;
+    // CASH-BASIS — same figures as /api/dashboard and Reconciliation, so this
+    // breakdown's totals always tally with those two (see getSalesCostSummary).
+    // The COGS-matched view (cost tied to units actually sold, FIFO-batch
+    // priced) is still available via salesSummary.cogs_* for anyone who wants
+    // "true sell-through margin" instead of "cash spent this period".
+    const grossProfit = salesSummary.gross_profit;
     const netProfit   = grossProfit - rentCost;
     const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
     const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
-    const wireCostPct      = salesSummary.revenue > 0 ? (salesSummary.cogs_wire_cost / salesSummary.revenue * 100) : 0;
+    const wireCostPct      = salesSummary.revenue > 0 ? (salesSummary.wire_cost / salesSummary.revenue * 100) : 0;
     const convCostPct      = salesSummary.revenue > 0 ? (salesSummary.conversion_cost / salesSummary.revenue * 100) : 0;
     const transportCostPct = salesSummary.revenue > 0 ? (salesSummary.transport_to_market_cost / salesSummary.revenue * 100) : 0;
     const netProfitPct     = salesSummary.revenue > 0 ? (netProfit / salesSummary.revenue * 100) : 0;
@@ -1480,7 +1485,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       period: { from: fromDate, to: toDate },
       summary: {
         total_revenue: parseFloat(salesSummary.revenue.toFixed(2)),
-        total_costs:   parseFloat((salesSummary.cogs_direct_costs + rentCost).toFixed(2)),
+        total_costs:   parseFloat((salesSummary.direct_costs + rentCost).toFixed(2)),
         rent_cost:     parseFloat(rentCost.toFixed(2)),
         net_profit:    parseFloat(netProfit.toFixed(2)),
         gross_margin:  parseFloat(grossMargin.toFixed(1)),
@@ -1488,9 +1493,11 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       },
       cost_breakdown: {
         wire_cost: {
-          amount:      parseFloat(salesSummary.cogs_wire_cost.toFixed(2)),
+          amount:      parseFloat(salesSummary.wire_cost.toFixed(2)),
           percentage:  parseFloat(wireCostPct.toFixed(1)),
-          description: 'Cost of raw wire materials (actual blended batch cost from production)',
+          description: 'Cash paid to suppliers for wire this period',
+          cogs_amount: parseFloat(salesSummary.cogs_wire_cost.toFixed(2)),
+          cogs_note:   'cogs_amount = FIFO-matched cost of wire actually embedded in pieces sold this period — informational only, not used in the totals above',
           details:     wireCostDetails,
         },
         conversion_cost: {
