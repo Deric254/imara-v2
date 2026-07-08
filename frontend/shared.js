@@ -91,6 +91,26 @@ const ErrorTracker = {
   clearLocalErrors() { localStorage.removeItem('system_errors'); },
 };
 
+// Catch anything that breaks silently in the UI — a thrown error inside an
+// event handler, or a rejected promise nobody awaited — and log it the same
+// way API errors are already logged (local storage + server if signed in).
+// Without this, a freeze/break that happens between clicks leaves no trace;
+// this makes sure it does, so a recurring problem can be diagnosed from what
+// actually happened instead of a description after the fact.
+window.addEventListener('error', (e) => {
+  ErrorTracker.logError(
+    { error: e.message || 'Unhandled error', stack: e.error?.stack },
+    { kind: 'window.onerror', file: e.filename, line: e.lineno, col: e.colno }
+  );
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const reason = e.reason;
+  ErrorTracker.logError(
+    { error: (reason && (reason.message || reason.error)) || String(reason), stack: reason?.stack },
+    { kind: 'unhandledrejection' }
+  );
+});
+
 // ── Core API call with retry-once on network error ────────────────────────────
 let _apiMutationCount = 0;
 
@@ -257,6 +277,25 @@ function localDateString(date = new Date()) {
 }
 
 function today() { return localDateString(); }
+
+// SQLite's CURRENT_TIMESTAMP always stores UTC, as a naive string with no
+// timezone marker (e.g. "2026-07-06 13:07:49"). Passed straight into
+// `new Date(...)`, JS treats that as already being local time and does NOT
+// shift it — so raw log/audit timestamps display several hours behind the
+// real local time (exactly the browser's UTC offset). This normalizes the
+// string to explicit UTC before parsing, so the browser converts it to the
+// viewer's actual local time, correctly, every time.
+function utcDbTimeToLocal(value) {
+  if (!value) return null;
+  let s = String(value).trim();
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s = s.replace(' ', 'T') + 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtLocalDateTime(value, opts) {
+  const d = utcDbTimeToLocal(value);
+  return d ? d.toLocaleString('en-KE', opts) : '—';
+}
 
 function showToast(msg, type = 'success', duration = 3500) {
   const t = document.createElement('div');

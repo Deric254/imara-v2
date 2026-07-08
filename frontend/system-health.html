@@ -97,6 +97,20 @@ async function loadSystemHealth() {
           </div>
         </div>
 
+        <div class="section-title" style="margin-top:2rem;display:flex;align-items:center;justify-content:space-between">
+          <span>System Tester</span>
+          <button class="btn-refresh" id="runCheckBtn" onclick="runSystemCheck()" style="padding:.5rem 1rem;font-size:.85rem">▶ Run Check</button>
+        </div>
+        <p style="font-size:.82rem;color:var(--muted);margin:-.6rem 0 1rem">
+          Runs live checks against the real database — stock never oversold, wire used never exceeds wire
+          bought, converted orders have a real sale behind them, invoices match their payments, no orphaned
+          records. This reports exactly what it finds, including problems — it does not just show green.
+        </p>
+        <div id="systemCheckSummary" style="margin-bottom:1rem"></div>
+        <div class="logs-container" id="systemCheckContainer">
+          <div style="text-align:center;color:var(--muted);padding:2rem">Click "Run Check" to test the system now.</div>
+        </div>
+
         <div class="section-title" style="margin-top:2rem">Database Health</div>
         <div class="health-grid">
           <div class="health-card">
@@ -151,6 +165,17 @@ async function loadSystemHealth() {
             Loading activity log...
           </div>
         </div>
+
+        <div class="section-title" style="margin-top:2rem;display:flex;align-items:center;justify-content:space-between">
+          <span>Browser Errors (this device)</span>
+          <button class="btn btn-sm" onclick="ErrorTracker.clearLocalErrors(); renderLocalErrors();">Clear</button>
+        </div>
+        <p style="font-size:.82rem;color:var(--muted);margin:-.4rem 0 .8rem">
+          Anything that broke silently in this browser — e.g. a page that froze or a field that stopped
+          responding — gets captured here automatically. If something misbehaves, check here right after;
+          this list is specific to this device and isn't shared with the server logs above.
+        </p>
+        <div class="logs-container" id="localErrorsContainer"></div>
       </main>
     `;
 
@@ -158,6 +183,7 @@ async function loadSystemHealth() {
     if (content) {
       content.innerHTML = html;
       await loadAuditLog();
+      renderLocalErrors();
     }
   } catch (e) {
     console.error('Failed to load system health:', e);
@@ -165,6 +191,63 @@ async function loadSystemHealth() {
   } finally {
     hidePageLoader();
   }
+}
+
+async function runSystemCheck() {
+  const btn = document.getElementById('runCheckBtn');
+  const container = document.getElementById('systemCheckContainer');
+  const summaryEl = document.getElementById('systemCheckSummary');
+  btn.disabled = true; btn.textContent = '⏳ Running…';
+  container.innerHTML = '<div style="text-align:center;color:var(--muted);padding:2rem"><div class="spinner" style="margin-bottom:1rem"></div>Running live checks against the real database…</div>';
+  summaryEl.innerHTML = '';
+
+  try {
+    const res = await api('GET', '/system-check');
+    if (!res) return;
+    const { summary, checks, generated_at } = res;
+
+    const badge = (n, cls, label) => n > 0 ? `<span style="display:inline-flex;align-items:center;gap:.3rem;margin-right:1rem;font-weight:700;color:${cls}"><span class="status-indicator status-${cls==='#dc2626'?'error':cls==='#f59e0b'?'warn':'ok'}"></span>${n} ${label}</span>` : '';
+    summaryEl.innerHTML = `
+      <div style="font-size:.9rem">
+        ${badge(summary.fail, '#dc2626', summary.fail === 1 ? 'issue needs attention' : 'issues need attention')}
+        ${badge(summary.warn, '#f59e0b', summary.warn === 1 ? 'worth a look' : 'worth a look')}
+        ${badge(summary.pass, '#16a34a', 'passing')}
+      </div>
+      <div style="font-size:.75rem;color:var(--muted);margin-top:.3rem">Checked ${fmtLocalDateTime(generated_at)}</div>`;
+
+    container.innerHTML = checks.map(c => {
+      const cls = c.status === 'fail' ? 'error' : c.status === 'warn' ? 'warn' : 'info';
+      const icon = c.status === 'fail' ? '✕ NEEDS ATTENTION' : c.status === 'warn' ? '⚠ WORTH A LOOK' : '✓ PASS';
+      return `
+        <div class="log-entry ${cls}">
+          <strong>${icon} — ${escHtml(c.label)}</strong>
+          <div style="margin-top:.25rem;font-family:var(--font, inherit);font-size:.82rem">${escHtml(c.detail)}</div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = `<div style="text-align:center;color:var(--red);padding:2rem">Could not run the check: ${escHtml(e.error || 'unknown error')}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '▶ Run Check';
+  }
+}
+
+function renderLocalErrors() {
+  const container = document.getElementById('localErrorsContainer');
+  if (!container) return;
+  const errors = ErrorTracker.getLocalErrors();
+  if (!errors.length) {
+    container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted)">No errors captured on this device</div>';
+    return;
+  }
+  container.innerHTML = errors.map(e => `
+    <div class="log-entry error">
+      <span class="log-time">[${fmtLocalDateTime(e.timestamp)}]</span>
+      <strong>${escHtml(e.error || 'Error')}</strong>
+      ${e.context?.kind ? ' · ' + escHtml(e.context.kind) : ''}
+      ${e.context?.file ? ` · ${escHtml(e.context.file)}:${e.context.line || ''}` : ''}
+      ${e.url ? `<div style="font-size:.75rem;color:var(--muted);margin-top:.15rem">${escHtml(e.url)}</div>` : ''}
+    </div>
+  `).join('');
 }
 
 async function loadAuditLog() {
@@ -179,7 +262,7 @@ async function loadAuditLog() {
     }
 
     const html = logs.map(log => {
-      const ts = new Date(log.logged_at).toLocaleString('en-KE', { 
+      const ts = fmtLocalDateTime(log.logged_at, {
         year: '2-digit', month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit'
       });

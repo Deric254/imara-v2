@@ -659,7 +659,13 @@ function calcWireNeeded() {
   _updateProdSubmitBtn();
   // Show live gauge-specific availability — debounced, uses cache
   _calcWireWarningDebounced(perGauge);
-  renderBatchSelectors(perGauge).then(() => calcOverhead());
+  // Debounced: renderBatchSelectors does an async fetch + innerHTML rebuild.
+  // Calling it directly on every 'input' keystroke (e.g. typing a quantity)
+  // fired one overlapping async chain per character, with no cancellation —
+  // the stacked chains racing to rewrite the same DOM node is what caused
+  // the intermittent freeze on this tab. Debouncing lets only the last
+  // keystroke in a burst actually trigger the fetch/render.
+  _renderBatchSelectorsDebounced(perGauge);
 }
 
 // Render one FIFO-defaulted, manually-overridable batch dropdown per gauge in use.
@@ -702,6 +708,10 @@ async function renderBatchSelectors(perGauge) {
   wrap.innerHTML = blocks.join('');
   wrap.style.display = 'block';
 }
+
+const _renderBatchSelectorsDebounced = debounce((perGauge) => {
+  renderBatchSelectors(perGauge).then(() => calcOverhead());
+}, 300);
 
 const _calcWireWarningDebounced = debounce(async function(perGauge) {
   const statusDiv = document.getElementById('pr_material_status');
@@ -1598,21 +1608,16 @@ async function onSaleRowChange(rid) {
     const match = (inv || []).find(i => i.piece_type_id === ptId && i.gauge === gauge);
     const avail = match ? match.available : 0;
 
-    // ── Hard cap: set max= so the browser prevents entering more than stock ──
-    if (qtyEl) {
-      if (avail > 0) {
-        qtyEl.setAttribute('max', avail);
-        // Silently clamp an already-entered qty rather than letting user proceed wrong
-        if (qty > avail) {
-          qtyEl.value = avail;
-          calcSaleTotals();
-        }
-      } else {
-        qtyEl.setAttribute('max', 0);
-        qtyEl.value = '';
-        calcSaleTotals();
-      }
-    }
+    // NOTE: quantity is never capped or cleared based on stock here. That's
+    // deliberate — this same row is used both for an immediate sale AND for
+    // building a pending Order (which must be enterable with zero stock on
+    // hand, so it can be finalized once stock exists — an advance booking).
+    // The label below is informational only. Real stock protection for an
+    // immediate sale doesn't live here at all: submitAllSales() re-checks
+    // live stock right before submitting, and the backend re-checks again
+    // inside the database transaction that actually deducts it. Removing
+    // this field-level cap doesn't weaken either of those.
+    if (qtyEl) qtyEl.removeAttribute('max');
 
     if (avail <= 0) {
       availDiv.innerHTML = `<span style="color:var(--red)">❌ Out of stock in gauge ${gauge} — choose a different gauge</span>`;
@@ -1627,25 +1632,15 @@ async function onSaleRowChange(rid) {
   _updateSaleSubmitBtn();
 }
 
-// Disable the Submit Sale button if any row has a stock problem or missing fields,
-// so the user cannot even attempt to submit an impossible sale.
+// Availability is shown per-row as information (see onSaleRowChange), but the
+// Finalize/Submit button is never pre-emptively disabled from it — that used
+// the same signal that also blocked entering an Order for stock you don't
+// have yet. The actual gate for an immediate sale is submitAllSales()'s own
+// live re-check right before it submits, backed by the database transaction
+// that performs the real deduction — both untouched and still fully strict.
 function _updateSaleSubmitBtn() {
-  const submitBtn = document.getElementById('s_submit_btn') ||
-                    document.querySelector('button[onclick*="submitSale"],button[onclick*="submitAllSales"]');
-  if (!submitBtn) return;
-  const rows = document.querySelectorAll('#sale_items_container > div[id^="srow_"]');
-  let blocked = false;
-  rows.forEach(row => {
-    const rid = row.id.slice(5);
-    const qtyEl  = document.getElementById(`srow_qty_${rid}`);
-    if (!qtyEl) return;
-    const max = parseInt(qtyEl.getAttribute('max'));
-    const val = parseInt(qtyEl.value) || 0;
-    if (!isNaN(max) && max === 0) blocked = true;       // out of stock
-    if (!isNaN(max) && val > max) blocked = true;       // over stock (shouldn't happen after clamp, belt+suspenders)
-  });
-  submitBtn.disabled = blocked;
-  submitBtn.title = blocked ? 'One or more items are out of stock — adjust quantities or gauges' : '';
+  // intentionally a no-op now; kept as a named hook in case future UI wants
+  // a non-blocking indicator here.
 }
 
 function calcSaleTotals() {
@@ -1875,7 +1870,97 @@ async function saveOrderPending() {
   }
 }
 
+// Returns the subset of an order's items missing a gauge and/or a valid price —
+// exactly the two fields /orders/:id/convert requires before it will accept
+// a conversion. Empty array = order is already complete, nothing to ask.
+function _missingOrderFields(order) {
+  return (order.items || []).filter(it => {
+    const noGauge = !it.gauge_source || !String(it.gauge_source).trim();
+    const noPrice = it.selling_price === null || it.selling_price === undefined || parseFloat(it.selling_price) <= 0;
+    return noGauge || noPrice;
+  });
+}
+
+// Small self-contained modal (no shared modal infra exists yet) asking only
+// for the fields a specific order is actually missing, then finalizes with
+// those as overrides. Only ever shown when something is truly missing —
+// a fully-specified order still finalizes in one click, same as before.
+function _showFinalizeOrderModal(order, missingItems) {
+  const existing = document.getElementById('finalizeOrderModal');
+  if (existing) existing.remove();
+
+  const rowsHtml = missingItems.map(it => {
+    const pt = pieceTypes.find(p => p.id === it.piece_type_id);
+    const needGauge = !it.gauge_source || !String(it.gauge_source).trim();
+    const needPrice = it.selling_price === null || it.selling_price === undefined || parseFloat(it.selling_price) <= 0;
+    const defaultPrice = (pt && pt.default_price != null) ? pt.default_price : (it.selling_price || '');
+    return `
+      <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:.5rem;align-items:center;margin-bottom:.5rem" data-oi="${it.id}">
+        <div style="font-size:.86rem">${escHtml(it.piece_name)} × ${fmt(it.quantity)}</div>
+        <select class="input fo_gauge" style="font-size:.84rem" ${needGauge ? '' : 'disabled'}>${_makeGaugeOptions(it.gauge_source || '')}</select>
+        <input class="input fo_price" type="number" step="0.01" min="0.01" placeholder="Price"
+               value="${needPrice ? '' : it.selling_price}" ${needPrice ? '' : 'disabled'} />
+      </div>`;
+  }).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'finalizeOrderModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.innerHTML = `
+    <div style="background:var(--surface,#fff);border-radius:12px;padding:1.25rem;max-width:460px;width:92%;max-height:80vh;overflow:auto">
+      <h3 style="margin:0 0 .3rem">Finish this order to finalize</h3>
+      <p style="font-size:.84rem;color:var(--muted);margin:0 0 .9rem">
+        These items are missing a gauge and/or price from when the order was placed.
+        Stock will still be checked normally once you confirm — nothing is deducted by this step.
+      </p>
+      ${rowsHtml}
+      <div id="fo_err" style="color:var(--red);font-size:.82rem;margin:.4rem 0;display:none"></div>
+      <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.8rem">
+        <button class="btn btn-sm" onclick="document.getElementById('finalizeOrderModal').remove()">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="fo_confirm_btn" onclick="_confirmFinalizeOrder(${order.id})">Finalize Order</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function _confirmFinalizeOrder(orderId) {
+  const modal = document.getElementById('finalizeOrderModal');
+  const errEl = document.getElementById('fo_err');
+  errEl.style.display = 'none';
+
+  const overrides = [];
+  for (const row of modal.querySelectorAll('[data-oi]')) {
+    const order_item_id = parseInt(row.dataset.oi);
+    const gaugeSel = row.querySelector('.fo_gauge');
+    const priceInp = row.querySelector('.fo_price');
+    const gauge_source = gaugeSel.value.trim();
+    const selling_price = parseFloat(priceInp.value);
+    if (!gauge_source) { errEl.textContent = 'Select a gauge for every highlighted item.'; errEl.style.display = 'block'; return; }
+    if (!selling_price || selling_price <= 0) { errEl.textContent = 'Enter a valid price for every highlighted item.'; errEl.style.display = 'block'; return; }
+    overrides.push({ order_item_id, gauge_source, selling_price });
+  }
+
+  const btn = document.getElementById('fo_confirm_btn');
+  btn.disabled = true; btn.textContent = '⏳ Finalizing…';
+  try {
+    const d = document.getElementById('entryDate').value;
+    await api('POST', `/orders/${orderId}/convert`, { entry_date: d, items: overrides });
+    modal.remove();
+    showToast('✅ Order finalized');
+    invalidateStockCaches();
+    await loadTabData('sales');
+  } catch(e) {
+    const msg = e.error || 'Finalize failed';
+    errEl.textContent = msg; errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Finalize Order';
+  }
+}
+
 async function convertOrder(orderId) {
+  const order = (window._lastOrders || []).find(o => o.id === orderId);
+  const missing = order ? _missingOrderFields(order) : [];
+  if (missing.length) { _showFinalizeOrderModal(order, missing); return; }
+
   try {
     const d = document.getElementById('entryDate').value;
     await api('POST', `/orders/${orderId}/convert`, { entry_date: d });
@@ -1920,10 +2005,10 @@ function onBuyerInput(val) {
   const dd = document.getElementById('s_buyer_name_suggestions');
   if (!dd) return;
   if (!q) { dd.style.display='none'; return; }
-  const matches = _customerCache.filter(n => n.toLowerCase().includes(q)).slice(0,8);
+  const matches = _customerCache.filter(n => n && n.toLowerCase().includes(q)).slice(0,8);
   if (!matches.length) { dd.style.display='none'; return; }
   dd.innerHTML = matches.map(n =>
-    `<div class="suggestion-item" onmousedown="selectBuyer('${escHtml(n)}')">${escHtml(n)}</div>`
+    `<div class="suggestion-item" data-name="${escHtml(n)}">${escHtml(n)}</div>`
   ).join('');
   dd.style.display = 'block';
 }
@@ -1934,6 +2019,16 @@ function selectBuyer(name) {
   const dd = document.getElementById('s_buyer_name_suggestions');
   if (dd) dd.style.display = 'none';
 }
+
+// Event delegation instead of building onmousedown="selectBuyer('${name}')" per
+// suggestion — a customer name containing a single quote (e.g. "O'Brien")
+// would break out of that inline attribute string and corrupt the dropdown's
+// HTML, with effects on that field ranging from a broken suggestion to the
+// whole dropdown misrendering. This removes that whole class of bug.
+document.getElementById('s_buyer_name_suggestions')?.addEventListener('mousedown', e => {
+  const item = e.target.closest('.suggestion-item');
+  if (item) selectBuyer(item.dataset.name);
+});
 
 document.addEventListener('click', e => {
   if (!e.target.closest('.autocomplete-container')) {

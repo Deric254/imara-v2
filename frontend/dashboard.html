@@ -758,7 +758,7 @@ async function loadAdminDashboard() {
     if (ra) ra.innerHTML = audit.length
       ? audit.map(e=>`<div style="padding:.5rem 0;border-bottom:1px solid var(--border);font-size:.85rem">
           <div style="font-weight:500">${escHtml(e.username)} — ${escHtml(e.action)}</div>
-          <div style="color:var(--muted);font-size:.8rem">${new Date(e.timestamp).toLocaleString()}</div>
+          <div style="color:var(--muted);font-size:.8rem">${fmtLocalDateTime(e.logged_at)}</div>
         </div>`).join('')
       : '<div style="color:var(--muted);text-align:center;padding:1rem">No recent activity</div>';
 

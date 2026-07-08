@@ -65,6 +65,7 @@ app.use('/api/invoices',                     require('./routes/invoices'));
 app.use('/api/inventory',                    require('./routes/inventory'));
 app.use('/api',                              require('./routes/orders'));
 app.use('/api',                              require('./routes/reports'));
+app.use('/api',                              require('./routes/systemcheck'));
 
 app.get('/health', (_req, res) =>
   res.json({ status: 'ok', ts: new Date().toISOString() })
