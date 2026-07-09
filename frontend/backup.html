@@ -206,7 +206,7 @@ async function chooseSecondPath() {
 }
 
 async function clearSecondPath() {
-  if (!confirm('Remove the second backup location? Future exports will only save to your Downloads folder.')) return;
+  if (!(await appConfirm('Remove the second backup location? Future exports will only save to your Downloads folder.'))) return;
   try {
     await api('POST', '/backup/set-second-path', { path: '' });
     _secondPath = '';
@@ -321,7 +321,7 @@ async function importBackup() {
     err.style.display = 'block';
     return;
   }
-  if (!confirm('CRITICAL: This will replace ALL current data with the data from the backup file. Are you absolutely sure?')) return;
+  if (!(await appConfirm('CRITICAL: This will replace ALL current data with the data from the backup file. Are you absolutely sure?', { confirmLabel: 'Replace All Data' }))) return;
 
   err.style.display = 'none';
   btn.disabled      = true;

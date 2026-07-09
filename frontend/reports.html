@@ -384,7 +384,7 @@ Quantity: ${row.quantity} | Revenue: KES ${parseFloat(row.revenue||0).toLocaleSt
   }
   msg += `
 This cannot be undone. Proceed?`;
-  if (!confirm(msg)) return;
+  if (!(await appConfirm(msg))) return;
   try {
     const result = await api('DELETE', `/daily/${type}/${id}`);
     showToast(result.message || 'Deleted successfully', 'success', 5000);

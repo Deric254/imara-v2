@@ -1482,7 +1482,7 @@ async function editInvoice(id) {
 }
 
 async function deleteInvoice(id) {
-  if (!confirm('Delete this invoice? This cannot be undone.')) return;
+  if (!(await appConfirm('Delete this invoice? This cannot be undone.'))) return;
   try {
     await api('DELETE', `/invoices/${id}`);
     showToast('Invoice deleted');
@@ -1531,7 +1531,7 @@ async function loadHistory() {
 }
 
 async function deletePayment(id) {
-  if (!confirm('Delete payment? Liability will re-open.')) return;
+  if (!(await appConfirm('Delete payment? Liability will re-open.'))) return;
   try { await api('DELETE', `/reconciliation/payments/${id}`); showToast('Payment deleted'); loadAll(); loadHistory(); }
   catch(e) { showToast(e.error||'Failed','error'); }
 }

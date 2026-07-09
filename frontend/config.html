@@ -320,7 +320,7 @@ async function savePiece() {
 }
 
 async function deletePiece(id, name) {
-  if (!confirm(`Delete piece type "${name}"?`)) return;
+  if (!(await appConfirm(`Delete piece type "${name}"?`))) return;
   try {
     await api('DELETE', `/piece-types/${id}`);
     showToast('Piece type deleted');
@@ -353,7 +353,7 @@ async function saveSupplier() {
 }
 
 async function deactivateSupplier(id, name) {
-  if (!confirm(`Remove supplier "${name}"? They will no longer appear in dropdowns.`)) return;
+  if (!(await appConfirm(`Remove supplier "${name}"? They will no longer appear in dropdowns.`))) return;
   try {
     await api('DELETE', `/suppliers/${id}`);
     showToast('Supplier removed');

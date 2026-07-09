@@ -58,6 +58,67 @@ const Store = {
   });
 })();
 
+// ── App confirm dialog (replaces window.confirm) ──────────────────────────
+// window.confirm() is a synchronous native dialog: it blocks the whole
+// renderer's JS thread until dismissed. In Electron that's what causes the
+// "hang" feeling — any in-flight fetch/timer/render on this window is frozen
+// until the user answers, and the native dialog itself can be slow to paint
+// under load. appConfirm() replaces it with a normal DOM modal (the same
+// .modal-overlay/.modal already used elsewhere in the app), so the page
+// never blocks — it just awaits the user's click. Call sites change from
+//   if (!confirm(msg)) return;
+// to
+//   if (!(await appConfirm(msg))) return;
+// Supports \n line breaks (existing confirm messages use them for bullet
+// lists) and an optional danger style for destructive actions.
+function appConfirm(message, opts = {}) {
+  const {
+    title = 'Please confirm',
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel',
+    danger = true
+  } = opts;
+
+  return new Promise(resolve => {
+    const existing = document.getElementById('appConfirmModal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'appConfirmModal';
+    overlay.className = 'modal-overlay';
+
+    const bodyHtml = escHtml(message).replace(/\n/g, '<br>');
+
+    overlay.innerHTML = `
+      <div class="modal" role="alertdialog" aria-modal="true">
+        <div class="modal-title">${escHtml(title)}</div>
+        <div style="font-size:.86rem;color:var(--ink);line-height:1.5">${bodyHtml}</div>
+        <div class="modal-footer">
+          <button class="btn btn-sm" id="appConfirmCancel">${escHtml(cancelLabel)}</button>
+          <button class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" id="appConfirmOk">${escHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const cleanup = (result) => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') cleanup(false);
+      if (e.key === 'Enter') cleanup(true);
+    };
+
+    overlay.querySelector('#appConfirmOk').addEventListener('click', () => cleanup(true));
+    overlay.querySelector('#appConfirmCancel').addEventListener('click', () => cleanup(false));
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) cleanup(false); });
+    document.addEventListener('keydown', onKey);
+
+    overlay.querySelector('#appConfirmOk').focus();
+  });
+}
+
 // ── 401 handler: clear session then redirect cleanly — no modal loop ─────────
 const _401Modal = { shown: false };
 function handle401(path) {

@@ -633,7 +633,7 @@ function onFileChosen(input) {
 
 async function doImport() {
   if (!importFileData) return;
-  if (!confirm('Import this backup? All data will be restored with original IDs. Existing records with the same ID will be replaced. Proceed?')) return;
+  if (!(await appConfirm('Import this backup? All data will be restored with original IDs. Existing records with the same ID will be replaced. Proceed?'))) return;
   const btn = document.getElementById('btnImport');
   btn.disabled = true;
   btn.textContent = 'Importing…';

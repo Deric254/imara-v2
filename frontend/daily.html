@@ -849,7 +849,10 @@ async function loadTabData(tab) {
         oExportBtn.style.display = 'block';
         const canManage = user.role === 'owner' || user.role === 'admin';
         otb.innerHTML = orows.map(o => {
-          const itemsSummary = (o.items || []).map(it => `${escHtml(it.piece_name)} × ${fmt(it.quantity)}`).join(', ') || '—';
+          const itemsSummary = (o.items || []).map(it => {
+            const gauge = (it.gauge_source || '').trim();
+            return `${escHtml(it.piece_name)} × ${fmt(it.quantity)}${gauge ? ` (Gauge ${escHtml(gauge)})` : ' (gauge not set)'}`;
+          }).join(', ') || '—';
           const statusBadge = o.status === 'pending'
             ? `<span style="color:var(--amber,#b45309);font-weight:600">Pending</span>`
             : o.status === 'converted'
@@ -918,8 +921,7 @@ async function deleteRecord(type, id) {
     confirmMsg = `Delete this ${labels[type]}? This cannot be undone.`;
   }
 
-  if (!confirm(confirmMsg)) return;
-  window.focus(); // same fix as cancelOrder — confirm() can leave keyboard focus stuck
+  if (!(await appConfirm(confirmMsg))) return;
 
   // ── Pre-flight checks before hitting the server ──────────────────────────────
   // For purchases: check locally whether this wire gauge has been used in production.

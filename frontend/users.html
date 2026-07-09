@@ -231,7 +231,7 @@ async function doReset() {
 
 async function toggleUser(id, activate, name) {
   const action = activate ? 'activate' : 'deactivate';
-  if (!activate && !confirm(`Deactivate ${name}? They will not be able to log in.`)) return;
+  if (!activate && !(await appConfirm(`Deactivate ${name}? They will not be able to log in.`))) return;
   try {
     await api('PATCH', `/users/${id}/${action}`);
     showToast(`User ${activate ? 'activated' : 'deactivated'}`);
@@ -242,7 +242,7 @@ async function toggleUser(id, activate, name) {
 load();
 
 async function issueOwnerReset() {
-  if (!confirm('Generate a one-time reset token for the Owner?\n\nThe token expires in 30 minutes. Give it to the owner to use on the login screen.')) return;
+  if (!(await appConfirm('Generate a one-time reset token for the Owner?\n\nThe token expires in 30 minutes. Give it to the owner to use on the login screen.', { danger: false, confirmLabel: 'Generate Token' }))) return;
   try {
     const r = await api('POST', '/users/owner/admin-reset');
     showOwnerTokenModal(r.reset_token, r.expires_in_minutes);
