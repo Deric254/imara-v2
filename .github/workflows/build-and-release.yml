@@ -12,6 +12,7 @@ on:
       - 'preload.js'
       - 'package.json'
       - 'electron-builder.yml'
+      - '.github/workflows/**'
       - '!*.md'
 
 jobs:
