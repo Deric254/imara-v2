@@ -1130,49 +1130,7 @@ function printReconStatement() {
 // ════════════════════════════════════════════════════════════
 // INVOICES SECTION
 // ════════════════════════════════════════════════════════════
-let _currentInvStatus = '', _editingInvoiceId = null, _invSearchQuery = '';
-
-let _invSearchTimer = null;
-function handleInvSearch(val) {
-  _invSearchQuery = val.trim();
-  const clearBtn = document.getElementById('invSearchClear');
-  if (clearBtn) clearBtn.style.display = _invSearchQuery ? 'block' : 'none';
-  // Debounce
-  if (_invSearchTimer) clearTimeout(_invSearchTimer);
-  _invSearchTimer = setTimeout(() => {
-    if (_invSearchQuery.length >= 1) {
-      doInvSearch(_invSearchQuery);
-    } else {
-      renderInvoiceList(_currentInvStatus);
-    }
-  }, 300);
-}
-
-function clearInvSearch() {
-  const inp = document.getElementById('invSearchInput');
-  if (inp) inp.value = '';
-  _invSearchQuery = '';
-  const clearBtn = document.getElementById('invSearchClear');
-  if (clearBtn) clearBtn.style.display = 'none';
-  renderInvoiceList(_currentInvStatus);
-}
-
-async function doInvSearch(q) {
-  const el = document.getElementById('invList');
-  if (!el) return;
-  el.innerHTML = '<div style="color:var(--muted);font-size:.82rem">Searching…</div>';
-  try {
-    const results = await api('GET', `/invoices/search?q=${encodeURIComponent(q)}`);
-    if (!results || !results.length) {
-      el.innerHTML = `<div class="card" style="color:var(--muted);text-align:center;padding:2rem">No invoices found matching "${escHtml(q)}"</div>`;
-      return;
-    }
-    const cur = getConfig('currency','KES');
-    el.innerHTML = results.map(inv => renderInvCard(inv, cur)).join('');
-  } catch(e) {
-    el.innerHTML = '<div style="color:var(--red)">Search failed. Please try again.</div>';
-  }
-}
+let _currentInvStatus = '', _editingInvoiceId = null;
 
 function renderInvCard(inv, cur) {
   const bal = parseFloat(inv.total_amount||0) - parseFloat(inv.amount_paid||0);
@@ -1182,7 +1140,7 @@ function renderInvCard(inv, cur) {
       <div>
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
           <span class="inv-number">${escHtml(inv.invoice_number)}</span>${isAuto}
-          <span style="padding:.15rem .5rem;border-radius:99px;font-size:.72rem;font-weight:700;background:${STATUS_BG[inv.status]||'#f1f5f9'};color:${STATUS_COLORS[inv.status]||'#475569'}">${STATUS_LABELS[inv.status]||inv.status}</span>
+          <span style="padding:.15rem .5rem;border-radius:99px;font-size:.72rem;font-weight:700;background:${STATUS_BG[inv.status]||'#f1f5f9'};color:${STATUS_COLORS[inv.status]||'#475569'}">${invStatusLabel(inv)}</span>
         </div>
         <div class="inv-customer">${escHtml(inv.customer_name)}</div>
         <div class="inv-meta">${inv.invoice_date}${inv.due_date?' · Due '+inv.due_date:''}</div>
@@ -1206,6 +1164,10 @@ async function loadHistory() {
 }
 
 const STATUS_LABELS = { partial_payment:'Pending Payment', paid:'Paid', cancelled:'Cancelled' };
+function invStatusLabel(inv) {
+  if (inv.status === 'cancelled' && inv.reversal_source) return 'Reversed';
+  return STATUS_LABELS[inv.status] || inv.status;
+}
 const STATUS_COLORS = { partial_payment:'#92400e', paid:'#166534', cancelled:'#991b1b' };
 const STATUS_BG    = { partial_payment:'#fef3c7', paid:'#dcfce7', cancelled:'#fee2e2' };
 
@@ -1250,7 +1212,7 @@ function buildInvoiceHTML(inv) {
   const slogan    = cfg.business_slogan || 'Built Strong by IMARA';
   const cur       = cfg.currency        || 'KES';
   const bal       = parseFloat(inv.total_amount||0) - parseFloat(inv.amount_paid||0);
-  const statusTxt = (STATUS_LABELS[inv.status]||inv.status).toUpperCase();
+  const statusTxt = invStatusLabel(inv).toUpperCase();
   const statusCol = STATUS_COLORS[inv.status]||'#475569';
 
   const itemsRows = (inv.items||[]).map(item => `
@@ -1347,7 +1309,7 @@ function shareInvoice() {
     `Customer: ${inv.customer_name}\n` +
     `Date: ${inv.invoice_date}\n` +
     `Amount: KES ${fmt(inv.total_amount,2)}\n` +
-    `Status: ${STATUS_LABELS[inv.status]||inv.status}\n\n` +
+    `Status: ${invStatusLabel(inv)}\n\n` +
     `Built Strong by IMARA`
   );
   window.open(`https://wa.me/?text=${msg}`, '_blank');
@@ -1531,12 +1493,6 @@ async function deleteInvoice(id) {
 function closeInvoiceModal() {
   document.getElementById('invoiceModal').style.display = 'none';
   _editingInvoiceId = null;
-}
-
-function exportInvoicesExcel() {
-  const from = document.getElementById('fromDate').value || '2000-01-01';
-  const to   = document.getElementById('toDate').value   || '2099-12-31';
-  apiDownload(`/export/invoices?from=${from}&to=${to}`, `imara_invoices_${from}_to_${to}.csv`);
 }
 
 // ── Payment history ───────────────────────────────────────────────────────────

@@ -213,24 +213,6 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-function getBreakEvenPrice(piece) {
-  if (!piece) return 0;
-  const wire = (parseFloat(_prodRates.wire_cost_per_kg) || 0) * (parseFloat(piece.weight_kg) || 0);
-  const making = (parseFloat(_prodRates.operator_rate) || 0)
-    + (parseFloat(_prodRates.knuckler_rate) || 0)
-    + ((parseFloat(_prodRates.sack_rate) || 0) * 2);
-  const transport = parseFloat(getConfig('transport_to_market', 0)) || 0;
-  return wire + making + transport;
-}
-
-function setSalePriceExample(piece) {
-  const priceInput = document.getElementById('s_price');
-  if (!priceInput) return;
-  const be = getBreakEvenPrice(piece);
-  priceInput.placeholder = piece ? `e.g. ${fmt(be, 2)} per piece` : 'Enter price';
-  priceInput.title = piece ? `Suggested per-piece figure: KES ${fmt(be, 2)}` : '';
-}
-
 pg.innerHTML = `
 <div id="blockedAlert" style="display:none;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:.85rem 1rem;margin-bottom:1rem;display:none;align-items:flex-start;gap:.75rem">
   <span style="font-size:1.2rem;line-height:1.4">⚠️</span>
@@ -427,6 +409,7 @@ pg.innerHTML = `
       </div>
       <div class="section-header" style="margin-bottom:.75rem">
         <div class="section-title" style="font-size:.9rem">Orders</div>
+        <button class="btn btn-secondary btn-sm" onclick="exportDailyCSV('orders')" id="oExportBtn" style="display:none">📥 Export CSV</button>
       </div>
       <div class="table-wrap">
         <table><thead><tr>
@@ -481,109 +464,6 @@ function switchTab(name) {
   });
 });
 
-// Sale price autofill with inventory integrity check
-function fillSalePrice() {
-  const sel = document.getElementById('s_type');
-  const pt  = pieceTypes.find(p=>p.id==sel.value);
-  const priceInput = document.getElementById('s_price');
-  setSalePriceExample(pt);
-  
-  if (pt) {
-    // Check inventory availability
-    checkInventoryAvailability(pt.id);
-    
-    priceInput.value = pt.default_price || '';
-    calcSale();
-  } else {
-    priceInput.value = '';
-  }
-}
-
-// Check inventory availability for piece type BY GAUGE (legacy helper, still used by calcSale)
-async function checkInventoryAvailability(pieceTypeId) {
-  const gauge_source   = '';   // rows handle their own availability display now
-  const qty            = 0;
-  const availabilityDiv = document.getElementById('s_availability');
-  if (!availabilityDiv) return;
-  try {
-    const availableInventory = await getAvailableInventoryCached();
-    const matchingItems = (availableInventory || []).filter(inv => inv.piece_type_id === pieceTypeId);
-
-    if (!matchingItems.length) {
-      availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ No production history for this piece type</span>`;
-      availabilityDiv.style.display = 'block';
-      return;
-    }
-
-    if (gauge_source) {
-      const item = matchingItems.find(inv => inv.gauge === gauge_source);
-      if (!item) {
-        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ No stock in gauge ${gauge_source}</span>`;
-        availabilityDiv.style.display = 'block';
-        return;
-      }
-      const avail = item.available;
-      if (avail <= 0) {
-        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ Out of Stock in gauge ${gauge_source} (Produced: ${item.produced}, Sold: ${item.sold})</span>`;
-      } else if (qty > 0 && qty > avail) {
-        availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient: only ${avail} available in gauge ${gauge_source}, you need ${qty}</span>`;
-      } else if (avail < 5) {
-        availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Low Stock: ${avail} available in gauge ${gauge_source}${qty>0?' — you need '+qty:''}</span>`;
-      } else {
-        availabilityDiv.innerHTML = `<span style="color:var(--g600)">✅ ${avail} available in gauge ${gauge_source}${qty>0?' — you need '+qty:''}</span>`;
-      }
-    } else {
-      const total = matchingItems.reduce((s, inv) => s + inv.available, 0);
-      if (total <= 0) {
-        availabilityDiv.innerHTML = `<span style="color:var(--red)">❌ Out of Stock — select a gauge to see details</span>`;
-      } else if (qty > 0 && qty > total) {
-        availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient total stock: ${total} available across all gauges, you need ${qty}</span>`;
-      } else {
-        const gaugeList = matchingItems.filter(inv=>inv.available>0).map(inv=>`Gauge ${inv.gauge}: ${inv.available}`).join(' | ');
-        availabilityDiv.innerHTML = `<span style="color:var(--g600)">📦 Total: ${total} available${qty>0?' (need '+qty+')':''} — ${gaugeList}</span>`;
-      }
-    }
-    availabilityDiv.style.display = 'block';
-  } catch(e) {
-    console.error('Inventory check error:', e);
-    availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Live stock preview unavailable. Final check happens on save.</span>`;
-    availabilityDiv.style.display = 'block';
-  }
-}
-
-// Debounced version used by qty input
-const _checkInvDebounced = debounce(function() {
-  const sel = document.getElementById('s_type');
-  const pt  = pieceTypes.find(p => p.id == sel?.value);
-  if (pt) checkInventoryAvailability(pt.id);
-}, 280);
-
-function calcSale() {
-  const sel = document.getElementById('s_type');
-  const pt  = pieceTypes.find(p=>p.id==sel.value);
-  const qty = parseInt(document.getElementById('s_qty').value)||0;
-  const priceInput = document.getElementById('s_price');
-  
-  // If no price is typed here, use the saved piece price silently.
-  let price = parseFloat(priceInput.value) || 0;
-  if (!price && pt && pt.default_price) {
-    price = pt.default_price;
-  }
-  
-  if (!pt||(!qty&&!price)) { 
-    document.getElementById('s_summary').style.display='none'; 
-    return; 
-  }
-  
-  const revenue = qty * price;
-  const kgsSold = qty * pt.weight_kg;
-  const metersSold = qty * pt.length_m;
-  
-  document.getElementById('s_revenue').textContent = fmtMoney(revenue);
-  document.getElementById('s_kgs').textContent     = fmt(kgsSold,2)+' kg';
-  document.getElementById('s_meters').textContent    = fmt(metersSold,1)+' m';
-  document.getElementById('s_summary').style.display = 'block';
-}
 // Row-level change handlers replace the old single-input listener
 
 // Production items
@@ -740,30 +620,6 @@ const _calcWireWarningDebounced = debounce(async function(perGauge) {
     statusDiv.style.display = 'block';
   } catch(e) { statusDiv.style.display = 'none'; }
 }, 280);
-
-// Check raw material availability for production
-async function checkRawMaterialAvailability(kgsNeeded) {
-  try {
-    const user = Store.user;
-    const endpoint = (user.role === 'knuckler' || user.role === 'operator') ? '/inventory/worker' : '/inventory';
-    const inv = await api('GET', endpoint);
-    const rawMaterial = inv.raw_material;
-    const availabilityDiv = document.getElementById('pr_material_status');
-    
-    if (rawMaterial.remaining_kgs < kgsNeeded) {
-      availabilityDiv.innerHTML = `<span style="color:var(--red)">⚠ Insufficient raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg available, but ${kgsNeeded.toFixed(1)} kg needed</span>`;
-      availabilityDiv.style.display = 'block';
-    } else if (rawMaterial.low_stock) {
-      availabilityDiv.innerHTML = `<span style="color:var(--amber)">⚠ Low raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg remaining</span>`;
-      availabilityDiv.style.display = 'block';
-    } else {
-      availabilityDiv.innerHTML = `<span style="color:var(--g600)">✅ Sufficient raw material: ${rawMaterial.remaining_kgs.toFixed(1)} kg available</span>`;
-      availabilityDiv.style.display = 'block';
-    }
-  } catch(e) {
-    console.error('Raw material check error:', e);
-  }
-}
 
 // Load reference data
 async function loadRefs() {
@@ -975,6 +831,8 @@ async function loadTabData(tab) {
     // Orders — KPI counts + tracked list, same tab as sales since an order
     // simply progresses into a sale once finalized.
     const otb = document.getElementById('o_list');
+    const oExportBtn = document.getElementById('oExportBtn');
+    oExportBtn.style.display = 'none';
     otb.innerHTML = `<tr class="skel-row">${Array(5).fill('<td><div class="skel-cell"></div></td>').join('')}</tr>`.repeat(3);
     try {
       const ores = await api('GET', '/orders');
@@ -988,6 +846,7 @@ async function loadTabData(tab) {
       if (!orows.length) {
         otb.innerHTML = `<tr><td colspan="5" class="empty"><div class="empty-text">No orders yet</div></td></tr>`;
       } else {
+        oExportBtn.style.display = 'block';
         const canManage = user.role === 'owner' || user.role === 'admin';
         otb.innerHTML = orows.map(o => {
           const itemsSummary = (o.items || []).map(it => `${escHtml(it.piece_name)} × ${fmt(it.quantity)}`).join(', ') || '—';
@@ -997,8 +856,8 @@ async function loadTabData(tab) {
               ? `<span style="color:var(--g600);font-weight:600">Finalized</span>`
               : `<span style="color:var(--muted);font-weight:600">Cancelled</span>`;
           const actions = o.status === 'pending'
-            ? `<button class="btn btn-primary btn-sm" onclick="convertOrder(${o.id})">Finalize Order</button>` +
-              (canManage ? ` <button class="btn btn-danger btn-sm" onclick="cancelOrder(${o.id})">Cancel</button>` : '')
+            ? `<button class="btn btn-primary btn-sm" onclick="convertOrder(${o.id}, this)">Finalize Order</button>` +
+              (canManage ? ` <button class="btn btn-danger btn-sm" onclick="cancelOrder(${o.id}, this)">Cancel</button>` : '')
             : '—';
           return `<tr>
             <td>${escHtml(o.order_date)}</td>
@@ -1029,7 +888,7 @@ async function deleteRecord(type, id) {
       confirmMsg += `Buyer: ${row.buyer_name || 'Walk-in'}\n`;
       confirmMsg += `\n⚠️  Implications:\n`;
       confirmMsg += `• The sold stock will be restored to inventory\n`;
-      confirmMsg += `• Its auto-generated invoice will be removed (if unpaid)\n`;
+      confirmMsg += `• Its auto-generated invoice will be reversed and kept for your records (if unpaid)\n`;
       confirmMsg += `• If the invoice has payments already collected, deletion will be blocked\n`;
     }
     confirmMsg += `\nThis cannot be undone. Proceed?`;
@@ -1060,6 +919,7 @@ async function deleteRecord(type, id) {
   }
 
   if (!confirm(confirmMsg)) return;
+  window.focus(); // same fix as cancelOrder — confirm() can leave keyboard focus stuck
 
   // ── Pre-flight checks before hitting the server ──────────────────────────────
   // For purchases: check locally whether this wire gauge has been used in production.
@@ -1150,6 +1010,17 @@ function exportDailyCSV(type) {
       r.entered_by_name
     ]);
     filename = `production_${d}`;
+  } else if (type === 'orders') {
+    const data = window._lastOrders;
+    if (!data || !data.length) return;
+    headers = ['Date', 'Buyer', 'Items', 'Status'];
+    rows = data.map(o => [
+      o.order_date,
+      o.buyer_name,
+      (o.items || []).map(it => `${it.piece_name} x ${it.quantity}`).join('; ') || '—',
+      o.status === 'pending' ? 'Pending' : o.status === 'converted' ? 'Finalized' : 'Cancelled'
+    ]);
+    filename = `orders_${d}`;
   } else {
     const data = window._lastSales;
     if (!data || !data.length) return;
@@ -1941,7 +1812,7 @@ async function _confirmFinalizeOrder(orderId) {
   }
 
   const btn = document.getElementById('fo_confirm_btn');
-  btn.disabled = true; btn.textContent = '⏳ Finalizing…';
+  btn.disabled = true; btn.textContent = '⏳ Finalizing…'; btn.blur();
   try {
     const d = document.getElementById('entryDate').value;
     await api('POST', `/orders/${orderId}/convert`, { entry_date: d, items: overrides });
@@ -1949,6 +1820,7 @@ async function _confirmFinalizeOrder(orderId) {
     showToast('✅ Order finalized');
     invalidateStockCaches();
     await loadTabData('sales');
+    document.activeElement?.blur();
   } catch(e) {
     const msg = e.error || 'Finalize failed';
     errEl.textContent = msg; errEl.style.display = 'block';
@@ -1956,40 +1828,51 @@ async function _confirmFinalizeOrder(orderId) {
   }
 }
 
-async function convertOrder(orderId) {
+// Shared busy-set: prevents double-fire when Cancel or Finalize Order is
+// clicked twice fast on the same order.
+const _orderActionBusy = new Set();
+
+async function convertOrder(orderId, btn) {
+  if (_orderActionBusy.has(orderId)) return;
   const order = (window._lastOrders || []).find(o => o.id === orderId);
   const missing = order ? _missingOrderFields(order) : [];
   if (missing.length) { _showFinalizeOrderModal(order, missing); return; }
 
+  _orderActionBusy.add(orderId);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Finalizing…'; btn.blur(); }
   try {
     const d = document.getElementById('entryDate').value;
     await api('POST', `/orders/${orderId}/convert`, { entry_date: d });
     showToast('✅ Order finalized');
     invalidateStockCaches();
     await loadTabData('sales');
+    document.activeElement?.blur();
   } catch(e) {
     const msg = e.error || 'Finalize failed';
     showToast(`❌ ${msg}`, 'error', 5000);
+  } finally {
+    _orderActionBusy.delete(orderId);
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Finalize Order'; }
   }
 }
 
-async function cancelOrder(orderId) {
-  if (!confirm('Cancel this order? This cannot be undone.')) return;
+async function cancelOrder(orderId, btn) {
+  if (_orderActionBusy.has(orderId)) return;
+  _orderActionBusy.add(orderId);
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; btn.blur(); }
   try {
     await api('POST', `/orders/${orderId}/cancel`, {});
     showToast('Order cancelled');
     await loadTabData('sales');
+    document.activeElement?.blur(); // defensive backstop
   } catch(e) {
     const msg = e.error || 'Cancel failed';
     showToast(`❌ ${msg}`, 'error', 5000);
+  } finally {
+    _orderActionBusy.delete(orderId);
+    if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Cancel'; }
   }
 }
-
-// Stub — no longer used but referenced by old gauge-source listener setup
-function fillSalePrice() {}
-function calcSale() { calcSaleTotals(); }
-function addSaleToQueue() { return addSaleItemRow(); }
-function clearSaleQueue() { resetSaleForm(); }
 
 // Customer Autocomplete — simple, clean, reliable
 let _customerCache = [];

@@ -28,11 +28,17 @@ function openDb() {
         // FOREIGN_KEYS=ON: enforces referential integrity — guarantees C (Consistency).
         // TEMP_STORE=MEMORY: temp tables in memory for speed (no durability concern).
         // CACHE_SIZE: 64MB page cache reduces disk I/O for large aggregations.
+        // BUSY_TIMEOUT: without this, two writes landing at the same instant throw
+        //   SQLITE_BUSY immediately instead of one waiting briefly for the other —
+        //   this is what turns a harmless near-simultaneous write into a raw
+        //   "Internal server error" on the client. 5s is comfortably above any
+        //   single write in this app.
         _db.serialize(() => {
           _db.run('PRAGMA journal_mode = WAL');
           _db.run('PRAGMA synchronous = FULL');
           _db.run('PRAGMA foreign_keys = ON');
           _db.run('PRAGMA temp_store = MEMORY');
+          _db.run('PRAGMA busy_timeout = 5000');
           _db.run('PRAGMA cache_size = -65536', (err) => {
             if (err) reject(err);
             else resolve(_db);
@@ -321,6 +327,7 @@ const TABLE_STATEMENTS = [
     amount_paid REAL NOT NULL DEFAULT 0,
     notes TEXT DEFAULT '',
     sale_id INTEGER,
+    reversal_source TEXT DEFAULT NULL,
     created_by INTEGER NOT NULL REFERENCES users(id),
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -433,7 +440,7 @@ const TABLE_STATEMENTS = [
     selling_price REAL,
     gauge_source TEXT DEFAULT '',
     transport_to_market REAL,
-    sale_id INTEGER REFERENCES sales(id)
+    sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL
   )`,
 ];
 

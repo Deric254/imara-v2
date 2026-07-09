@@ -230,7 +230,7 @@ function invCard(inv) {
   const _dRaw = inv.status === 'paid' ? 'paid' : inv.status === 'partial_payment' ? 'partial_payment' : inv.status;
   const disp = {paid:'paid',partial_payment:'partial_payment',cancelled:'cancelled',pending:'pending',overdue:'overdue',draft:'draft'}[_dRaw] || 'partial_payment';
   const bc   = {paid:'s-paid',partial_payment:'s-partial_payment',cancelled:'s-cancelled'}[disp] || 's-partial_payment';
-  const bl   = {paid:'Paid',partial_payment:'Pending Payment',cancelled:'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp] || 'Pending';
+  const bl   = {paid:'Paid',partial_payment:'Pending Payment',cancelled: inv.reversal_source ? 'Reversed' : 'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp] || 'Pending';
   const auto = inv.sale_id
     ? `<span style="font-size:.66rem;background:#dbeafe;color:#1e40af;padding:.1rem .38rem;border-radius:3px;margin-left:.35rem;font-weight:600">AUTO</span>` : '';
   return `<div class="inv-card ${disp}" onclick="viewInvoice(${inv.id})">
@@ -318,7 +318,7 @@ async function viewInvoice(id) {
           <div>
             <div class="pdoc-title">INVOICE</div>
             <div class="pdoc-num">${escHtml(inv.invoice_number)}</div>
-            <div><span class="dsbadge dsb-${disp}">${{paid:'PAID',pending:'PENDING PAYMENT',partial_payment:'PARTIAL PAYMENT',cancelled:'CANCELLED',overdue:'OVERDUE',draft:'DRAFT'}[disp]||'PENDING PAYMENT'}</span></div>
+            <div><span class="dsbadge dsb-${disp}">${{paid:'PAID',pending:'PENDING PAYMENT',partial_payment:'PARTIAL PAYMENT',cancelled: inv.reversal_source ? 'REVERSED' : 'CANCELLED',overdue:'OVERDUE',draft:'DRAFT'}[disp]||'PENDING PAYMENT'}</span></div>
           </div>
         </div>
         <hr class="pdoc-div">
@@ -935,93 +935,6 @@ async function shareInv(id) {
   } catch(e){ if(e.name!=='AbortError') showToast('Share failed','error'); }
 }
 
-async function cancelInv(id) {
-  const inv = window._curInvData;
-  const paidAmt = parseFloat(inv?.amount_paid || 0);
-  const hasPayments = paidAmt > 0;
-
-  // Build a clear, honest confirmation message
-  let confirmMsg = `Cancel invoice ${inv?.invoice_number || ''}?\n\n`;
-  confirmMsg += `Customer: ${inv?.customer_name || ''}\n`;
-  confirmMsg += `Total: KES ${parseFloat(inv?.total_amount || 0).toLocaleString()}\n`;
-  if (hasPayments) {
-    confirmMsg += `\n⚠️  WARNING: KES ${paidAmt.toLocaleString()} has already been collected.\n`;
-    confirmMsg += `The payment history will be kept for audit purposes.\n`;
-    confirmMsg += `You will need to issue a refund or credit note separately.\n`;
-  }
-  confirmMsg += `\nThe invoice record will remain visible as "Cancelled" for your records.\nThis cannot be undone.\n\nProceed?`;
-
-  if (!confirm(confirmMsg)) return;
-
-  // Prompt for reason — null means user pressed ESC (abort the cancellation)
-  const reason = prompt('Optional: Enter a reason for cancellation (or press Cancel to abort):', '');
-  if (reason === null) return; // user pressed ESC/Cancel on the prompt — do nothing
-
-  try {
-    const result = await api('PATCH', `/invoices/${id}/cancel`, { reason: reason.trim() });
-    // Show full server message — it includes payment and sale-link warnings
-    showToast(result.message || 'Invoice cancelled', 'success', 6000);
-    // Push bell notification
-    const invNum = result?.invoice?.invoice_number || id;
-    const customer = result?.invoice?.customer_name || 'Customer';
-    api('POST', '/notifications', {
-      type: 'warn', category: 'sales',
-      title: `⚠ Invoice Cancelled — ${invNum}`,
-      message: `${customer}'s invoice was cancelled${reason ? ': ' + reason : ''}.`,
-      roleTarget: 'owner',
-    }).catch(() => {});
-    if (typeof _loadGlobalNotifs === 'function') setTimeout(_loadGlobalNotifs, 600);
-    // If server returned additional warnings, surface them one by one
-    if (result.warnings && result.warnings.length) {
-      result.warnings.forEach((w, i) => setTimeout(() => showToast('⚠️ ' + w, 'warn', 8000), (i+1)*1200));
-    }
-    closeModal('viewModal');
-    await loadAll();
-  } catch(e) {
-    showToast(e.error || e.message || 'Failed to cancel invoice', 'error');
-  }
-}
-
-async function deleteInv(id) {
-  const inv = window._curInvData;
-  // Safety: verify the cached data matches the id being deleted
-  if (!inv || parseInt(inv.id) !== parseInt(id)) {
-    showToast('Invoice data mismatch — please close and reopen the invoice before deleting.', 'error', 6000);
-    return;
-  }
-  const paidAmt = parseFloat(inv.amount_paid || 0);
-
-  if (paidAmt > 0) {
-    alert(`Cannot delete invoice ${inv.invoice_number}.\n\nKES ${paidAmt.toLocaleString()} has already been collected against this invoice.\n\nTo close it, use "Cancel Invoice" instead — this keeps the full audit trail and payment history intact.`);
-    return;
-  }
-  if (inv.sale_id) {
-    alert(`Cannot delete invoice ${inv.invoice_number}.\n\nThis invoice was auto-generated from a Daily sale. To remove it, delete the sale from the Daily page — that will remove the invoice automatically.`);
-    return;
-  }
-
-  const confirmMsg = `Permanently delete invoice ${inv.invoice_number}?\n\nCustomer: ${inv.customer_name}\nTotal: KES ${parseFloat(inv.total_amount || 0).toLocaleString()}\n\nThis removes the invoice and all its line items permanently. This cannot be undone.\n\nProceed?`;
-  if (!confirm(confirmMsg)) return;
-
-  try {
-    const result = await api('DELETE', `/invoices/${id}`);
-    showToast(result.message || 'Invoice deleted');
-    closeModal('viewModal');
-    await loadAll();
-  } catch(e) {
-    // Surface exact backend message — includes guidance on what to do instead
-    const msg = e.error === 'INTEGRITY_VIOLATION'
-      ? (e.message || 'Cannot delete this invoice.')
-      : (e.error || e.message || 'Failed to delete invoice');
-    showToast(msg, 'error', 8000);
-  }
-}
-
-async function loadAndEdit(id) {
-  try { const inv = await api('GET',`/invoices/${id}`); openEdit(inv); }
-  catch(e){ showToast(e.error||'Failed to load','error'); }
-}
-
 /* ── RECEIVE PAYMENT ── */
 async function receivePayment(id, total, balance) {
   // Show the payment modal IMMEDIATELY — no silent waiting
@@ -1434,7 +1347,7 @@ async function loadStatement() {
             const _sdRaw=inv.status==='paid'?'paid':inv.status==='partial_payment'?'partial_payment':inv.status;
             const disp={paid:'paid',partial_payment:'partial_payment',cancelled:'cancelled',pending:'pending',overdue:'overdue',draft:'draft'}[_sdRaw]||'partial_payment';
             const bc={paid:'s-paid',partial_payment:'s-partial_payment',cancelled:'s-cancelled',pending:'s-partial_payment',overdue:'s-partial_payment',draft:'s-partial_payment'}[disp]||'s-partial_payment';
-            const bl2={paid:'Paid',partial_payment:'Pending Payment',cancelled:'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp]||'Pending';
+            const bl2={paid:'Paid',partial_payment:'Pending Payment',cancelled: inv.reversal_source ? 'Reversed' : 'Cancelled',pending:'Pending',overdue:'Overdue',draft:'Draft'}[disp]||'Pending';
             return `<tr>
               <td style="font-family:var(--font-mono);font-size:.8rem">${escHtml(inv.invoice_number)}</td>
               <td>${inv.invoice_date}</td><td>${escHtml(inv.customer_name)}</td>

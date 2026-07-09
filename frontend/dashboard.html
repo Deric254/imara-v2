@@ -346,7 +346,6 @@ function fmtKES(v) {
   if (v == null || isNaN(v)) return 'KES —';
   return 'KES ' + Number(v).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function smartKES(v) { return fmtKES(v); }
 function numVal(v) {
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n : 0;

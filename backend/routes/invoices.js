@@ -561,12 +561,22 @@ router.delete('/:id', ...OWNER_ADMIN, async (req, res) => {
       // Cascade: remove all payment records and line items first
       await db.prepare('DELETE FROM invoice_payments WHERE invoice_id=?').run(id);
       await db.prepare('DELETE FROM invoice_items WHERE invoice_id=?').run(id);
+      // Detach any order that points at this invoice — same fix as the sale-delete
+      // path, so this delete never depends on the FK's ON DELETE rule being current.
+      await db.prepare('UPDATE orders SET invoice_id=NULL WHERE invoice_id=?').run(id);
       await db.prepare('DELETE FROM invoices WHERE id=?').run(id);
     });
 
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_INVOICE', table: 'invoices', recordId: id, oldVals: row, ip: req.ip });
     res.json({ message: `Invoice ${row.invoice_number} deleted successfully.` });
   } catch(e) {
+    if (String(e.message || '').includes('FOREIGN KEY constraint failed')) {
+      console.error('DELETE invoice FK error:', e);
+      return res.status(400).json({
+        error: 'INTEGRITY_VIOLATION',
+        message: 'This invoice is still linked to other records and cannot be deleted right now. Please refresh and try again.'
+      });
+    }
     console.error('DELETE invoice error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }

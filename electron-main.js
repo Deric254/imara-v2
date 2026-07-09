@@ -219,6 +219,22 @@ ipcMain.on('install-update', () => {
   try { autoUpdater?.quitAndInstall(false, true); } catch (_) {}
 });
 
+// Renderer-side window.confirm()/prompt()/alert() are synchronous native dialogs.
+// Electron has a long-standing quirk where, after one of these closes, the DOM's
+// window.focus() call does NOT reliably restore real OS-level keyboard focus to
+// the page — inputs look normal and accept clicks, but keystrokes go nowhere.
+// The only reliable fix is forcing focus at the BrowserWindow/webContents level
+// from the main process, which is what this handler does.
+ipcMain.on('focus-window', () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      mainWindow.webContents.focus();
+    }
+  } catch (_) {}
+});
+
 ipcMain.on('check-for-updates', () => {
   checkForUpdatesManually();
 });

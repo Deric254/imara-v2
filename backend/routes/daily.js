@@ -335,6 +335,8 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
       if (parseFloat(tb) - parseFloat(row.kgs_bought) - parseFloat(tu) < -0.001) {
         const e = new Error('BLOCKED');
         e.purchaseBlocked = true;
+        e.gaugeKey = gaugeKey; // carry it on the error — gaugeKey itself is out of
+                                // scope in the catch block below (declared inside this try)
         throw e;
       }
       await db.prepare('DELETE FROM purchases WHERE id=?').run(id);
@@ -346,7 +348,7 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
     res.json({ message: `Purchase deleted. ${parseFloat(row.kgs_bought).toFixed(1)} kg${gLabel} removed from raw material stock.` });
   } catch(e) {
     if (e.purchaseBlocked) {
-      const gLabel = gaugeKey ? `gauge ${gaugeKey}` : 'this gauge';
+      const gLabel = e.gaugeKey ? `gauge ${e.gaugeKey}` : 'this gauge';
       return res.status(400).json({ error: 'INTEGRITY_VIOLATION', message: `Cannot delete this purchase — wire (${gLabel}) was used in production concurrently. Please refresh and try again.` });
     }
     console.error('DELETE purchase error:', e);
@@ -1012,24 +1014,45 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
           e.paymentRace = true;
           throw e;
         }
-        await db.prepare('DELETE FROM invoice_payments WHERE invoice_id=?').run(linkedInvoice.id);
-        await db.prepare('DELETE FROM invoice_items WHERE invoice_id=?').run(linkedInvoice.id);
-        await db.prepare('DELETE FROM invoices WHERE id=?').run(linkedInvoice.id);
+        // Reverse the invoice rather than deleting it — keeps the full audit trail
+        // (every invoice ever issued stays visible; nothing about it is erased).
+        // No payments exist to remove (guaranteed unpaid by the checks above), and
+        // its line items are kept intact as the historical record of what was billed.
+        const reason = `Reversed: originating sale #${id} was deleted on ${new Date().toISOString().slice(0,10)}.`;
+        await db.prepare(`
+          UPDATE invoices
+          SET status='cancelled',
+              reversal_source='sale_deleted',
+              notes = CASE WHEN notes IS NULL OR notes='' THEN ? ELSE notes || ' | ' || ? END,
+              updated_at=CURRENT_TIMESTAMP
+          WHERE id=?
+        `).run(reason, reason, linkedInvoice.id);
       }
+      // Detach this sale from any order line it originated from — required so the
+      // delete below never hits a FOREIGN KEY constraint, regardless of whether the
+      // schema's ON DELETE rule has been migrated yet.
+      await db.prepare('UPDATE order_items SET sale_id=NULL WHERE sale_id=?').run(id);
       await db.prepare('DELETE FROM sales WHERE id=?').run(id);
     });
 
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_SALE', table: 'sales',
       recordId: id, oldVals: row,
-      newVals: linkedInvoice ? { cascaded_invoice: linkedInvoice.invoice_number } : null,
+      newVals: linkedInvoice ? { reversed_invoice: linkedInvoice.invoice_number } : null,
       ip: req.ip });
 
     const msg = linkedInvoice
-      ? `Sale deleted. Its invoice (${linkedInvoice.invoice_number}) has been automatically removed.`
+      ? `Sale deleted. Its invoice (${linkedInvoice.invoice_number}) has been reversed and kept for your records.`
       : 'Sale deleted successfully.';
     res.json({ message: msg });
   } catch(e) {
     if (e.paymentRace) return res.status(400).json({ error: 'INTEGRITY_VIOLATION', message: e.message });
+    if (String(e.message || '').includes('FOREIGN KEY constraint failed')) {
+      console.error('DELETE sale FK error:', e);
+      return res.status(400).json({
+        error: 'INTEGRITY_VIOLATION',
+        message: 'This sale is still linked to other records and cannot be deleted right now. Please refresh and try again.'
+      });
+    }
     console.error('DELETE sale error:', e);
     res.status(500).json({ error: 'Internal server error' });
   }

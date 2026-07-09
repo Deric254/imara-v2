@@ -296,6 +296,66 @@ const MIGRATIONS = [
       }
     },
   },
+
+  {
+    id: '010-order-items-sale-delete-fix',
+    version: '2.7.0',
+    description: 'Fix order_items.sale_id foreign key to ON DELETE SET NULL. Previously had no delete rule, so deleting a sale that originated from a converted order was blocked by SQLite\'s foreign key constraint and returned a 500 error — even when the sale was unpaid and safe to delete.',
+    async up(db) {
+      try {
+        const info = await db.prepare('PRAGMA foreign_key_list(order_items)').all();
+        const needsFix = info.some(fk => fk.table === 'sales' && (fk.on_delete || 'NO ACTION').toUpperCase() !== 'SET NULL');
+        if (!needsFix) return;
+
+        await db.exec('PRAGMA foreign_keys = OFF');
+        await db.exec('BEGIN TRANSACTION');
+        try {
+          await db.exec(`
+            CREATE TABLE order_items_new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+              piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
+              quantity INTEGER NOT NULL CHECK(quantity > 0),
+              selling_price REAL,
+              gauge_source TEXT DEFAULT '',
+              transport_to_market REAL,
+              sale_id INTEGER REFERENCES sales(id) ON DELETE SET NULL
+            )
+          `);
+          await db.exec(`
+            INSERT INTO order_items_new (id, order_id, piece_type_id, quantity, selling_price, gauge_source, transport_to_market, sale_id)
+            SELECT id, order_id, piece_type_id, quantity, selling_price, gauge_source, transport_to_market, sale_id FROM order_items
+          `);
+          await db.exec('DROP TABLE order_items');
+          await db.exec('ALTER TABLE order_items_new RENAME TO order_items');
+          await db.exec('COMMIT');
+        } catch (innerErr) {
+          await db.exec('ROLLBACK');
+          throw innerErr;
+        } finally {
+          await db.exec('PRAGMA foreign_keys = ON');
+        }
+      } catch (err) {
+        console.warn('Migration 010:', err?.message);
+      }
+    },
+  },
+
+  {
+    id: '011-invoice-reversal-source',
+    version: '2.8.0',
+    description: 'Add reversal_source to invoices. Distinguishes a manually-cancelled invoice from one reversed as a cascade of deleting its originating sale, so the UI can label the two differently while keeping both greyed out and fully in the audit trail.',
+    async up(db) {
+      try {
+        const cols = await db.prepare('PRAGMA table_info(invoices)').all();
+        if (!cols.some(c => c.name === 'reversal_source')) {
+          await db.exec("ALTER TABLE invoices ADD COLUMN reversal_source TEXT DEFAULT NULL");
+        }
+      } catch (err) {
+        console.warn('Migration 011:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

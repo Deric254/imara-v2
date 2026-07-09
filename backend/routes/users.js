@@ -40,7 +40,7 @@ router.post('/',
         return res.status(409).json({ error: 'Username already taken' });
 
       const result = await db.prepare(
-        'INSERT INTO users(username,password,role,full_name,phone,email,password_changed_at) VALUES(?,?,?,?,?,?,NOW()) RETURNING id'
+        "INSERT INTO users(username,password,role,full_name,phone,email,password_changed_at) VALUES(?,?,?,?,?,?,datetime('now')) RETURNING id"
       ).run(username, bcrypt.hashSync(password, 12), role, full_name, phone, email);
 
       await writeAudit(db, { userId: req.user.id, action: 'CREATE_USER', table: 'users',
@@ -124,7 +124,7 @@ router.patch('/:id',
       const phone     = req.body.phone     ?? target.phone ?? '';
       const email     = req.body.email     ?? target.email ?? '';
 
-      await db.prepare("UPDATE users SET username=?, full_name=?, phone=?, email=?, updated_at=NOW() WHERE id=?")
+      await db.prepare("UPDATE users SET username=?, full_name=?, phone=?, email=?, updated_at=datetime('now') WHERE id=?")
         .run(username, full_name, phone, email, targetId);
 
       await writeAudit(db, { userId: req.user.id, action: 'EDIT_USER', table: 'users',
@@ -153,7 +153,7 @@ router.patch('/:id/deactivate', authenticate, requireRole('owner','admin'), asyn
     if (targetId === req.user.id)
       return res.status(403).json({ error: 'Cannot deactivate yourself' });
 
-    await db.prepare("UPDATE users SET active=0, updated_at=NOW() WHERE id=?").run(targetId);
+    await db.prepare("UPDATE users SET active=0, updated_at=datetime('now') WHERE id=?").run(targetId);
     await writeAudit(db, { userId: req.user.id, action: 'DEACTIVATE_USER', table: 'users', recordId: targetId, ip: req.ip });
     res.json({ message: 'User deactivated' });
   } catch(e) {
@@ -173,7 +173,7 @@ router.patch('/:id/activate', authenticate, requireRole('owner','admin'), async 
     if (target.role === 'admin' && req.user.role !== 'owner')
       return res.status(403).json({ error: 'Only Owner can activate Admin' });
 
-    await db.prepare("UPDATE users SET active=1, updated_at=NOW() WHERE id=?").run(targetId);
+    await db.prepare("UPDATE users SET active=1, updated_at=datetime('now') WHERE id=?").run(targetId);
     await writeAudit(db, { userId: req.user.id, action: 'ACTIVATE_USER', table: 'users', recordId: targetId, ip: req.ip });
     res.json({ message: 'User activated' });
   } catch(e) {
@@ -203,7 +203,7 @@ router.post('/:id/reset-password',
         return res.status(403).json({ error: 'Only Owner can reset Admin password' });
 
       // FIX: stamp password_changed_at — forces the user to re-login immediately
-      await db.prepare("UPDATE users SET password=?, password_changed_at=NOW(), updated_at=NOW() WHERE id=?")
+      await db.prepare("UPDATE users SET password=?, password_changed_at=datetime('now'), updated_at=datetime('now') WHERE id=?")
         .run(bcrypt.hashSync(req.body.new_password, 12), targetId);
       await writeAudit(db, { userId: req.user.id, action: 'RESET_PASSWORD', table: 'users', recordId: targetId, ip: req.ip });
       res.json({ message: 'Password reset successfully. The user must log in with the new password.' });

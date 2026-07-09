@@ -32,4 +32,8 @@ contextBridge.exposeInMainWorld('electron', {
   // Backup resilience
   chooseBackupFolder: () => ipcRenderer.invoke('backup:choose-folder'),
   writeBackupSecond:  (args) => ipcRenderer.invoke('backup:write-second', args),
+
+  // Restores real keyboard focus to the window after a native confirm()/prompt()/
+  // alert() dialog closes — see focus-window handler in electron-main.js.
+  focusWindow: () => ipcRenderer.send('focus-window'),
 });

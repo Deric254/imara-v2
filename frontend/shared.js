@@ -31,6 +31,33 @@ const Store = {
   }
 };
 
+// ── Native dialog focus fix ────────────────────────────────────────────────
+// Electron quirk: after window.confirm()/prompt()/alert() (synchronous native
+// dialogs) closes, real OS-level keyboard focus doesn't reliably return to the
+// page — inputs accept clicks but typing does nothing until the user clicks the
+// window chrome or alt-tabs. window.focus() (a DOM call) does not fix this; it
+// has to be forced from the main process. We wrap the three dialog functions
+// once, here, so every call site in every page gets the fix automatically —
+// no need to touch each confirm()/prompt()/alert() call individually.
+(function fixNativeDialogFocus() {
+  if (typeof window === 'undefined') return;
+  const restoreFocus = () => {
+    if (window.electron && typeof window.electron.focusWindow === 'function') {
+      window.electron.focusWindow();
+    } else {
+      window.focus();
+    }
+  };
+  ['confirm', 'prompt', 'alert'].forEach(fnName => {
+    const native = window[fnName];
+    window[fnName] = function(...args) {
+      const result = native.apply(window, args);
+      restoreFocus();
+      return result;
+    };
+  });
+})();
+
 // ── 401 handler: clear session then redirect cleanly — no modal loop ─────────
 const _401Modal = { shown: false };
 function handle401(path) {
