@@ -32,9 +32,6 @@ jobs:
         with:
           node-version: 20
 
-      - name: Upgrade npm for VS 2026 compatibility
-        run: npm install -g npm@latest
-
       - name: Install root dependencies
         run: npm install
 
