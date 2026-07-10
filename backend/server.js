@@ -89,6 +89,16 @@ app.use((err, _req, res, _next) => {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 
+// Log-only guards: keeps unexpected errors visible instead of the process
+// dying silently. No restart/exit logic here — this entry point has no
+// Electron dialog to prompt the user, so it just logs and keeps running.
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 initDb().then(() => {
   app.listen(PORT, () => {
     console.log(`\n🔗  IMARA LINKS API  →  http://localhost:${PORT}`);

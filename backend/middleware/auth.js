@@ -57,14 +57,6 @@ function requireRole(...roles) {
       : res.status(403).json({ error: 'Insufficient permissions' });
 }
 
-function auditAction(action, tableName) {
-  return (req, _res, next) => {
-    req._auditAction = action;
-    req._auditTable  = tableName;
-    next();
-  };
-}
-
 async function writeAudit(db, { userId, action, table, recordId, oldVals, newVals, ip }) {
   try {
     const dbHandle = (db && typeof db.prepare === 'function') ? db : getDb();
@@ -83,4 +75,4 @@ async function writeAudit(db, { userId, action, table, recordId, oldVals, newVal
   } catch { /* never let audit break the flow */ }
 }
 
-module.exports = { authenticate, requireRole, auditAction, writeAudit, JWT_SECRET };
+module.exports = { authenticate, requireRole, writeAudit, JWT_SECRET };

@@ -434,14 +434,6 @@ function updateConfigField(fieldId, configKey, defaultValue = '') {
   if (el.type === 'number') el.placeholder = el.value || defaultValue;
 }
 
-// ── Loading skeleton helper ───────────────────────────────────────────────────
-function showSkeleton(containerId, rows = 3, cols = 4) {
-  const el = document.getElementById(containerId);
-  if (!el) return;
-  const skelRow = `<tr>${Array(cols).fill(`<td><div class="skel-cell"></div></td>`).join('')}</tr>`;
-  el.innerHTML = Array(rows).fill(skelRow).join('');
-}
-
 // ── Page-level loading overlay ────────────────────────────────────────────────
 function showPageLoader(msg = 'Loading…') {
   let el = document.getElementById('_pageLoader');
