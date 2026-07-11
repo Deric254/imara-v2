@@ -6,6 +6,7 @@ const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { getDb } = require('../db');
 
 const ADMIN_OR_OWNER = [authenticate, requireRole('owner', 'admin')];
+const OWNER_ONLY      = [authenticate, requireRole('owner')];
 
 // ── GET /api/database/tables — list all tables with row counts ────────────────
 router.get('/tables', ...ADMIN_OR_OWNER, async (req, res) => {
@@ -60,7 +61,12 @@ router.get('/table/:name', ...ADMIN_OR_OWNER, async (req, res) => {
 });
 
 // ── POST /api/database/query — run an arbitrary SQL query ────────────────────
-router.post('/query', ...ADMIN_OR_OWNER, async (req, res) => {
+// OWNER ONLY: this can write to any table, including audit_log itself, which
+// would let a write here erase the evidence of the write. Everything else in
+// this file (listing tables, viewing rows, viewing schema) is read-only and
+// stays available to Admin — only the ability to execute arbitrary writes is
+// restricted here.
+router.post('/query', ...OWNER_ONLY, async (req, res) => {
   const { sql } = req.body;
   if (!sql || typeof sql !== 'string' || sql.trim().length === 0) {
     return res.status(400).json({ error: 'No SQL provided' });

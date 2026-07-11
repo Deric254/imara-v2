@@ -74,6 +74,8 @@ router.patch('/profile', authenticate,
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
     try {
       const { full_name, phone = '', email = '', new_password } = req.body;
+      const safePhone = (phone || '').trim();
+      const safeEmail = (email || '').trim();
       const db     = getDb();
       const target = await db.prepare('SELECT username, role, password FROM users WHERE id=?').get(req.user.id);
       let username = target.username;
@@ -91,11 +93,11 @@ router.patch('/profile', authenticate,
         const passwordHash = bcrypt.hashSync(new_password, 12);
         await db.prepare(
           'UPDATE users SET username=?, full_name=?, phone=?, email=?, password=?, password_changed_at=datetime(\'now\'), updated_at=datetime(\'now\') WHERE id=?'
-        ).run(username, full_name.trim(), phone.trim(), email.trim(), passwordHash, req.user.id);
+        ).run(username, full_name.trim(), safePhone, safeEmail, passwordHash, req.user.id);
       } else {
         await db.prepare(
           'UPDATE users SET username=?, full_name=?, phone=?, email=?, updated_at=datetime(\'now\') WHERE id=?'
-        ).run(username, full_name.trim(), phone.trim(), email.trim(), req.user.id);
+        ).run(username, full_name.trim(), safePhone, safeEmail, req.user.id);
       }
 
       await writeAudit(db, { userId: req.user.id, action: 'UPDATE_PROFILE', table: 'users', recordId: req.user.id, ip: req.ip });

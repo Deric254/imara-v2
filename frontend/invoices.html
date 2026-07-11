@@ -973,7 +973,7 @@ async function receivePayment(id, total, balance) {
             <option value="cheque">Cheque</option>
           </select></div>
         <div class="fg"><label>Payment Date <span style="color:var(--red)">*</span></label>
-          <input class="input" type="date" id="pay_date" value="${today()}"></div>
+          <input class="input" type="date" id="pay_date" value="${today()}" max="${today()}"></div>
       </div>
       <div class="fg"><label>Reference / Notes</label>
         <input class="input" id="pay_notes" placeholder="M-Pesa code, receipt #, etc."></div>
@@ -1100,7 +1100,7 @@ function showForm(inv) {
       </div>
       <div class="grid2">
         <div class="fg"><label>Invoice Date <span style="color:var(--red)">*</span></label>
-          <input class="input" type="date" id="fc_date" value="${inv?.invoice_date||today}"></div>
+          <input class="input" type="date" id="fc_date" value="${inv?.invoice_date||today}" max="${today}"></div>
         <div class="fg"><label>Due Date</label>
           <input class="input" type="date" id="fc_due" value="${inv?.due_date||due}"></div>
       </div>

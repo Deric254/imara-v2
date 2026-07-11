@@ -4,6 +4,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { writeNotification } = require('./reports');
+const { isFutureDate } = require('../lib/dateGuard');
 
 const OWNER_ADMIN = [authenticate, requireRole('owner','admin')];
 const num = v => parseFloat(v) || 0;
@@ -208,6 +209,10 @@ router.post('/', ...OWNER_ADMIN,
       } = req.body;
 
       if (!items?.length) return res.status(400).json({ error: 'At least one item required' });
+      if (isFutureDate(invoice_date))
+        return res.status(400).json({ error: 'invoice_date cannot be in the future' });
+      if (num(discount_pct) < 0 || num(discount_pct) > 100)
+        return res.status(400).json({ error: 'discount_pct must be between 0 and 100' });
 
       // Validate items
       for (const [i, item] of items.entries()) {
@@ -243,7 +248,7 @@ router.post('/', ...OWNER_ADMIN,
           autoStatus,
           totals.subtotal, totals.discount_pct, totals.discount_amount,
           totals.tax_pct, totals.tax_amount, totals.total_amount,
-          num(amount_paid), notes.trim(), req.user.id
+          num(amount_paid), (notes||'').trim(), req.user.id
         );
         const invId = inv.lastInsertRowid;
 
@@ -319,6 +324,22 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     } = req.body;
 
     if (items && !items.length) return res.status(400).json({ error: 'At least one item required' });
+    if (invoice_date && isFutureDate(invoice_date))
+      return res.status(400).json({ error: 'invoice_date cannot be in the future' });
+    if (req.body.payment_date && isFutureDate(req.body.payment_date))
+      return res.status(400).json({ error: 'payment_date cannot be in the future' });
+
+    // Same per-item guards as invoice creation — an edit must not be able to
+    // silently zero-out a line's price/quantity or save a blank description.
+    if (items) {
+      if (num(discount_pct) < 0 || num(discount_pct) > 100)
+        return res.status(400).json({ error: 'discount_pct must be between 0 and 100' });
+      for (const [i, item] of items.entries()) {
+        if (!item.description?.trim()) return res.status(400).json({ error: `Item ${i+1}: description required` });
+        if (!(num(item.quantity) > 0)) return res.status(400).json({ error: `Item ${i+1}: quantity must be > 0` });
+        if (num(item.unit_price) < 0) return res.status(400).json({ error: `Item ${i+1}: price cannot be negative` });
+      }
+    }
 
     const taxPct = parseFloat((await db.prepare("SELECT value FROM config WHERE key='invoice_tax_pct'").get())?.value || 0);
 
@@ -335,6 +356,21 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
       if (preCheckPaid > num(old.total_amount) + 0.005) {
         return res.status(400).json({ error: `Overpayment not allowed. Amount paid (${preCheckPaid.toFixed(2)}) cannot exceed invoice total (${num(old.total_amount).toFixed(2)}).` });
       }
+    }
+
+    // SAFEGUARD: amount_paid can only ever go up through this route, exactly
+    // like /pay — every increase writes a real row into invoice_payments, so
+    // the ledger and the invoice header always agree. A decrease can't be
+    // reflected in invoice_payments (amounts there are CHECK(amount > 0), by
+    // design — it's an append-only cash log), so allowing amount_paid to be
+    // typed down here would desync the two: revenue reports (which total
+    // invoice_payments) would still show the original higher amount collected,
+    // while the invoice itself would claim to be less paid than it is —
+    // exactly the setup for billing a customer twice for the same invoice.
+    if (amount_paid != null && num(amount_paid) < num(old.amount_paid) - 0.005) {
+      return res.status(400).json({
+        error: `Cannot reduce amount_paid from ${num(old.amount_paid).toFixed(2)} to ${num(amount_paid).toFixed(2)} here — recorded payments can't be edited down. If a payment was recorded in error, cancel the invoice instead so it's handled with a clear audit trail.`
+      });
     }
 
     await db.transaction(async () => {
@@ -454,6 +490,8 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
       return res.status(400).json({ error: 'amount_paid must be > 0' });
     if (!payment_date)
       return res.status(400).json({ error: 'payment_date required' });
+    if (isFutureDate(payment_date))
+      return res.status(400).json({ error: 'payment_date cannot be in the future' });
 
     const paid = parseFloat(amount_paid);
     // Pre-flight overpayment check against the current aggregate
@@ -594,6 +632,17 @@ router.patch('/:id/cancel', ...OWNER_ADMIN, async (req, res) => {
     const reason = (req.body.reason || '').trim();
     const paidAmount = parseFloat(row.amount_paid) || 0;
     const isAutoInvoice = !!row.sale_id;
+
+    // SAFEGUARD: cancelling an invoice removes it from every revenue report
+    // (all report queries filter status != 'cancelled'). If cash was already
+    // collected on it, that cash would silently disappear from revenue
+    // reporting the moment it's cancelled. Only the Owner can authorize that —
+    // Admin can still cancel freely, just not one with money already on it.
+    if (paidAmount > 0 && req.user.role !== 'owner') {
+      return res.status(403).json({
+        error: `This invoice has KES ${paidAmount.toLocaleString()} already collected. Only the Owner can cancel an invoice with payments on it — ask the Owner to review and cancel, or reverse the payment first.`
+      });
+    }
 
     // If money was already collected, cancellation is allowed but warn the user
     // The invoice record and its payments remain for audit — only status changes

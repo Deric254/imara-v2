@@ -69,7 +69,13 @@ router.get('/export', ...ADMIN_OR_OWNER, async (req, res) => {
 });
 
 /* ── POST /api/backup/import ────────────────────────────────────────────────── */
-router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async (req, res) => {
+// OWNER ONLY: a restore overwrites live business data (INSERT OR REPLACE) row
+// by row across every table. Also: table and column names below come from the
+// uploaded file itself, not from the schema, so they're validated against a
+// strict allowlist/pattern before ever reaching a SQL string — a backup file
+// is just JSON on disk and can be edited by anyone before being re-uploaded.
+const SAFE_IDENTIFIER = /^[a-zA-Z0-9_]+$/;
+router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (req, res) => {
   try {
     const db = getDb();
     const backupData = req.body;
@@ -88,12 +94,14 @@ router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async
 
     const importResults = { success: [], failed: [], total_imported: 0 };
 
-    // Insert in parent-first order so foreign keys are never orphaned
+    // Insert in parent-first order so foreign keys are never orphaned.
+    // Only tables this app actually knows about are ever imported — a
+    // genuine backup (from /export, right above) never contains anything
+    // else, so this drops nothing legitimate while closing off arbitrary
+    // table names coming from an uploaded file.
     const orderedTables = ALL_TABLES.filter(t => backupData.tables[t]);
-    // Also handle any extra tables in the backup that aren't in our list
-    const extraTables = Object.keys(backupData.tables).filter(t => !ALL_TABLES.includes(t));
 
-    for (const tableName of [...orderedTables, ...extraTables]) {
+    for (const tableName of orderedTables) {
       const records = backupData.tables[tableName];
       if (!Array.isArray(records) || records.length === 0) continue;
 
@@ -109,9 +117,13 @@ router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async
                 // User already exists — skip (don't overwrite passwords or roles)
                 continue;
               }
+              const keys = Object.keys(record);
+              if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
+                throw new Error('Backup file contains an invalid column name for users');
+              }
               // New user from backup — insert with original id preserved
-              const cols  = Object.keys(record).join(', ');
-              const phs   = Object.keys(record).map(() => '?').join(', ');
+              const cols  = keys.join(', ');
+              const phs   = keys.map(() => '?').join(', ');
               const vals  = Object.values(record);
               await db.prepare(`INSERT OR IGNORE INTO users (${cols}) VALUES (${phs})`).run(...vals);
               imported++;
@@ -124,8 +136,12 @@ router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async
           // This restores FK integrity — invoice_items still point to the right invoice IDs
           for (const record of records) {
             try {
-              const cols = Object.keys(record).join(', ');
-              const phs  = Object.keys(record).map(() => '?').join(', ');
+              const keys = Object.keys(record);
+              if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
+                throw new Error(`Backup file contains an invalid column name for ${tableName}`);
+              }
+              const cols = keys.join(', ');
+              const phs  = keys.map(() => '?').join(', ');
               const vals = Object.values(record);
               await db.prepare(
                 `INSERT OR REPLACE INTO ${tableName} (${cols}) VALUES (${phs})`

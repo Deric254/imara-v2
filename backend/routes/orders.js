@@ -17,6 +17,7 @@ const router = require('express').Router();
 const { getDb } = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { createBatchSaleCore } = require('../lib/saleCore');
+const { isFutureDate } = require('../lib/dateGuard');
 
 // ── GET /orders — list all orders with items + summary counts ────────────────
 router.get('/orders', authenticate, async (req, res) => {
@@ -64,6 +65,8 @@ router.post('/orders', authenticate, async (req, res) => {
 
     if (!order_date || !/^\d{4}-\d{2}-\d{2}$/.test(order_date) || isNaN(Date.parse(order_date)))
       return res.status(400).json({ error: 'order_date must be a valid date in YYYY-MM-DD format' });
+    if (isFutureDate(order_date))
+      return res.status(400).json({ error: 'order_date cannot be in the future' });
     if (!Array.isArray(items) || items.length === 0)
       return res.status(400).json({ error: 'At least one item is required' });
 
@@ -133,6 +136,8 @@ router.post('/orders/:id/convert', authenticate, async (req, res) => {
     // gauge_source / selling_price can be finalized at conversion time if they
     // weren't set (or need updating) when the order was originally placed.
     const entry_date = req.body.entry_date || order.order_date;
+    if (isFutureDate(entry_date))
+      return res.status(400).json({ error: 'entry_date cannot be in the future' });
     const overrides = req.body.items || []; // optional: [{ order_item_id, gauge_source, selling_price }]
     const overrideById = {};
     for (const o of overrides) overrideById[o.order_item_id] = o;

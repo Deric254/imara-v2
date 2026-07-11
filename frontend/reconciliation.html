@@ -1334,6 +1334,7 @@ function openInvoiceModal(inv = null) {
   document.getElementById('inv_email').value     = inv?.customer_email || '';
   document.getElementById('inv_address').value   = inv?.customer_address || '';
   document.getElementById('inv_date').value      = inv?.invoice_date || today();
+  document.getElementById('inv_date').max        = today();
   document.getElementById('inv_due').value       = inv?.due_date || '';
   document.getElementById('inv_status').value    = inv?.status || 'partial_payment';
   document.getElementById('inv_discount').value  = inv?.discount_pct || 0;
@@ -1551,6 +1552,7 @@ function exportHistoryCSV() {
 // ── Pay modal ─────────────────────────────────────────────────────────────────
 function openPayModal(cat, workerId, supplierId, rentMonth, amount) {
   document.getElementById('pm_date').value   = today();
+  document.getElementById('pm_date').max     = today();
   document.getElementById('pm_amount').value = amount||'';
   document.getElementById('pm_notes').value  = '';
   showErr('pm_err','');

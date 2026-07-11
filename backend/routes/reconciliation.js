@@ -2,6 +2,7 @@
 const router = require('express').Router();
 const { getDb } = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
+const { isFutureDate } = require('../lib/dateGuard');
 
 const OWNER_ONLY  = [authenticate, requireRole('owner')];
 const OWNER_ADMIN = [authenticate, requireRole('owner', 'admin')];
@@ -358,6 +359,8 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
 
     if (!payment_date || !/^\d{4}-\d{2}-\d{2}$/.test(payment_date) || isNaN(Date.parse(payment_date)))
       return res.status(400).json({ error: 'payment_date must be a valid date in YYYY-MM-DD format' });
+    if (isFutureDate(payment_date))
+      return res.status(400).json({ error: 'payment_date cannot be in the future' });
     const validCats = ['wages_operator','wages_knuckler','rent','supplier','sack','transport_to_market','other'];
     if (!validCats.includes(category)) return res.status(400).json({ error: 'Invalid category' });
     const parsedAmount = parseFloat(amount);

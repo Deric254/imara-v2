@@ -406,13 +406,6 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-function setPresetDates(days, fromId, toId) {
-  const to   = new Date();
-  const from = new Date(to.getFullYear(), to.getMonth(), to.getDate() - days);
-  document.getElementById(toId).value   = localDateString(to);
-  document.getElementById(fromId).value = localDateString(from);
-}
-
 // Global config cache
 let _globalConfig = null;
 

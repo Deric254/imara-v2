@@ -5,6 +5,7 @@ const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { checkAndNotifyStock } = require('./reports');
 const { getCfgNumber, resolveWireCostPerKgForSale, createBatchSaleCore } = require('../lib/saleCore');
+const { isFutureDate } = require('../lib/dateGuard');
 
 function localDateString(date = new Date()) {
   const y = date.getFullYear();
@@ -167,7 +168,8 @@ router.get('/purchases', authenticate, async (req, res) => {
 
 /* POST /api/daily/purchases */
 router.post('/purchases', authenticate, blockProductionStaff,
-  body('entry_date').isISO8601().withMessage('Valid date required'),
+  body('entry_date').isISO8601().withMessage('Valid date required')
+    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('supplier_id').isInt({ min: 1 }).withMessage('Supplier required'),
   body('kgs_bought').isFloat({ min: 0.001 }).withMessage('Kgs must be > 0'),
   body('cost_per_kg').isFloat({ min: 0 }).withMessage('Cost/kg must be >= 0'),
@@ -424,7 +426,8 @@ router.get('/production', authenticate, async (req, res) => {
 });
 
 router.post('/production', authenticate, blockProductionStaff,
-  body('entry_date').isISO8601().withMessage('Valid date required'),
+  body('entry_date').isISO8601().withMessage('Valid date required')
+    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('kgs_used').isFloat({ min: 0.001 }).withMessage('Kgs used must be > 0'),
   body('items').isArray({ min: 1 }).withMessage('At least one item required'),
   body('items.*.piece_type_id').isInt({ min: 1 }),
@@ -792,7 +795,8 @@ router.get('/sales', authenticate, async (req, res) => {
 // All items validated atomically; one invoice with N line items is created.
 // Falls back gracefully: if any item fails stock check, the whole batch is rejected.
 router.post('/sales/batch', authenticate, blockProductionStaff,
-  body('entry_date').isISO8601().withMessage('Valid date required'),
+  body('entry_date').isISO8601().withMessage('Valid date required')
+    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('buyer_name').notEmpty().trim().withMessage('Buyer name is required'),
   body('items').isArray({ min: 1 }).withMessage('At least one item required'),
   body('items.*.piece_type_id').isInt({ min: 1 }).withMessage('Piece type required'),
@@ -835,7 +839,8 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
 );
 
 router.post('/sales', authenticate, blockProductionStaff,
-  body('entry_date').isISO8601().withMessage('Valid date required'),
+  body('entry_date').isISO8601().withMessage('Valid date required')
+    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('piece_type_id').isInt({ min: 1 }).withMessage('Piece type required'),
   body('quantity').isInt({ min: 1 }).withMessage('Quantity must be >= 1'),
   body('selling_price').isFloat({ min: 0 }).withMessage('Price must be >= 0'),
@@ -1031,7 +1036,29 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
       // Detach this sale from any order line it originated from — required so the
       // delete below never hits a FOREIGN KEY constraint, regardless of whether the
       // schema's ON DELETE rule has been migrated yet.
+      const originatingItem = await db.prepare('SELECT order_id FROM order_items WHERE sale_id=?').get(id);
       await db.prepare('UPDATE order_items SET sale_id=NULL WHERE sale_id=?').run(id);
+
+      // If that order line belonged to a "converted" order, the order can no
+      // longer honestly claim to be converted once one of its items has lost
+      // its sale. Only auto-revert when EVERY item on the order is now
+      // unlinked — i.e. the whole conversion was undone, not just part of a
+      // multi-item order — so the order becomes 'pending' again and can be
+      // correctly re-converted instead of being left stuck in a broken state.
+      if (originatingItem) {
+        const ord = await db.prepare('SELECT id, status FROM orders WHERE id=?').get(originatingItem.order_id);
+        if (ord && ord.status === 'converted') {
+          const remainingLinked = await db.prepare(
+            'SELECT COUNT(*) AS n FROM order_items WHERE order_id=? AND sale_id IS NOT NULL'
+          ).get(ord.id);
+          if (remainingLinked.n === 0) {
+            await db.prepare(
+              "UPDATE orders SET status='pending', converted_at=NULL, invoice_id=NULL WHERE id=?"
+            ).run(ord.id);
+          }
+        }
+      }
+
       await db.prepare('DELETE FROM sales WHERE id=?').run(id);
     });
 
