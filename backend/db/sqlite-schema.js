@@ -402,21 +402,22 @@ const TABLE_STATEMENTS = [
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
 
-  `CREATE TABLE IF NOT EXISTS stock_reservations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    piece_type_id INTEGER NOT NULL REFERENCES piece_types(id),
-    quantity INTEGER NOT NULL CHECK(quantity > 0),
-    reservation_type TEXT NOT NULL CHECK(reservation_type IN ('invoice', 'order')),
-    reservation_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'fulfilled', 'expired', 'cancelled')),
-    created_by INTEGER NOT NULL REFERENCES users(id),
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME
-  )`,
-
   // Customer orders — a request placed before it becomes a real sale. Pending
   // orders do NOT reserve stock (checked by user decision); availability is
   // checked at the moment an order is converted to a sale, same as any normal
+  // Owner-only confirmation that a given date genuinely had no business
+  // activity (holiday, closure, no deliveries) — distinct from silence.
+  // Lets the daily-entry discipline check (yesterdayMissing) tell "confirmed
+  // nothing happened" apart from "forgot to log it", without ever requiring
+  // a fabricated placeholder purchase/production/sale row.
+  `CREATE TABLE IF NOT EXISTS no_activity_days (
+    entry_date TEXT PRIMARY KEY,
+    confirmed_by INTEGER NOT NULL REFERENCES users(id),
+    confirmed_by_name TEXT,
+    notes TEXT DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+
   // sale entry. Converting an order calls the exact same sale-creation logic
   // used by /daily/sales/batch, so a converted order's sales are indistinguishable
   // from a normal sale everywhere downstream (reconciliation, reports, invoices).
@@ -460,8 +461,6 @@ const INDEX_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_invoice_payments_date    ON invoice_payments(payment_date)`,
   `CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_invoices_sale_id         ON invoices(sale_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_stock_reservations_piece  ON stock_reservations(piece_type_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_stock_reservations_status ON stock_reservations(status)`,
   `CREATE INDEX IF NOT EXISTS idx_order_items_order_id  ON order_items(order_id)`,
   `CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_notifications_user    ON notifications(user_id, read)`,

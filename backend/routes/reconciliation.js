@@ -332,9 +332,9 @@ router.get('/payments', ...OWNER_ADMIN, async (req, res) => {
 
     let sql = `
       SELECT py.*,
-             u.full_name  AS payee_user_name,
-             s.name       AS payee_supplier_name,
-             r.full_name  AS recorded_by_name
+             COALESCE(py.payee_name, u.full_name) AS payee_user_name,
+             COALESCE(py.payee_name, s.name)      AS payee_supplier_name,
+             COALESCE(py.recorded_by_name, r.full_name) AS recorded_by_name
       FROM payments py
       LEFT JOIN users u     ON py.payee_user_id     = u.id
       LEFT JOIN suppliers s ON py.payee_supplier_id = s.id
@@ -464,36 +464,113 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
       }
     }
 
-    // FIX: RETURNING id, store rent_month on payment
-    const result = await db.prepare(`
-      INSERT INTO payments(payment_date,category,payee_user_id,payee_supplier_id,payee_name,amount,notes,recorded_by,rent_month)
-      VALUES(?,?,?,?,?,?,?,?,?) RETURNING id
-    `).run(
-      payment_date, category,
-      payee_user_id     ? parseInt(payee_user_id)     : null,
-      payee_supplier_id ? parseInt(payee_supplier_id) : null,
-      payee_name || null,
-      parseFloat(amount), notes,
-      req.user.id,
-      (category === 'rent' && req.body.rent_month) ? req.body.rent_month : null
-    );
+    // Resolve a durable payee name at the moment of payment, regardless of
+    // whether the payee is a linked user, a linked supplier, or free text.
+    // This is what gets stored — never re-derived later — so renaming the
+    // person/supplier afterward cannot change this payment's record.
+    let resolvedPayeeName = payee_name || null;
+    if (payee_user_id) {
+      const pu = await db.prepare('SELECT full_name FROM users WHERE id=?').get(parseInt(payee_user_id));
+      resolvedPayeeName = pu?.full_name || resolvedPayeeName;
+    } else if (payee_supplier_id) {
+      const ps = await db.prepare('SELECT name FROM suppliers WHERE id=?').get(parseInt(payee_supplier_id));
+      resolvedPayeeName = ps?.name || resolvedPayeeName;
+    }
 
-    const pid = result.lastInsertRowid;
+    const paying = parseFloat(amount);
+    let pid;
 
-    if (category === 'rent' && req.body.rent_month) {
-      const month    = req.body.rent_month;
-      const existing = await db.prepare('SELECT id, amount_due FROM rent_months WHERE month=?').get(month);
-      if (existing) {
-        // Sum all rent payments for this month using rent_month column (with legacy fallback)
-        const totalPaidForMonth = await db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) AS total
-          FROM payments WHERE category='rent'
-            AND (rent_month = ? OR (rent_month IS NULL AND SUBSTR(payment_date, 1, 7) = ?))
-        `).get(month, month);
-        const fullyPaid = num(totalPaidForMonth.total) >= num(existing.amount_due);
-        await db.prepare('UPDATE rent_months SET paid=?, payment_id=? WHERE month=?')
-          .run(fullyPaid ? 1 : 0, pid, month);
-      }
+    try {
+      await db.transaction(async () => {
+        // ACID: every overpayment guard above ran BEFORE this transaction opened,
+        // against a snapshot of accrued/paid totals. Two concurrent payments for
+        // the same worker/supplier/category (double-click, or two people paying
+        // at once) could both pass those checks before either had written a row.
+        // Re-run the one applicable guard here, inside the transaction, against a
+        // fresh read — this is the check that actually holds the cap, because the
+        // transaction queue guarantees nothing else can write between this read
+        // and the insert below.
+        const overpay = (msg) => { const e = new Error(msg); e.overpayment = true; throw e; };
+
+        if (category === 'supplier' && payee_supplier_id) {
+          const billed = await db.prepare(`SELECT COALESCE(SUM(kgs_bought * cost_per_kg + transport_cost), 0) AS total FROM purchases WHERE supplier_id = ?`).get(parseInt(payee_supplier_id));
+          const paidSoFar = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = 'supplier' AND payee_supplier_id = ?`).get(parseInt(payee_supplier_id));
+          const remaining = parseFloat((num(billed.total) - num(paidSoFar.total)).toFixed(2));
+          if (paying > remaining + 0.005) overpay(`Overpayment not allowed. Outstanding supplier balance is ${remaining.toFixed(2)}. You are trying to pay ${paying.toFixed(2)}.`);
+        }
+
+        if ((category === 'wages_operator' || category === 'wages_knuckler') && payee_user_id) {
+          const col = category === 'wages_operator' ? 'operator_cost' : 'knuckler_cost';
+          const idCol = category === 'wages_operator' ? 'operator_id' : 'knuckler_id';
+          const accrued = await db.prepare(`SELECT COALESCE(SUM(${col}), 0) AS total FROM production WHERE ${idCol} = ?`).get(parseInt(payee_user_id));
+          const paidSoFar = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = ? AND payee_user_id = ?`).get(category, parseInt(payee_user_id));
+          const remaining = parseFloat((num(accrued.total) - num(paidSoFar.total)).toFixed(2));
+          if (paying > remaining + 0.005) overpay(`Overpayment not allowed. Accrued wage balance is ${remaining.toFixed(2)}. You are trying to pay ${paying.toFixed(2)}.`);
+        }
+
+        if (category === 'rent' && req.body.rent_month) {
+          const month = req.body.rent_month;
+          const existing = await db.prepare('SELECT id, amount_due FROM rent_months WHERE month=?').get(month);
+          if (existing) {
+            const paidForMonth = await db.prepare(`
+              SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category='rent'
+                AND (rent_month = ? OR (rent_month IS NULL AND SUBSTR(payment_date, 1, 7) = ?))
+            `).get(month, month);
+            const remaining = parseFloat((num(existing.amount_due) - num(paidForMonth.total)).toFixed(2));
+            if (paying > remaining + 0.005) overpay(`Overpayment not allowed. Remaining rent balance for this month is KES ${remaining.toFixed(2)}. You are trying to pay KES ${paying.toFixed(2)}.`);
+          }
+        }
+
+        if (category === 'sack') {
+          const sackAccrued = await db.prepare(`SELECT COALESCE(SUM(sack_cost), 0) AS total FROM production`).get();
+          const sackPaidSoFar = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = 'sack'`).get();
+          const remaining = parseFloat((num(sackAccrued.total) - num(sackPaidSoFar.total)).toFixed(2));
+          if (paying > remaining + 0.005) overpay(`Overpayment not allowed. Outstanding sack balance is ${remaining.toFixed(2)}. You are trying to pay ${paying.toFixed(2)}.`);
+        }
+
+        if (category === 'transport_to_market') {
+          const tAccrued = await db.prepare(`SELECT COALESCE(SUM(transport_to_market), 0) AS total FROM sales`).get();
+          const tPaidSoFar = await db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE category = 'transport_to_market'`).get();
+          const remaining = parseFloat((num(tAccrued.total) - num(tPaidSoFar.total)).toFixed(2));
+          if (paying > remaining + 0.005) overpay(`Overpayment not allowed. Outstanding transport balance is KES ${remaining.toFixed(2)}. You are trying to pay KES ${paying.toFixed(2)}.`);
+        }
+
+        // FIX: RETURNING id, store rent_month on payment
+        const result = await db.prepare(`
+          INSERT INTO payments(payment_date,category,payee_user_id,payee_supplier_id,payee_name,amount,notes,recorded_by,rent_month,recorded_by_name)
+          VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id
+        `).run(
+          payment_date, category,
+          payee_user_id     ? parseInt(payee_user_id)     : null,
+          payee_supplier_id ? parseInt(payee_supplier_id) : null,
+          resolvedPayeeName,
+          paying, notes,
+          req.user.id,
+          (category === 'rent' && req.body.rent_month) ? req.body.rent_month : null,
+          req.user.full_name
+        );
+
+        pid = result.lastInsertRowid;
+
+        if (category === 'rent' && req.body.rent_month) {
+          const month    = req.body.rent_month;
+          const existing = await db.prepare('SELECT id, amount_due FROM rent_months WHERE month=?').get(month);
+          if (existing) {
+            // Sum all rent payments for this month using rent_month column (with legacy fallback)
+            const totalPaidForMonth = await db.prepare(`
+              SELECT COALESCE(SUM(amount), 0) AS total
+              FROM payments WHERE category='rent'
+                AND (rent_month = ? OR (rent_month IS NULL AND SUBSTR(payment_date, 1, 7) = ?))
+            `).get(month, month);
+            const fullyPaid = num(totalPaidForMonth.total) >= num(existing.amount_due);
+            await db.prepare('UPDATE rent_months SET paid=?, payment_id=? WHERE month=?')
+              .run(fullyPaid ? 1 : 0, pid, month);
+          }
+        }
+      });
+    } catch (e) {
+      if (e.overpayment) return res.status(400).json({ error: e.message });
+      throw e;
     }
 
     await writeAudit(db, {
@@ -502,7 +579,7 @@ router.post('/payments', ...OWNER_ONLY, async (req, res) => {
     });
 
     const payment = await db.prepare(`
-      SELECT py.*, u.full_name AS payee_user_name, s.name AS payee_supplier_name
+      SELECT py.*, COALESCE(py.payee_name, u.full_name) AS payee_user_name, COALESCE(py.payee_name, s.name) AS payee_supplier_name
       FROM payments py
       LEFT JOIN users u     ON py.payee_user_id     = u.id
       LEFT JOIN suppliers s ON py.payee_supplier_id = s.id
@@ -630,8 +707,8 @@ router.get('/accrual/worker/:id', ...OWNER_ADMIN, async (req, res) => {
     const rows = await db.prepare(`
       SELECT pr.id, pr.entry_date, pr.kgs_used, pr.gauge,
              pr.operator_cost, pr.knuckler_cost, pr.sack_cost,
-             uop.full_name AS operator_name,
-             ukn.full_name AS knuckler_name,
+             COALESCE(pr.operator_name, uop.full_name) AS operator_name,
+             COALESCE(pr.knuckler_name, ukn.full_name) AS knuckler_name,
              CASE WHEN pr.operator_id = ? THEN 'operator'
                   WHEN pr.knuckler_id = ? THEN 'knuckler'
                   ELSE 'both' END AS role_in_run
@@ -675,7 +752,7 @@ router.get('/accrual/sack', ...OWNER_ADMIN, async (req, res) => {
     const db = getDb();
     const rows = await db.prepare(`
       SELECT pr.id, pr.entry_date, pr.kgs_used, pr.gauge, pr.sack_cost,
-             uop.full_name AS operator_name
+             COALESCE(pr.operator_name, uop.full_name) AS operator_name
       FROM production pr
       LEFT JOIN users uop ON pr.operator_id = uop.id
       WHERE pr.sack_cost > 0

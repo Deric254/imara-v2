@@ -24,6 +24,10 @@ async function yesterdayMissing(db) {
   const yDate = localDateString(daysAgo(1));
   const oldest = await db.prepare('SELECT MIN(entry_date) as d FROM purchases').get();
   if (!oldest || !oldest.d || oldest.d >= yDate) return false;
+  // Owner has explicitly confirmed this date genuinely had no activity —
+  // that closes the day just as validly as real entries would, without
+  // fabricating placeholder rows.
+  if (await db.prepare('SELECT 1 FROM no_activity_days WHERE entry_date=?').get(yDate)) return false;
   const p  = (await db.prepare('SELECT COUNT(*) as c FROM purchases  WHERE entry_date=?').get(yDate)).c;
   const pr = (await db.prepare('SELECT COUNT(*) as c FROM production WHERE entry_date=?').get(yDate)).c;
   const s  = (await db.prepare('SELECT COUNT(*) as c FROM sales      WHERE entry_date=?').get(yDate)).c;
@@ -33,11 +37,19 @@ async function yesterdayMissing(db) {
 async function blockProductionStaff(req, res, next) {
   if (req.user.role !== 'knuckler' && req.user.role !== 'operator') return next();
   const db = getDb();
-  if (await yesterdayMissing(db))
+  if (await yesterdayMissing(db)) {
+    // Let the catch-up entry itself through: if this request is dated strictly
+    // before today, it IS the backfill the block exists to force — refusing it
+    // would leave operators/knucklers permanently locked out with no way to
+    // self-resolve, requiring an owner/admin to step in every time. Only block
+    // attempts to move forward (today's date) while yesterday is still empty.
+    const entryDate = (req.body && req.body.entry_date) ? String(req.body.entry_date).slice(0, 10) : null;
+    if (entryDate && entryDate < localDateString()) return next();
     return res.status(403).json({
       error: 'BLOCKED', blocked: true,
       message: "Yesterday's data has not been entered. Please enter yesterday's data first."
     });
+  }
   next();
 }
 
@@ -83,9 +95,10 @@ router.get('/status', authenticate, async (req, res) => {
       production: (await db.prepare('SELECT COUNT(*) as c FROM production WHERE entry_date=?').get(date)).c > 0,
       sales:      (await db.prepare('SELECT COUNT(*) as c FROM sales      WHERE entry_date=?').get(date)).c > 0,
     });
+    const noActivityRow = await db.prepare('SELECT confirmed_by_name, created_at FROM no_activity_days WHERE entry_date=?').get(yesterday);
     res.json({
       today:     { date: today,     ...await check(today)     },
-      yesterday: { date: yesterday, ...await check(yesterday) },
+      yesterday: { date: yesterday, ...await check(yesterday), confirmed_no_activity: noActivityRow || null },
       blocked:   (req.user.role === 'knuckler' || req.user.role === 'operator') && await yesterdayMissing(db),
     });
   } catch(e) {
@@ -93,6 +106,53 @@ router.get('/status', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+/* POST /api/daily/no-activity — Owner-only: confirm a past date genuinely had
+   zero business activity (closure, holiday, no deliveries). This is a real,
+   auditable record — not a dismissal — and it's the only thing besides real
+   purchase/production/sale rows that can clear the daily-entry block. */
+router.post('/no-activity', authenticate, requireRole('owner'),
+  body('entry_date').isISO8601().withMessage('Valid date required')
+    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
+  body('notes').optional().trim().isLength({ max: 500 }),
+  async (req, res) => {
+    const errs = validationResult(req);
+    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
+    try {
+      const db = getDb();
+      const { entry_date, notes = '' } = req.body;
+
+      // Refuse to confirm "no activity" over a date that already has real
+      // records — that would misrepresent what actually happened.
+      const p  = (await db.prepare('SELECT COUNT(*) as c FROM purchases  WHERE entry_date=?').get(entry_date)).c;
+      const pr = (await db.prepare('SELECT COUNT(*) as c FROM production WHERE entry_date=?').get(entry_date)).c;
+      const s  = (await db.prepare('SELECT COUNT(*) as c FROM sales      WHERE entry_date=?').get(entry_date)).c;
+      if (p > 0 || pr > 0 || s > 0) {
+        return res.status(400).json({
+          error: 'DATE_HAS_ACTIVITY',
+          message: `${entry_date} already has real purchase/production/sale records. It cannot be marked as having no activity.`
+        });
+      }
+
+      await db.prepare(`
+        INSERT INTO no_activity_days(entry_date, confirmed_by, confirmed_by_name, notes)
+        VALUES(?,?,?,?)
+        ON CONFLICT(entry_date) DO UPDATE SET confirmed_by=excluded.confirmed_by,
+          confirmed_by_name=excluded.confirmed_by_name, notes=excluded.notes
+      `).run(entry_date, req.user.id, req.user.full_name, (notes || '').trim());
+
+      await writeAudit(db, {
+        userId: req.user.id, action: 'CONFIRM_NO_ACTIVITY', table: 'no_activity_days',
+        recordId: entry_date, newVals: { entry_date, notes }, ip: req.ip
+      });
+
+      res.json({ message: `${entry_date} confirmed as a no-activity day.` });
+    } catch(e) {
+      console.error('POST no-activity error:', e);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 /* POST /api/daily/dismiss-warning — logs audit when operator/knuckler dismisses the missing-data reminder */
 router.post('/dismiss-warning', authenticate, async (req, res) => {
@@ -145,7 +205,7 @@ router.get('/purchases', authenticate, async (req, res) => {
     const db = getDb();
     const { date, from, to } = req.query;
     // FIX: ROUND(float, 2) requires  cast in PostgreSQL
-    let sql = `SELECT p.*, s.name AS supplier_name, u.full_name AS entered_by_name,
+    let sql = `SELECT p.*, COALESCE(p.supplier_name, s.name) AS supplier_name, COALESCE(p.entered_by_name, u.full_name) AS entered_by_name,
                  ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2) AS total_cost,
                  CASE WHEN p.kgs_bought>0
                    THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
@@ -199,8 +259,8 @@ router.post('/purchases', authenticate, blockProductionStaff,
         // kgs_remaining starts equal to kgs_bought — this batch's stock pool,
         // drawn down only by production runs that explicitly select it (rule 4).
         const result = await db.prepare(
-          'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name,kgs_remaining,entered_by) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id'
-        ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, finalBatchName, kgs_bought, req.user.id);
+          'INSERT INTO purchases(entry_date,supplier_id,kgs_bought,cost_per_kg,transport_cost,gauge,batch_name,kgs_remaining,entered_by,entered_by_name,supplier_name) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id'
+        ).run(entry_date, supplier_id, kgs_bought, cost_per_kg, transport_cost, gauge, finalBatchName, kgs_bought, req.user.id, req.user.full_name, supplier.name);
         newId = result.lastInsertRowid;
       });
 
@@ -208,7 +268,7 @@ router.post('/purchases', authenticate, blockProductionStaff,
         recordId: newId, ip: req.ip });
 
       const row = await db.prepare(`
-        SELECT p.*, s.name AS supplier_name, u.full_name AS entered_by_name,
+        SELECT p.*, COALESCE(p.supplier_name, s.name) AS supplier_name, COALESCE(p.entered_by_name, u.full_name) AS entered_by_name,
           ROUND((p.kgs_bought*p.cost_per_kg+p.transport_cost),2) AS total_cost,
           CASE WHEN p.kgs_bought>0
             THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
@@ -243,7 +303,7 @@ router.put('/purchases/:id/batch-name', authenticate, blockProductionStaff,
         recordId: id, newVals: { batch_name }, ip: req.ip });
 
       const row = await db.prepare(`
-        SELECT p.*, s.name AS supplier_name,
+        SELECT p.*, COALESCE(p.supplier_name, s.name) AS supplier_name,
           ROUND((p.kgs_bought*p.cost_per_kg+p.transport_cost),2) AS total_cost,
           CASE WHEN p.kgs_bought>0
             THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),2)
@@ -267,7 +327,7 @@ router.get('/batches', authenticate, async (req, res) => {
     const gauge = (req.query.gauge || '').trim();
     const rows = await db.prepare(`
       SELECT p.id, p.entry_date, p.gauge, p.batch_name, p.kgs_bought, p.kgs_remaining,
-             p.cost_per_kg, p.transport_cost, s.name AS supplier_name,
+             p.cost_per_kg, p.transport_cost, COALESCE(p.supplier_name, s.name) AS supplier_name,
              ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),4) AS landed_cost_per_kg
       FROM purchases p JOIN suppliers s ON p.supplier_id=s.id
       WHERE COALESCE(p.gauge,'')=? AND p.kgs_remaining > 0.001
@@ -368,9 +428,9 @@ router.get('/production', authenticate, async (req, res) => {
     const { date, from, to } = req.query;
     // FIX:  cast on all ROUND calls
     let sql = `SELECT pr.*,
-                 u.full_name AS entered_by_name,
-                 op.full_name AS operator_name,
-                 kn.full_name AS knuckler_name,
+                 COALESCE(pr.entered_by_name, u.full_name) AS entered_by_name,
+                 COALESCE(pr.operator_name, op.full_name) AS operator_name,
+                 COALESCE(pr.knuckler_name, kn.full_name) AS knuckler_name,
                  p.batch_name AS batch_name,
                  CASE WHEN p.kgs_bought>0
                    THEN ROUND(((p.kgs_bought*p.cost_per_kg+p.transport_cost)/p.kgs_bought),4)
@@ -461,17 +521,20 @@ router.post('/production', authenticate, blockProductionStaff,
 
       // ENFORCE: no mixing roles. Operator and knuckler are distinct.
       // Admin/owner cannot be assigned to these fields.
+      let operatorName = null, knucklerName = null;
       if (operator_id) {
-        const op = await db.prepare('SELECT role FROM users WHERE id=?').get(operator_id);
+        const op = await db.prepare('SELECT role, full_name FROM users WHERE id=?').get(operator_id);
         if (!op || op.role !== 'operator') {
           return res.status(400).json({ error: 'Operator field must be an operator role user only' });
         }
+        operatorName = op.full_name;
       }
       if (knuckler_id) {
-        const kn = await db.prepare('SELECT role FROM users WHERE id=?').get(knuckler_id);
+        const kn = await db.prepare('SELECT role, full_name FROM users WHERE id=?').get(knuckler_id);
         if (!kn || kn.role !== 'knuckler') {
           return res.status(400).json({ error: 'Knuckler field must be a knuckler role user only' });
         }
+        knucklerName = kn.full_name;
       }
 
       // Pre-flight checks (piece types, weights) — outside transaction for speed
@@ -620,14 +683,15 @@ router.post('/production', authenticate, blockProductionStaff,
 
         pid = (await db.prepare(
           `INSERT INTO production(entry_date,kgs_used,gauge,purchase_id,operator_id,knuckler_id,
-            operator_cost,knuckler_cost,sack_cost,rent_allocation,total_cost,entered_by)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+            operator_cost,knuckler_cost,sack_cost,rent_allocation,total_cost,entered_by,
+            entered_by_name,operator_name,knuckler_name)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
         ).run(
           entry_date, kgs_used, gauge || '', primaryBatchId,
           operator_id || null, knuckler_id || null,
           breakdown.operator_cost, breakdown.knuckler_cost,
           breakdown.sack_cost, breakdown.rent_allocation, breakdown.total_cost,
-          req.user.id
+          req.user.id, req.user.full_name, operatorName, knucklerName
         )).lastInsertRowid;
 
         // Per-batch usage trail — the source of truth for delete-time stock
@@ -642,7 +706,7 @@ router.post('/production', authenticate, blockProductionStaff,
       });
 
       const record = await db.prepare(`
-        SELECT pr.*, u.full_name AS entered_by_name,
+        SELECT pr.*, COALESCE(pr.entered_by_name, u.full_name) AS entered_by_name,
           ROUND((pr.operator_cost+pr.knuckler_cost+pr.sack_cost+pr.rent_allocation),2) AS total_overhead
         FROM production pr JOIN users u ON pr.entered_by=u.id WHERE pr.id=?`).get(pid);
       const outItems = await db.prepare(
@@ -770,8 +834,7 @@ router.get('/sales', authenticate, async (req, res) => {
     // FIX:  cast on all ROUND calls
     let sql = `SELECT s.*,
                  pt.name AS piece_name, pt.length_m, pt.weight_kg,
-                 u.full_name AS entered_by_name,
-                 ROUND((s.quantity * s.selling_price), 2) AS revenue,
+                 COALESCE(s.entered_by_name, u.full_name) AS entered_by_name,
                  ROUND((s.quantity * pt.weight_kg), 2) AS kgs_sold,
                  ROUND((s.quantity * pt.length_m), 2) AS meters_sold
                FROM sales s
@@ -813,7 +876,7 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
 
       let result;
       try {
-        result = await createBatchSaleCore(db, { entry_date, buyer_name, items, userId: req.user.id });
+        result = await createBatchSaleCore(db, { entry_date, buyer_name, items, userId: req.user.id, userName: req.user.full_name });
       } catch (e) {
         if (e.notFoundError) return res.status(404).json({ error: e.message });
         throw e;

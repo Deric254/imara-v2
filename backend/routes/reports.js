@@ -1138,7 +1138,7 @@ router.get('/db-stats', authenticate, requireRole('owner', 'admin'), async (_req
 router.get('/audit', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const { from, to, limit = 500 } = req.query;
-    let sql = `SELECT al.*, u.username, u.full_name AS user_name
+    let sql = `SELECT al.*, u.username, COALESCE(al.user_name, u.full_name) AS user_name
                FROM audit_log al LEFT JOIN users u ON al.user_id = u.id`;
     const params = [], conds = [];
     if (from) { conds.push('al.logged_at >= ?'); params.push(from); }
@@ -1572,14 +1572,14 @@ router.get('/export/purchases', authenticate, requireRole('owner', 'admin'), asy
     const to   = req.query.to   || '2099-12-31';
 
     const purchases = await db.prepare(`
-      SELECT p.id, p.entry_date, s.name AS supplier, p.gauge,
+      SELECT p.id, p.entry_date, COALESCE(p.supplier_name, s.name) AS supplier, p.gauge,
              p.kgs_bought, p.cost_per_kg,
              ROUND((p.kgs_bought * p.cost_per_kg), 2)                          AS wire_cost,
              p.transport_cost,
              ROUND((p.kgs_bought * p.cost_per_kg + p.transport_cost), 2)       AS total_cost,
              ROUND(((p.kgs_bought * p.cost_per_kg + p.transport_cost)
                     / NULLIF(p.kgs_bought, 0)), 2)                              AS landed_per_kg,
-             u.full_name AS entered_by, p.created_at
+             COALESCE(p.entered_by_name, u.full_name) AS entered_by, p.created_at
       FROM purchases p
       JOIN suppliers s ON p.supplier_id = s.id
       JOIN users u ON p.entered_by = u.id
@@ -1731,9 +1731,9 @@ router.get('/export/production', authenticate, requireRole('owner', 'admin'), as
     const rows = await db.prepare(`
       SELECT pr.entry_date, pr.gauge, pr.kgs_used,
              GROUP_CONCAT(pt.name || ' x' || pi.pieces_produced, ', ') AS items,
-             u_op.full_name AS operator, u_kn.full_name AS knuckler,
+             COALESCE(pr.operator_name, u_op.full_name) AS operator, COALESCE(pr.knuckler_name, u_kn.full_name) AS knuckler,
              pr.operator_cost, pr.knuckler_cost, pr.sack_cost, pr.total_cost,
-             u_en.full_name AS entered_by, pr.created_at
+             COALESCE(pr.entered_by_name, u_en.full_name) AS entered_by, pr.created_at
       FROM production pr
       LEFT JOIN production_items pi ON pi.production_id = pr.id
       LEFT JOIN piece_types pt ON pi.piece_type_id = pt.id
@@ -1831,7 +1831,7 @@ router.get('/export/invoices', authenticate, requireRole('owner', 'admin'), asyn
              i.subtotal, i.discount_amount, i.tax_amount, i.total_amount,
              ROUND(i.amount_paid, 2)                              AS amount_paid,
              ROUND((i.total_amount - i.amount_paid), 2)           AS balance,
-             u.full_name AS created_by, i.notes
+             COALESCE(i.created_by_name, u.full_name) AS created_by, i.notes
       FROM invoices i JOIN users u ON i.created_by = u.id
       WHERE i.invoice_date BETWEEN ? AND ?
       ORDER BY i.invoice_date DESC, i.id DESC
@@ -1871,7 +1871,7 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner', 'admin'), as
       SELECT id, invoice_number, invoice_date, due_date,
              customer_name, customer_phone,
              subtotal, discount_amount, tax_amount, total_amount,
-             amount_paid, status, notes, created_by
+             amount_paid, status, notes, created_by, created_by_name
       FROM invoices
       WHERE invoice_date BETWEEN ? AND ?
       ORDER BY invoice_date DESC, id DESC
@@ -1927,7 +1927,7 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner', 'admin'), as
           ).join(' | ')
         : '';
       const status      = statusLabel(inv);
-      const generatedBy = userNames[inv.created_by] || '';
+      const generatedBy = inv.created_by_name || userNames[inv.created_by] || '';
 
       for (const item of items) {
         rows.push([

@@ -24,7 +24,7 @@ router.get('/orders', authenticate, async (req, res) => {
   try {
     const db = getDb();
     const orders = await db.prepare(`
-      SELECT o.*, u.full_name AS created_by_name
+      SELECT o.*, COALESCE(o.created_by_name, u.full_name) AS created_by_name
       FROM orders o
       LEFT JOIN users u ON u.id = o.created_by
       ORDER BY o.created_at DESC
@@ -89,9 +89,9 @@ router.post('/orders', authenticate, async (req, res) => {
     let orderId;
     await db.transaction(async () => {
       const orderRes = await db.prepare(`
-        INSERT INTO orders(order_date, buyer_name, status, notes, created_by)
-        VALUES(?,?,'pending',?,?) RETURNING id
-      `).run(order_date, buyerName, notes, req.user.id);
+        INSERT INTO orders(order_date, buyer_name, status, notes, created_by, created_by_name)
+        VALUES(?,?,'pending',?,?,?) RETURNING id
+      `).run(order_date, buyerName, notes, req.user.id, req.user.full_name);
       orderId = orderRes.lastInsertRowid;
 
       for (const it of items) {
@@ -170,25 +170,31 @@ router.post('/orders/:id/convert', authenticate, async (req, res) => {
 
     let result;
     try {
+      // ACID: linking order_items to the new sale IDs and flipping the order to
+      // 'converted' now happens INSIDE the same transaction as the sale+invoice
+      // creation (via onAfterInsert), not in a second transaction afterward. A
+      // process crash between two separate transactions used to be able to leave
+      // the order stuck 'pending' with a sale already created — a retry of this
+      // route would then create a DUPLICATE sale for the same order. Now it's
+      // all-or-nothing: either the sale, invoice, and order-conversion all land
+      // together, or none of them do.
       result = await createBatchSaleCore(db, {
-        entry_date, buyer_name: order.buyer_name, items: saleItems, userId: req.user.id
+        entry_date, buyer_name: order.buyer_name, items: saleItems, userId: req.user.id, userName: req.user.full_name,
+        onAfterInsert: async ({ saleIds, invoiceId }) => {
+          for (let i = 0; i < saleItems.length; i++) {
+            await db.prepare('UPDATE order_items SET sale_id=? WHERE id=?')
+              .run(saleIds[i], saleItems[i]._order_item_id);
+          }
+          await db.prepare(`
+            UPDATE orders SET status='converted', converted_at=CURRENT_TIMESTAMP, invoice_id=? WHERE id=?
+          `).run(invoiceId, orderId);
+        }
       });
     } catch (e) {
       if (e.stockError) return res.status(400).json(e.stockError);
       if (e.notFoundError) return res.status(404).json({ error: e.message });
       throw e;
     }
-
-    // Link each order_item to the sale it produced, and mark the order converted
-    await db.transaction(async () => {
-      for (let i = 0; i < saleItems.length; i++) {
-        await db.prepare('UPDATE order_items SET sale_id=? WHERE id=?')
-          .run(result.saleIds[i], saleItems[i]._order_item_id);
-      }
-      await db.prepare(`
-        UPDATE orders SET status='converted', converted_at=CURRENT_TIMESTAMP, invoice_id=? WHERE id=?
-      `).run(result.invoiceId, orderId);
-    });
 
     await writeAudit(db, {
       userId: req.user.id, action: 'CONVERT_ORDER_TO_SALE', table: 'orders',

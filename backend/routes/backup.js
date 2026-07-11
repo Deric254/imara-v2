@@ -17,7 +17,7 @@ const ALL_TABLES = [
   'invoices', 'invoice_items', 'invoice_payments',
   'orders', 'order_items',
   'payments', 'rent_months',
-  'stock_reservations',
+  'no_activity_days',
   'notifications', 'audit_log'
 ];
 
@@ -101,65 +101,74 @@ router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (re
     // table names coming from an uploaded file.
     const orderedTables = ALL_TABLES.filter(t => backupData.tables[t]);
 
-    for (const tableName of orderedTables) {
-      const records = backupData.tables[tableName];
-      if (!Array.isArray(records) || records.length === 0) continue;
+    // ACID: the whole restore runs as ONE transaction. Previously each row was
+    // its own implicit auto-commit statement — a crash or thrown error partway
+    // through left a half-restored database with no way back, and nothing
+    // stopped a live sale/invoice write from landing in the middle of the
+    // restore window. Wrapping it here means either the entire backup lands,
+    // or none of it does, and it can't interleave with concurrent writes
+    // because the transaction queue serialises against everything else.
+    await db.transaction(async () => {
+      for (const tableName of orderedTables) {
+        const records = backupData.tables[tableName];
+        if (!Array.isArray(records) || records.length === 0) continue;
 
-      try {
-        let imported = 0;
+        try {
+          let imported = 0;
 
-        if (tableName === 'users') {
-          // Users: merge by username — update non-sensitive fields, skip if username exists
-          for (const record of records) {
-            try {
-              const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(record.username);
-              if (existing) {
-                // User already exists — skip (don't overwrite passwords or roles)
-                continue;
+          if (tableName === 'users') {
+            // Users: merge by username — update non-sensitive fields, skip if username exists
+            for (const record of records) {
+              try {
+                const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(record.username);
+                if (existing) {
+                  // User already exists — skip (don't overwrite passwords or roles)
+                  continue;
+                }
+                const keys = Object.keys(record);
+                if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
+                  throw new Error('Backup file contains an invalid column name for users');
+                }
+                // New user from backup — insert with original id preserved
+                const cols  = keys.join(', ');
+                const phs   = keys.map(() => '?').join(', ');
+                const vals  = Object.values(record);
+                await db.prepare(`INSERT OR IGNORE INTO users (${cols}) VALUES (${phs})`).run(...vals);
+                imported++;
+              } catch(e) {
+                // skip individual user errors silently
               }
-              const keys = Object.keys(record);
-              if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
-                throw new Error('Backup file contains an invalid column name for users');
+            }
+          } else {
+            // All other tables: INSERT OR REPLACE preserving original IDs
+            // This restores FK integrity — invoice_items still point to the right invoice IDs
+            for (const record of records) {
+              try {
+                const keys = Object.keys(record);
+                if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
+                  throw new Error(`Backup file contains an invalid column name for ${tableName}`);
+                }
+                const cols = keys.join(', ');
+                const phs  = keys.map(() => '?').join(', ');
+                const vals = Object.values(record);
+                await db.prepare(
+                  `INSERT OR REPLACE INTO ${tableName} (${cols}) VALUES (${phs})`
+                ).run(...vals);
+                imported++;
+              } catch(e) {
+                // skip individual row errors
               }
-              // New user from backup — insert with original id preserved
-              const cols  = keys.join(', ');
-              const phs   = keys.map(() => '?').join(', ');
-              const vals  = Object.values(record);
-              await db.prepare(`INSERT OR IGNORE INTO users (${cols}) VALUES (${phs})`).run(...vals);
-              imported++;
-            } catch(e) {
-              // skip individual user errors silently
             }
           }
-        } else {
-          // All other tables: INSERT OR REPLACE preserving original IDs
-          // This restores FK integrity — invoice_items still point to the right invoice IDs
-          for (const record of records) {
-            try {
-              const keys = Object.keys(record);
-              if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
-                throw new Error(`Backup file contains an invalid column name for ${tableName}`);
-              }
-              const cols = keys.join(', ');
-              const phs  = keys.map(() => '?').join(', ');
-              const vals = Object.values(record);
-              await db.prepare(
-                `INSERT OR REPLACE INTO ${tableName} (${cols}) VALUES (${phs})`
-              ).run(...vals);
-              imported++;
-            } catch(e) {
-              // skip individual row errors
-            }
-          }
+
+          importResults.total_imported += imported;
+          importResults.success.push(`${tableName} (${imported})`);
+
+        } catch (e) {
+          importResults.failed.push({ table: tableName, reason: e.message });
         }
-
-        importResults.total_imported += imported;
-        importResults.success.push(`${tableName} (${imported})`);
-
-      } catch (e) {
-        importResults.failed.push({ table: tableName, reason: e.message });
       }
-    }
+    });
 
     await writeAudit(db, {
       userId:  req.user.id,
@@ -292,11 +301,11 @@ router.post('/reset-data', authenticate, requireRole('owner'), async (req, res) 
       await db.exec('DELETE FROM order_items');
       await db.exec('DELETE FROM orders');
       await db.exec('DELETE FROM invoices');
-      await db.exec('DELETE FROM stock_reservations');
       await db.exec('DELETE FROM audit_log');
       await db.exec('DELETE FROM notifications');
       await db.exec('DELETE FROM payments');
       await db.exec('DELETE FROM rent_months');
+      await db.exec('DELETE FROM no_activity_days');
       await db.exec('DELETE FROM production_items');
       await db.exec('DELETE FROM production');
       await db.exec('DELETE FROM sales');

@@ -60,11 +60,17 @@ function requireRole(...roles) {
 async function writeAudit(db, { userId, action, table, recordId, oldVals, newVals, ip }) {
   try {
     const dbHandle = (db && typeof db.prepare === 'function') ? db : getDb();
+    let userName = null;
+    if (userId != null) {
+      const u = await dbHandle.prepare('SELECT full_name FROM users WHERE id=?').get(userId);
+      userName = u?.full_name ?? null;
+    }
     await dbHandle.prepare(
-      `INSERT INTO audit_log(user_id,action,table_name,record_id,old_values,new_values,ip_address)
-       VALUES(?,?,?,?,?,?,?)`
+      `INSERT INTO audit_log(user_id,user_name,action,table_name,record_id,old_values,new_values,ip_address)
+       VALUES(?,?,?,?,?,?,?,?)`
     ).run(
       userId   ?? null,
+      userName,
       action,
       table    ?? null,
       recordId ?? null,

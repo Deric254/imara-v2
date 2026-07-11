@@ -281,9 +281,9 @@ router.post('/forgot-password/verify',
 
 /* ─────────────────────────────────────────────────────────────────────────────
    FORGOT PASSWORD — step 3: use reset token to set new password
-   FIX: replaced broken db.transaction() (Neon HTTP serverless has no real
-   cross-request transactions) with a single atomic WITH CTE that marks the
-   token used AND updates the password in one server round-trip.
+   ACID: marking the token used and updating the password run inside one
+   db.transaction() — SQLite has no RETURNING-based single-statement way to
+   do both, so it's two statements, but they commit or roll back together.
    Also stamps password_changed_at to invalidate all existing JWT sessions.
    POST /api/auth/forgot-password/reset
 ───────────────────────────────────────────────────────────────────────────── */
@@ -307,13 +307,18 @@ router.post('/forgot-password/reset',
 
       const newHash = bcrypt.hashSync(req.body.new_password, 12);
 
-      // SQLite-compatible: two statements (no RETURNING support in SQLite)
-      await db.prepare(
-        'UPDATE password_reset_tokens SET used=1 WHERE id=? AND used=0'
-      ).run(row.id);
-      await db.prepare(
-        "UPDATE users SET password=?, password_changed_at=datetime('now'), updated_at=datetime('now') WHERE id=?"
-      ).run(newHash, row.user_id);
+      // ACID: both statements must land together — a crash between them would
+      // otherwise burn the token without ever changing the password, locking
+      // the user out with no way to retry (the token is one-time-use).
+      // SQLite-compatible: two statements (no RETURNING support in SQLite).
+      await db.transaction(async () => {
+        await db.prepare(
+          'UPDATE password_reset_tokens SET used=1 WHERE id=? AND used=0'
+        ).run(row.id);
+        await db.prepare(
+          "UPDATE users SET password=?, password_changed_at=datetime('now'), updated_at=datetime('now') WHERE id=?"
+        ).run(newHash, row.user_id);
+      });
 
       await writeAudit(db, { userId: row.user_id, action: 'PASSWORD_RESET_COMPLETED', ip: req.ip });
       res.json({ message: 'Password reset successfully. You can now log in.' });

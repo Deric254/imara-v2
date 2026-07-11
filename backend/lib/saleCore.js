@@ -39,7 +39,14 @@ async function resolveWireCostPerKgForSale(db, pieceTypeId, entryDate) {
 //
 // items: [{ piece_type_id, quantity, selling_price, gauge_source, transport_to_market? }]
 // Returns { saleIds, invoiceId, enrichedCount }
-async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId }) {
+// onAfterInsert (optional): an async callback invoked INSIDE the same
+// transaction, immediately after the sale rows + invoice are written, before
+// COMMIT. Receives { saleIds, invoiceId }. Use this for any write that must
+// land atomically with the sale — e.g. order conversion marking the source
+// order 'converted' — rather than running it in a second, separate
+// transaction after this one has already committed. If onAfterInsert throws,
+// the whole transaction (sale + invoice + the hook's writes) rolls back together.
+async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, userName = null, onAfterInsert = null }) {
   const customerName = (buyer_name && buyer_name.trim()) ? buyer_name.trim() : 'Walk-in Customer';
 
   // Validate all piece types exist and active
@@ -109,11 +116,11 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId }
     for (const row of enriched) {
       const wireCostPerKg = await resolveWireCostPerKgForSale(db, row.piece_type_id, entry_date);
       const saleRes = await db.prepare(
-        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg,entered_by_name)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
       ).run(entry_date, row.piece_type_id, row.quantity, row.selling_price,
             row.pt.default_price, row.price_overridden, row.transport_to_market,
-            customerName, row.gauge_source, userId, wireCostPerKg);
+            customerName, row.gauge_source, userId, wireCostPerKg, userName);
       saleIds.push(saleRes.lastInsertRowid);
     }
 
@@ -138,13 +145,13 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId }
         invoice_number, invoice_date, due_date, customer_name,
         status, subtotal, discount_pct, discount_amount,
         tax_pct, tax_amount, total_amount, amount_paid,
-        notes, created_by, sale_id
-      ) VALUES(?,?,?,?,'partial_payment',?,0,0,0,0,?,0,?,?,?) RETURNING id
+        notes, created_by, sale_id, created_by_name
+      ) VALUES(?,?,?,?,'partial_payment',?,0,0,0,0,?,0,?,?,?,?) RETURNING id
     `).run(
       invNum, entry_date, entry_date, customerName,
       subtotalRounded, subtotalRounded,
       `Auto-generated from ${enriched.length} item sale on ${entry_date}`,
-      userId, saleIds[0]
+      userId, saleIds[0], userName
     );
 
     if (invRes && invRes.lastInsertRowid) {
@@ -157,6 +164,10 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId }
         `).run(invoiceId, row.piece_type_id, row.pt.name, row.gauge_source,
                row.quantity, row.selling_price, lineTotal);
       }
+    }
+
+    if (onAfterInsert) {
+      await onAfterInsert({ saleIds, invoiceId });
     }
   });
 

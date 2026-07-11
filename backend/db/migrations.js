@@ -356,6 +356,125 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '012-durable-name-snapshots',
+    version: '2.9.0',
+    description: 'Capture the actor/counterparty name at the moment each record is created (entered_by_name, operator_name, knuckler_name, supplier_name, created_by_name, recorded_by_name, payee_name, user_name on audit_log). Historical records and exports must show who/what it was AT THE TIME, permanently — renaming a worker, admin, or supplier later must never rewrite past records. Existing rows are backfilled with the best available approximation (their current linked name); every new write going forward captures the true name at that moment.',
+    async up(db) {
+      const addCol = async (table, col, def = "TEXT DEFAULT NULL") => {
+        try {
+          const cols = await db.prepare(`PRAGMA table_info(${table})`).all();
+          if (!cols.some(c => c.name === col)) {
+            await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+          }
+        } catch (err) {
+          console.warn(`Migration 012: ${table}.${col} might already exist`, err?.message);
+        }
+      };
+
+      try {
+        await addCol('audit_log', 'user_name');
+        await addCol('purchases', 'entered_by_name');
+        await addCol('purchases', 'supplier_name');
+        await addCol('production', 'entered_by_name');
+        await addCol('production', 'operator_name');
+        await addCol('production', 'knuckler_name');
+        await addCol('sales', 'entered_by_name');
+        await addCol('invoices', 'created_by_name');
+        await addCol('invoice_payments', 'recorded_by_name');
+        await addCol('payments', 'recorded_by_name');
+        await addCol('orders', 'created_by_name');
+
+        // Backfill: best-effort — true historical name isn't recoverable for
+        // rows written before this migration, so existing rows get whatever
+        // name is currently on file. From this point forward every INSERT
+        // captures the real name at that exact moment, permanently.
+        await db.exec(`
+          UPDATE audit_log SET user_name = (SELECT full_name FROM users WHERE id = audit_log.user_id)
+          WHERE user_name IS NULL AND user_id IS NOT NULL
+        `);
+        await db.exec(`
+          UPDATE purchases SET
+            entered_by_name = (SELECT full_name FROM users WHERE id = purchases.entered_by),
+            supplier_name   = (SELECT name FROM suppliers WHERE id = purchases.supplier_id)
+          WHERE entered_by_name IS NULL OR supplier_name IS NULL
+        `);
+        await db.exec(`
+          UPDATE production SET
+            entered_by_name = (SELECT full_name FROM users WHERE id = production.entered_by),
+            operator_name   = (SELECT full_name FROM users WHERE id = production.operator_id),
+            knuckler_name   = (SELECT full_name FROM users WHERE id = production.knuckler_id)
+          WHERE entered_by_name IS NULL
+        `);
+        await db.exec(`
+          UPDATE sales SET entered_by_name = (SELECT full_name FROM users WHERE id = sales.entered_by)
+          WHERE entered_by_name IS NULL
+        `);
+        await db.exec(`
+          UPDATE invoices SET created_by_name = (SELECT full_name FROM users WHERE id = invoices.created_by)
+          WHERE created_by_name IS NULL
+        `);
+        await db.exec(`
+          UPDATE invoice_payments SET recorded_by_name = (SELECT full_name FROM users WHERE id = invoice_payments.recorded_by)
+          WHERE recorded_by_name IS NULL
+        `);
+        await db.exec(`
+          UPDATE payments SET recorded_by_name = (SELECT full_name FROM users WHERE id = payments.recorded_by)
+          WHERE recorded_by_name IS NULL
+        `);
+        // payee_name previously was only ever populated for free-text payee
+        // categories (sack/other/transport_to_market) — backfill it for
+        // user- and supplier-linked payments too, so it becomes the one
+        // reliable durable field for every payment regardless of category.
+        await db.exec(`
+          UPDATE payments SET payee_name = (SELECT full_name FROM users WHERE id = payments.payee_user_id)
+          WHERE payee_name IS NULL AND payee_user_id IS NOT NULL
+        `);
+        await db.exec(`
+          UPDATE payments SET payee_name = (SELECT name FROM suppliers WHERE id = payments.payee_supplier_id)
+          WHERE payee_name IS NULL AND payee_supplier_id IS NOT NULL
+        `);
+        await db.exec(`
+          UPDATE orders SET created_by_name = (SELECT full_name FROM users WHERE id = orders.created_by)
+          WHERE created_by_name IS NULL
+        `);
+      } catch (err) {
+        console.warn('Migration 012:', err?.message);
+      }
+    },
+  },
+  {
+    id: '013-drop-stock-reservations',
+    version: '2.10.0',
+    description: 'Drop stock_reservations table — dead schema from before the confirmed design decision that orders do not reserve stock. No route ever read or wrote this table.',
+    async up(db) {
+      try {
+        await db.exec('DROP TABLE IF EXISTS stock_reservations');
+      } catch (err) {
+        console.warn('Migration 013:', err?.message);
+      }
+    },
+  },
+  {
+    id: '014-no-activity-days',
+    version: '2.11.0',
+    description: 'Add no_activity_days table so the Owner can confirm a date genuinely had zero business activity, distinct from data simply not having been entered yet — closes the daily-entry-discipline gap without fabricating placeholder rows.',
+    async up(db) {
+      try {
+        await db.exec(`
+          CREATE TABLE IF NOT EXISTS no_activity_days (
+            entry_date TEXT PRIMARY KEY,
+            confirmed_by INTEGER NOT NULL REFERENCES users(id),
+            confirmed_by_name TEXT,
+            notes TEXT DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      } catch (err) {
+        console.warn('Migration 014:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

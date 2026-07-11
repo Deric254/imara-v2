@@ -1331,10 +1331,7 @@ let _saleRowCount = 0;
 // _saleSubmitting declared at top of script
 
 function _makeGaugeOptions(selectedGauge) {
-  const gauges = (getConfig ? (getConfig('wire_gauges','12,14,16') || '12,14,16') : '12,14,16')
-    .split(',').map(g => g.trim()).filter(Boolean);
-  return `<option value="">— gauge —</option>` +
-    gauges.map(g => `<option value="${g}"${g === selectedGauge ? ' selected' : ''}>${g}</option>`).join('');
+  return gaugeOptionsHtml(selectedGauge, { blankLabel: '— gauge —' });
 }
 
 // After a piece type is selected, patch the gauge <select> so zero-stock options

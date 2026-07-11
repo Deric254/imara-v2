@@ -1156,8 +1156,7 @@ function showForm(inv) {
 function addItem(it) {
   _itemSeq++;
   const id    = _itemSeq;
-  const gauges = (getConfig('wire_gauges','12,14,16')).split(',').map(g=>g.trim());
-  const gOpts  = `<option value="">—</option>`+gauges.map(g=>`<option value="${g}"${it&&it.gauge===g?' selected':''}>${g}</option>`).join('');
+  const gOpts  = gaugeOptionsHtml(it && it.gauge, { blankLabel: '—' });
   const ptOpts = `<option value="">— piece type —</option>`+(_pieceTypes||[]).map(pt=>
     `<option value="${pt.id}" data-price="${pt.default_price}" data-name="${escHtml(pt.name)}"${it&&it.piece_type_id===pt.id?' selected':''}>${escHtml(pt.name)}</option>`
   ).join('');

@@ -65,7 +65,7 @@ router.get('/search', ...OWNER_ADMIN, async (req, res) => {
     const likeQ = `%${q}%`;
 
     const results = await db.prepare(`
-      SELECT i.*, u.full_name AS created_by_name
+      SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name
       FROM invoices i
       JOIN users u ON i.created_by = u.id
       WHERE
@@ -96,7 +96,7 @@ router.get('/', ...OWNER_ADMIN, async (req, res) => {
     const status = req.query.status || null;
 
     let sql = `
-      SELECT i.*, u.full_name AS created_by_name
+      SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name
       FROM invoices i
       JOIN users u ON i.created_by = u.id
       WHERE i.invoice_date BETWEEN ? AND ?`;
@@ -165,7 +165,7 @@ router.get('/:id', ...OWNER_ADMIN, async (req, res) => {
     const db  = getDb();
     const id  = parseInt(req.params.id);
     const inv = await db.prepare(`
-      SELECT i.*, u.full_name AS created_by_name
+      SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name
       FROM invoices i JOIN users u ON i.created_by = u.id
       WHERE i.id = ?
     `).get(id);
@@ -240,15 +240,15 @@ router.post('/', ...OWNER_ADMIN,
             invoice_number, invoice_date, due_date, customer_name,
             customer_phone, customer_email, customer_address, status,
             subtotal, discount_pct, discount_amount, tax_pct, tax_amount,
-            total_amount, amount_paid, notes, created_by
-          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id
+            total_amount, amount_paid, notes, created_by, created_by_name
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id
         `).run(
           invNum, invoice_date, due_date||'', customer_name.trim(),
           customer_phone, customer_email, customer_address,
           autoStatus,
           totals.subtotal, totals.discount_pct, totals.discount_amount,
           totals.tax_pct, totals.tax_amount, totals.total_amount,
-          num(amount_paid), (notes||'').trim(), req.user.id
+          num(amount_paid), (notes||'').trim(), req.user.id, req.user.full_name
         );
         const invId = inv.lastInsertRowid;
 
@@ -274,9 +274,9 @@ router.post('/', ...OWNER_ADMIN,
         if (paid > 0) {
           const payMethod = req.body.payment_method || 'cash';
           await db.prepare(`
-            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by)
-            VALUES(?,?,?,?,?,?)
-          `).run(invId, invoice_date, paid, payMethod, 'Collected at invoice creation', req.user.id);
+            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by, recorded_by_name)
+            VALUES(?,?,?,?,?,?,?)
+          `).run(invId, invoice_date, paid, payMethod, 'Collected at invoice creation', req.user.id, req.user.full_name);
         }
 
         return invId;
@@ -290,7 +290,7 @@ router.post('/', ...OWNER_ADMIN,
       });
 
       const created = await db.prepare(`
-        SELECT i.*, u.full_name AS created_by_name FROM invoices i
+        SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name FROM invoices i
         JOIN users u ON i.created_by = u.id WHERE i.id = ?
       `).get(result);
       const createdItems = await db.prepare(
@@ -300,7 +300,7 @@ router.post('/', ...OWNER_ADMIN,
       res.status(201).json({ ...created, items: createdItems });
     } catch(e) {
       console.error('POST invoice error:', e);
-      res.status(500).json({ error: e.message || 'Internal server error' });
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
@@ -374,9 +374,24 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     }
 
     await db.transaction(async () => {
+      // ACID: re-read the invoice's live amount_paid INSIDE the transaction rather
+      // than trusting `old` (fetched before the transaction started). Two
+      // concurrent edits/payments on the same invoice would otherwise both compute
+      // their delta off the same stale amount_paid and both insert into
+      // invoice_payments, letting the ledger sum drift past total_amount even
+      // though each request individually looked safe. This re-read is the
+      // authoritative value the overpayment check and the delta below are based on.
+      const live = await db.prepare('SELECT amount_paid FROM invoices WHERE id=?').get(id);
+      const liveAmountPaid = parseFloat(live.amount_paid) || 0;
+
       if (items) {
         const totals = computeTotals(items, discount_pct, taxPct);
-        const newAmountPaid = amount_paid != null ? num(amount_paid) : old.amount_paid;
+        const newAmountPaid = amount_paid != null ? num(amount_paid) : liveAmountPaid;
+        if (newAmountPaid > totals.total_amount + 0.005) {
+          const e = new Error(`Overpayment not allowed. Amount paid (${newAmountPaid.toFixed(2)}) would exceed the new invoice total (${totals.total_amount.toFixed(2)}).`);
+          e.overpayment = true;
+          throw e;
+        }
         const autoStatus = calculateInvoiceStatus(newAmountPaid, totals.total_amount, status);
         await db.prepare(`
           UPDATE invoices SET
@@ -410,31 +425,36 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
           );
         }
         // If amount_paid increased, record the delta in invoice_payments
-        const delta = parseFloat((newAmountPaid - num(old.amount_paid)).toFixed(2));
+        const delta = parseFloat((newAmountPaid - liveAmountPaid).toFixed(2));
         if (delta > 0) {
           const payMethod = req.body.payment_method || 'cash';
           const payDate   = invoice_date || old.invoice_date;
           await db.prepare(`
-            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by)
-            VALUES(?,?,?,?,?,?)
-          `).run(id, payDate, delta, payMethod, 'Recorded via invoice edit', req.user.id);
+            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by, recorded_by_name)
+            VALUES(?,?,?,?,?,?,?)
+          `).run(id, payDate, delta, payMethod, 'Recorded via invoice edit', req.user.id, req.user.full_name);
         }
       } else {
         // Status-only / payment-only update
-        const newAmountPaid = amount_paid != null ? num(amount_paid) : old.amount_paid;
+        const newAmountPaid = amount_paid != null ? num(amount_paid) : liveAmountPaid;
+        if (newAmountPaid > num(old.total_amount) + 0.005) {
+          const e = new Error(`Overpayment not allowed. Amount paid (${newAmountPaid.toFixed(2)}) cannot exceed invoice total (${num(old.total_amount).toFixed(2)}).`);
+          e.overpayment = true;
+          throw e;
+        }
         const autoStatus = calculateInvoiceStatus(newAmountPaid, old.total_amount, status);
         await db.prepare(`
           UPDATE invoices SET status=?, amount_paid=?, updated_at=datetime('now') WHERE id=?
         `).run(autoStatus, newAmountPaid, id);
         // Record payment delta in cash ledger
-        const delta = parseFloat((newAmountPaid - num(old.amount_paid)).toFixed(2));
+        const delta = parseFloat((newAmountPaid - liveAmountPaid).toFixed(2));
         if (delta > 0) {
           const payMethod = req.body.payment_method || 'cash';
           const payDate   = req.body.payment_date || old.invoice_date;
           await db.prepare(`
-            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by)
-            VALUES(?,?,?,?,?,?)
-          `).run(id, payDate, delta, payMethod, 'Recorded via invoice update', req.user.id);
+            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by, recorded_by_name)
+            VALUES(?,?,?,?,?,?,?)
+          `).run(id, payDate, delta, payMethod, 'Recorded via invoice update', req.user.id, req.user.full_name);
         }
       }
     });
@@ -442,7 +462,7 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     await writeAudit(db, { userId: req.user.id, action: 'UPDATE_INVOICE', table: 'invoices', recordId: id, oldVals: old, ip: req.ip });
 
     const updated = await db.prepare(`
-      SELECT i.*, u.full_name AS created_by_name FROM invoices i
+      SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name FROM invoices i
       JOIN users u ON i.created_by = u.id WHERE i.id = ?
     `).get(id);
     const updatedItems = await db.prepare(
@@ -450,8 +470,9 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     ).all(id);
     res.json({ ...updated, items: updatedItems });
   } catch(e) {
+    if (e.overpayment) return res.status(400).json({ error: e.message });
     console.error('PUT invoice error:', e);
-    res.status(500).json({ error: e.message || 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -464,7 +485,7 @@ router.get('/:id/payments', ...OWNER_ADMIN, async (req, res) => {
     const inv = await db.prepare('SELECT id, invoice_number, total_amount, amount_paid, status FROM invoices WHERE id=?').get(id);
     if (!inv) return res.status(404).json({ error: 'Invoice not found' });
     const payments = await db.prepare(`
-      SELECT ip.*, u.full_name AS recorded_by_name
+      SELECT ip.*, COALESCE(ip.recorded_by_name, u.full_name) AS recorded_by_name
       FROM invoice_payments ip JOIN users u ON ip.recorded_by = u.id
       WHERE ip.invoice_id = ?
       ORDER BY ip.payment_date DESC, ip.created_at DESC
@@ -505,28 +526,52 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
     let autoStatus;
     let newTotalPaid;
 
-    await db.transaction(async () => {
-      // Write the discrete payment into the cash ledger first
-      await db.prepare(`
-        INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by)
-        VALUES(?,?,?,?,?,?)
-      `).run(id, payment_date, paid, payment_method, notes || '', req.user.id);
+    try {
+      await db.transaction(async () => {
+        // ACID: re-check the overpayment cap against the LIVE ledger sum, inside
+        // the transaction, right before writing. The pre-flight check above is
+        // just a fast/friendly rejection for the common case — it reads `inv`
+        // from before the transaction started, so two near-simultaneous requests
+        // (double-click, or two people paying the same invoice at once) could
+        // both pass it before either has written a row. This second check reads
+        // the authoritative current total from invoice_payments itself, and the
+        // transaction queue guarantees no other write can land between this
+        // check and the insert below, so it's the one that actually holds the cap.
+        const preSum = await db.prepare(
+          `SELECT COALESCE(SUM(amount),0) AS total FROM invoice_payments WHERE invoice_id=?`
+        ).get(id);
+        const currentPaid = parseFloat(parseFloat(preSum.total).toFixed(2));
+        if (parseFloat((currentPaid + paid).toFixed(2)) > num(inv.total_amount) + 0.005) {
+          const e = new Error(`Overpayment not allowed. Outstanding balance is ${(num(inv.total_amount) - currentPaid).toFixed(2)}`);
+          e.overpayment = true;
+          throw e;
+        }
 
-      // Re-derive amount_paid from the ledger sum INSIDE the transaction so the
-      // denormalised column is always exactly equal to Σ(invoice_payments.amount).
-      // This is the single authoritative calculation — no arithmetic on old values.
-      const sumRow = await db.prepare(
-        `SELECT COALESCE(SUM(amount),0) AS total FROM invoice_payments WHERE invoice_id=?`
-      ).get(id);
-      newTotalPaid = parseFloat(parseFloat(sumRow.total).toFixed(2));
-      autoStatus   = calculateInvoiceStatus(newTotalPaid, inv.total_amount, null);
+        // Write the discrete payment into the cash ledger
+        await db.prepare(`
+          INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by, recorded_by_name)
+          VALUES(?,?,?,?,?,?,?)
+        `).run(id, payment_date, paid, payment_method, notes || '', req.user.id, req.user.full_name);
 
-      await db.prepare(`
-        UPDATE invoices
-        SET status=?, amount_paid=?, updated_at=datetime('now')
-        WHERE id=?
-      `).run(autoStatus, newTotalPaid, id);
-    });
+        // Re-derive amount_paid from the ledger sum INSIDE the transaction so the
+        // denormalised column is always exactly equal to Σ(invoice_payments.amount).
+        // This is the single authoritative calculation — no arithmetic on old values.
+        const sumRow = await db.prepare(
+          `SELECT COALESCE(SUM(amount),0) AS total FROM invoice_payments WHERE invoice_id=?`
+        ).get(id);
+        newTotalPaid = parseFloat(parseFloat(sumRow.total).toFixed(2));
+        autoStatus   = calculateInvoiceStatus(newTotalPaid, inv.total_amount, null);
+
+        await db.prepare(`
+          UPDATE invoices
+          SET status=?, amount_paid=?, updated_at=datetime('now')
+          WHERE id=?
+        `).run(autoStatus, newTotalPaid, id);
+      });
+    } catch (e) {
+      if (e.overpayment) return res.status(400).json({ error: e.message });
+      throw e;
+    }
 
     await writeAudit(db, {
       userId: req.user.id,
@@ -551,13 +596,13 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
     }).catch(() => {});
 
     const updated = await db.prepare(`
-      SELECT i.*, u.full_name AS created_by_name
+      SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name
       FROM invoices i JOIN users u ON i.created_by = u.id
       WHERE i.id = ?
     `).get(id);
 
     const payments = await db.prepare(`
-      SELECT ip.*, u.full_name AS recorded_by_name
+      SELECT ip.*, COALESCE(ip.recorded_by_name, u.full_name) AS recorded_by_name
       FROM invoice_payments ip JOIN users u ON ip.recorded_by = u.id
       WHERE ip.invoice_id = ?
       ORDER BY ip.payment_date DESC, ip.created_at DESC
@@ -566,7 +611,7 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
     res.json({ message: 'Payment recorded successfully', invoice: updated, payments });
   } catch(e) {
     console.error('RECORD PAYMENT error:', e);
-    res.status(500).json({ error: e.message || 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

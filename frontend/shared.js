@@ -419,6 +419,23 @@ async function loadGlobalConfig() {
 
 function getConfig(key, defaultValue = null) { return _globalConfig?.[key] ?? defaultValue; }
 
+// Builds <option> tags for a wire-gauge <select> from the configured gauge list
+// (config.wire_gauges), while always keeping `selectedGauge` selectable even if
+// it has since been removed from config. Without this, editing an existing
+// record (invoice, order, etc.) that uses a gauge no longer in config would
+// silently fall back to whatever gauge happens to be first in the list —
+// corrupting the record's gauge on save without any visible warning.
+function gaugeOptionsHtml(selectedGauge, { blankLabel = null } = {}) {
+  const configured = (getConfig('wire_gauges', '12,14,16') || '12,14,16')
+    .split(',').map(g => g.trim()).filter(Boolean);
+  const sel = (selectedGauge || '').toString().trim();
+  const list = sel && !configured.includes(sel) ? [...configured, sel] : configured;
+  const blank = blankLabel !== null ? `<option value="">${escHtml(blankLabel)}</option>` : '';
+  return blank + list.map(g =>
+    `<option value="${g}"${g === sel ? ' selected' : ''}>${escHtml(g)}</option>`
+  ).join('');
+}
+
 function updateConfigField(fieldId, configKey, defaultValue = '') {
   const el = document.getElementById(fieldId);
   if (!el) return;

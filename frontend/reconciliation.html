@@ -1364,8 +1364,7 @@ function openInvoiceModal(inv = null) {
 function addInvItem(item = null) {
   _invItemCount++;
   const id = _invItemCount;
-  const gauges = (getConfig('wire_gauges','12,14,16')).split(',').map(g => g.trim());
-  const gOpts = `<option value="">—</option>` + gauges.map(g => `<option value="${g}" ${item?.gauge===g?'selected':''}>${g}</option>`).join('');
+  const gOpts = gaugeOptionsHtml(item && item.gauge, { blankLabel: '—' });
   const ptOpts = '<option value="">— type —</option>' + (_pieceTypes||[]).map(p =>
     `<option value="${p.id}" ${item?.piece_type_id==p.id?'selected':''}>${escHtml(p.name)}</option>`
   ).join('');
