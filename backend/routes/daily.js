@@ -402,10 +402,13 @@ router.delete('/purchases/:id', authenticate, requireRole('owner','admin'), asyn
         throw e;
       }
       await db.prepare('DELETE FROM purchases WHERE id=?').run(id);
+      // Audit write lands inside the same transaction as the delete: either
+      // both commit together, or (on failure) both roll back — no path where
+      // the purchase is gone but the audit trail doesn't record it.
+      await writeAudit(db, { userId: req.user.id, action: 'DELETE_PURCHASE', table: 'purchases',
+        recordId: id, oldVals: row, ip: req.ip }, { critical: true });
     });
 
-    await writeAudit(db, { userId: req.user.id, action: 'DELETE_PURCHASE', table: 'purchases',
-      recordId: id, oldVals: row, ip: req.ip });
     const gLabel = gaugeKey ? ` (gauge ${row.gauge})` : '';
     res.json({ message: `Purchase deleted. ${parseFloat(row.kgs_bought).toFixed(1)} kg${gLabel} removed from raw material stock.` });
   } catch(e) {
@@ -806,10 +809,11 @@ router.delete('/production/:id', authenticate, requireRole('owner','admin'), asy
         await db.prepare('UPDATE purchases SET kgs_remaining = MIN(kgs_bought, kgs_remaining + ?) WHERE id=?')
           .run(parseFloat(u.kgs_drawn), u.purchase_id);
       }
+      // Audit write lands inside the same transaction as the delete + stock
+      // restore: either all of it commits together, or all of it rolls back.
+      await writeAudit(db, { userId: req.user.id, action: 'DELETE_PRODUCTION', table: 'production',
+        recordId: id, oldVals: row, ip: req.ip }, { critical: true });
     });
-
-    await writeAudit(db, { userId: req.user.id, action: 'DELETE_PRODUCTION', table: 'production',
-      recordId: id, oldVals: row, ip: req.ip });
 
     let msg = `Production record deleted. ${parseFloat(row.kgs_used).toFixed(1)} kg of wire and ${totalPieces} pieces removed from records.`;
     if (costWarnings.length) {
@@ -1123,12 +1127,14 @@ router.delete('/sales/:id', authenticate, requireRole('owner','admin'), async (r
       }
 
       await db.prepare('DELETE FROM sales WHERE id=?').run(id);
+      // Audit write lands inside the same transaction as the delete + invoice
+      // reversal + order un-conversion: either all of it commits together,
+      // or all of it rolls back.
+      await writeAudit(db, { userId: req.user.id, action: 'DELETE_SALE', table: 'sales',
+        recordId: id, oldVals: row,
+        newVals: linkedInvoice ? { reversed_invoice: linkedInvoice.invoice_number } : null,
+        ip: req.ip }, { critical: true });
     });
-
-    await writeAudit(db, { userId: req.user.id, action: 'DELETE_SALE', table: 'sales',
-      recordId: id, oldVals: row,
-      newVals: linkedInvoice ? { reversed_invoice: linkedInvoice.invoice_number } : null,
-      ip: req.ip });
 
     const msg = linkedInvoice
       ? `Sale deleted. Its invoice (${linkedInvoice.invoice_number}) has been reversed and kept for your records.`

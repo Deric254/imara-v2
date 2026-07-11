@@ -57,7 +57,12 @@ function requireRole(...roles) {
       : res.status(403).json({ error: 'Insufficient permissions' });
 }
 
-async function writeAudit(db, { userId, action, table, recordId, oldVals, newVals, ip }) {
+// critical=true means: when called from inside a db.transaction() callback,
+// a failed audit write must abort the whole transaction rather than being
+// swallowed — so the mutation and its audit record are always both-or-neither.
+// Every existing call site keeps its original never-throw behavior (critical
+// defaults to false) so nothing outside this fix's scope changes behavior.
+async function writeAudit(db, { userId, action, table, recordId, oldVals, newVals, ip }, { critical = false } = {}) {
   try {
     const dbHandle = (db && typeof db.prepare === 'function') ? db : getDb();
     let userName = null;
@@ -78,7 +83,14 @@ async function writeAudit(db, { userId, action, table, recordId, oldVals, newVal
       newVals  ? JSON.stringify(newVals) : null,
       ip       ?? null
     );
-  } catch { /* never let audit break the flow */ }
+  } catch (err) {
+    console.error(`AUDIT WRITE FAILED — action=${action} table=${table} recordId=${recordId} userId=${userId}:`, err?.message || err);
+    // Non-critical (default): never let a failed audit write break the
+    // caller's main operation, matching every existing call site's behavior.
+    // Critical: propagate so a caller running this inside db.transaction()
+    // rolls the whole transaction back rather than losing the audit trail.
+    if (critical) throw err;
+  }
 }
 
 module.exports = { authenticate, requireRole, writeAudit, JWT_SECRET };

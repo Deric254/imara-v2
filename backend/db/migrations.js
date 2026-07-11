@@ -4,6 +4,20 @@
 const fs = require('fs');
 const path = require('path');
 
+// A migration's catch block should only ever swallow an error that means
+// "this exact change was already applied" (e.g. a column/table that already
+// exists from a previous run of this same migration) — that's genuinely
+// benign and expected on a re-run. Any other error means the migration
+// actually failed partway and the schema is now in an unknown state; that
+// must propagate up so runMigrations() aborts boot instead of recording a
+// broken migration as successfully applied.
+function isBenignSchemaError(err) {
+  const msg = (err?.message || '').toLowerCase();
+  return msg.includes('already exists') ||
+         msg.includes('duplicate column name') ||
+         msg.includes('duplicate column');
+}
+
 // Define all migrations in order (will only run if not already applied)
 const MIGRATIONS = [
   {
@@ -28,6 +42,7 @@ const MIGRATIONS = [
           await db.exec("ALTER TABLE invoices ADD COLUMN backup_at DATETIME DEFAULT NULL");
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 002: Column might already exist', err?.message);
       }
     },
@@ -43,6 +58,7 @@ const MIGRATIONS = [
           await db.exec("ALTER TABLE payments ADD COLUMN rent_month TEXT DEFAULT NULL");
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 003: rent_month column might already exist', err?.message);
       }
     },
@@ -79,8 +95,9 @@ const MIGRATIONS = [
         await db.exec(`ALTER TABLE payments_v2 RENAME TO payments`);
         await db.exec(`PRAGMA foreign_keys = ON`);
       } catch (err) {
-        console.warn('Migration 004:', err?.message);
         try { await db.exec(`PRAGMA foreign_keys = ON`); } catch(_) {}
+        if (!isBenignSchemaError(err)) throw err;
+        console.warn('Migration 004:', err?.message);
       }
     },
   },
@@ -94,6 +111,7 @@ const MIGRATIONS = [
           `INSERT OR IGNORE INTO config(key, value) VALUES('show_rent_dashboard', '0')`
         ).run();
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 005:', err?.message);
       }
     },
@@ -153,6 +171,7 @@ const MIGRATIONS = [
         // Safety net: any purchase rows somehow still NULL (e.g. no production at all) get kgs_remaining = kgs_bought
         await db.exec(`UPDATE purchases SET kgs_remaining = kgs_bought WHERE kgs_remaining IS NULL`);
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 006:', err?.message);
       }
     },
@@ -198,13 +217,14 @@ const MIGRATIONS = [
           ).run(r.production_id, r.purchase_id, parseFloat(r.kgs_used) || 0, landedCost);
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 007:', err?.message);
       }
     },
   },
   {
     id: '008-payment-integrity-view',
-    version: '2.4.0',
+    version: '2.5.1',
     description: 'Add v_invoice_payment_integrity view so the owner can spot any drift between invoices.amount_paid and Σ(invoice_payments). Also heals any existing drift caused by the pre-fix arithmetic path.',
     async up(db) {
       try {
@@ -226,6 +246,7 @@ const MIGRATIONS = [
         `);
         console.log('✅  v_invoice_payment_integrity view created');
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 008 view:', err?.message);
       }
 
@@ -249,7 +270,9 @@ const MIGRATIONS = [
         `);
         console.log('✅  Invoice payment drift healed');
       } catch (err) {
-        console.warn('Migration 008 heal:', err?.message);
+        // No benign case here — this is a data heal, not a schema change,
+        // so any error here is a real failure and must propagate.
+        throw err;
       }
     },
   },
@@ -292,6 +315,7 @@ const MIGRATIONS = [
           ).run(wireCostPerKg, sale.id);
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 009:', err?.message);
       }
     },
@@ -336,6 +360,7 @@ const MIGRATIONS = [
           await db.exec('PRAGMA foreign_keys = ON');
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 010:', err?.message);
       }
     },
@@ -352,6 +377,7 @@ const MIGRATIONS = [
           await db.exec("ALTER TABLE invoices ADD COLUMN reversal_source TEXT DEFAULT NULL");
         }
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 011:', err?.message);
       }
     },
@@ -368,6 +394,7 @@ const MIGRATIONS = [
             await db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
           }
         } catch (err) {
+          if (!isBenignSchemaError(err)) throw err;
           console.warn(`Migration 012: ${table}.${col} might already exist`, err?.message);
         }
       };
@@ -439,7 +466,10 @@ const MIGRATIONS = [
           WHERE created_by_name IS NULL
         `);
       } catch (err) {
-        console.warn('Migration 012:', err?.message);
+        // addCol() above already handles the one benign case (column exists).
+        // Anything reaching here — including any backfill UPDATE failure —
+        // is a real failure and must propagate.
+        throw err;
       }
     },
   },
@@ -451,6 +481,7 @@ const MIGRATIONS = [
       try {
         await db.exec('DROP TABLE IF EXISTS stock_reservations');
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 013:', err?.message);
       }
     },
@@ -471,6 +502,7 @@ const MIGRATIONS = [
           )
         `);
       } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 014:', err?.message);
       }
     },
@@ -488,6 +520,7 @@ async function getMigrationsTable(db) {
       )
     `);
   } catch (err) {
+    if (!isBenignSchemaError(err)) throw err;
     console.warn('schema_migrations table might already exist:', err?.message);
   }
 }
@@ -499,7 +532,12 @@ async function getAppliedMigrations(db) {
     ).all();
     return rows.map(r => r.id);
   } catch (err) {
-    return [];
+    // Do NOT return [] here — that would make runMigrations() believe no
+    // migration has ever been applied and re-run every migration from 001
+    // against a database that's already been migrated. Some migrations
+    // (e.g. 004) are destructive, non-idempotent table rewrites; replaying
+    // them blind is far worse than simply failing to boot with a clear error.
+    throw err;
   }
 }
 

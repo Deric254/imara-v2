@@ -51,7 +51,12 @@ const loginLimiter = rateLimit({
 });
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(morgan('combined'));
+// Export/download links pass the session JWT as ?token=... (see shared.js —
+// needed because a plain <a href> can't set an Authorization header). morgan's
+// default :url token would otherwise write that live session token into the
+// access log in plaintext on every such request. Redact it before logging.
+morgan.token('safe-url', (req) => (req.originalUrl || req.url || '').replace(/([?&]token=)[^&]+/gi, '$1REDACTED'));
+app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'));
 app.use(express.json({ limit: '2mb' }));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
