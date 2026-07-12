@@ -188,6 +188,118 @@ async function runChecks(db) {
     push('pnl_reconciliation_tie', 'Cost of Sales + Rent ties to Reconciliation', 'warn', `Check could not run: ${e.message}`);
   }
 
+  // ── 10. Cash Basis converges with Sold Items once stock is fully sold ─────
+  try {
+    const totalBought = (await db.prepare('SELECT COALESCE(SUM(kgs_bought),0) AS v FROM purchases').get()).v;
+    const totalUsed   = (await db.prepare('SELECT COALESCE(SUM(kgs_used),0)   AS v FROM production').get()).v;
+    const rawStockKg  = totalBought - totalUsed;
+
+    const remaining = await db.prepare(`
+      SELECT COALESCE(SUM(MAX(COALESCE(x.produced,0) - COALESCE(y.sold,0), 0)),0) AS remaining
+      FROM (
+        SELECT pi.piece_type_id, pr.gauge, SUM(pi.pieces_produced) AS produced
+        FROM production_items pi JOIN production pr ON pr.id = pi.production_id
+        GROUP BY pi.piece_type_id, pr.gauge
+      ) x
+      LEFT JOIN (
+        SELECT piece_type_id, gauge_source AS gauge, SUM(quantity) AS sold
+        FROM sales GROUP BY piece_type_id, gauge_source
+      ) y ON y.piece_type_id = x.piece_type_id AND y.gauge = x.gauge
+    `).get();
+
+    const cashWireCost = (await db.prepare(`SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE category = 'supplier'`).get()).v;
+    const soldWireCost = (await db.prepare(`
+      SELECT COALESCE(SUM(s.quantity * pt.weight_kg * s.wire_cost_per_kg),0) AS v
+      FROM sales s JOIN piece_types pt ON pt.id = s.piece_type_id
+    `).get()).v;
+
+    const fullySoldThrough = rawStockKg <= 0.5 && remaining.remaining <= 0;
+    const diff = Math.abs(cashWireCost - soldWireCost);
+
+    if (fullySoldThrough) {
+      push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', diff < 1 ? 'pass' : 'fail',
+        diff < 1
+          ? `All stock is sold through — Cash Basis wire cost (KES ${cashWireCost.toFixed(2)}) matches Sold Items wire cost (KES ${soldWireCost.toFixed(2)}) exactly, as required.`
+          : `All stock is sold through, but Cash Basis wire cost (KES ${cashWireCost.toFixed(2)}) and Sold Items wire cost (KES ${soldWireCost.toFixed(2)}) differ by KES ${diff.toFixed(2)}. This must be zero once nothing remains in stock — needs investigating.`);
+    } else {
+      push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', 'pass',
+        `Stock still on hand (${rawStockKg.toFixed(2)}kg raw wire, ${remaining.remaining} unsold processed piece(s)) — Cash Basis (KES ${cashWireCost.toFixed(2)}) and Sold Items (KES ${soldWireCost.toFixed(2)}) are expected to differ by KES ${diff.toFixed(2)} until sell-through completes.`);
+    }
+  } catch (e) {
+    push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', 'fail', `Check could not run: ${e.message}`);
+  }
+
+  // ── 11. No payment ever exceeds what is actually owed ─────────────────────
+  // reconciliation.js and invoices.js already make overpayment impossible
+  // going forward — every payment write path has a pre-flight check plus an
+  // ACID re-check inside its transaction. This check is a second, independent
+  // line of defence: it re-derives accrued/billed vs paid straight from the
+  // database for every supplier, worker, rent month, and pool, and would
+  // catch anything that slipped in before those guards existed or arrived
+  // via a restored backup.
+  try {
+    const num = v => parseFloat(v) || 0;
+    const violations = [];
+
+    const supplierRows = await db.prepare(`
+      SELECT s.id, s.name,
+        COALESCE((SELECT SUM(kgs_bought * cost_per_kg + transport_cost) FROM purchases WHERE supplier_id = s.id), 0) AS billed,
+        COALESCE((SELECT SUM(amount) FROM payments WHERE category = 'supplier' AND payee_supplier_id = s.id), 0) AS paid
+      FROM suppliers s
+    `).all();
+    supplierRows.forEach(r => {
+      if (num(r.paid) > num(r.billed) + 0.01) violations.push(`Supplier "${r.name}": paid ${num(r.paid).toFixed(2)} vs billed ${num(r.billed).toFixed(2)}`);
+    });
+
+    for (const [cat, costCol, idCol, roleLabel] of [
+      ['wages_operator', 'operator_cost', 'operator_id', 'Operator'],
+      ['wages_knuckler', 'knuckler_cost', 'knuckler_id', 'Knuckler'],
+    ]) {
+      const rows = await db.prepare(`
+        SELECT u.id, u.full_name,
+          COALESCE((SELECT SUM(${costCol}) FROM production WHERE ${idCol} = u.id), 0) AS accrued,
+          COALESCE((SELECT SUM(amount) FROM payments WHERE category = ? AND payee_user_id = u.id), 0) AS paid
+        FROM users u
+      `).all(cat);
+      rows.forEach(r => {
+        if (num(r.paid) > num(r.accrued) + 0.01) violations.push(`${roleLabel} "${r.full_name}": paid ${num(r.paid).toFixed(2)} vs accrued ${num(r.accrued).toFixed(2)}`);
+      });
+    }
+
+    const rentRows = await db.prepare(`
+      SELECT rm.month, rm.amount_due,
+        COALESCE((SELECT SUM(amount) FROM payments WHERE category = 'rent'
+          AND (rent_month = rm.month OR (rent_month IS NULL AND SUBSTR(payment_date,1,7) = rm.month))), 0) AS paid
+      FROM rent_months rm
+    `).all();
+    rentRows.forEach(r => {
+      if (num(r.paid) > num(r.amount_due) + 0.01) violations.push(`Rent ${r.month}: paid ${num(r.paid).toFixed(2)} vs due ${num(r.amount_due).toFixed(2)}`);
+    });
+
+    const sackAccrued = (await db.prepare(`SELECT COALESCE(SUM(sack_cost),0) AS v FROM production`).get()).v;
+    const sackPaid     = (await db.prepare(`SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE category = 'sack'`).get()).v;
+    if (num(sackPaid) > num(sackAccrued) + 0.01) violations.push(`Sack costs: paid ${num(sackPaid).toFixed(2)} vs accrued ${num(sackAccrued).toFixed(2)}`);
+
+    const tranAccrued = (await db.prepare(`SELECT COALESCE(SUM(transport_to_market),0) AS v FROM sales`).get()).v;
+    const tranPaid     = (await db.prepare(`SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE category = 'transport_to_market'`).get()).v;
+    if (num(tranPaid) > num(tranAccrued) + 0.01) violations.push(`Transport to market: paid ${num(tranPaid).toFixed(2)} vs accrued ${num(tranAccrued).toFixed(2)}`);
+
+    const invRows = await db.prepare(`
+      SELECT invoice_number, total_amount, amount_paid FROM invoices WHERE status != 'cancelled'
+    `).all();
+    invRows.forEach(r => {
+      if (num(r.amount_paid) > num(r.total_amount) + 0.01) violations.push(`Invoice ${r.invoice_number}: paid ${num(r.amount_paid).toFixed(2)} vs total ${num(r.total_amount).toFixed(2)}`);
+    });
+
+    push('no_overpayment_anywhere', 'No supplier, worker, rent month, pool, or invoice is ever paid beyond what it owes',
+      violations.length ? 'fail' : 'pass',
+      violations.length
+        ? `${violations.length} overpayment(s) found: ${violations.join('; ')}`
+        : 'Checked every supplier, every operator and knuckler, every rent month, the sack and transport pools, and every non-cancelled invoice — paid never exceeds owed anywhere.');
+  } catch (e) {
+    push('no_overpayment_anywhere', 'No supplier, worker, rent month, pool, or invoice is ever paid beyond what it owes', 'fail', `Check could not run: ${e.message}`);
+  }
+
   return checks;
 }
 

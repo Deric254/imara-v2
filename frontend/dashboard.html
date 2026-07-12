@@ -989,6 +989,14 @@ async function loadDash(){
           <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
+      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'info'}" title="${showRent?'Revenue minus Cost of Goods Sold minus Rent':'Revenue minus Cost of Goods Sold'} — wire cost is matched only to units actually sold (FIFO snapshot at time of sale), so wire still sitting in raw stock or in unsold processed pieces is never expensed early · will equal ${showRent?'Net':'Gross'} Profit once all current stock has been sold · ${from} → ${to}">
+        <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'🎯'}</div>
+        <div class="kpi-body">
+          <div class="kpi-label">Working ${showRent?'Net':'Gross'} Profit</div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
+          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--blue)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% margin · sold stock only</span></div>
+        </div>
+      </div>
       <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent, cash paid this period':'Wire + labour + sacks + transport, cash paid this period'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
@@ -1607,6 +1615,20 @@ async function exportPnLPDF() {
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;
     const rentCost    = parseFloat(bd.rent_cost?.amount)       || 0;
 
+    // WORKING (accrual) column — wire cost matched only to units actually sold
+    // (FIFO snapshot at time of sale), so wire still sitting in raw stock or
+    // in unsold processed pieces is never expensed early. Conversion (labour
+    // & sacks) and transport costs are unchanged between columns — they are
+    // not affected by the bulk-purchase timing issue this KPI addresses.
+    // Same /dashboard call as above, same from/to slicer — no separate
+    // request, no risk of a mismatched period.
+    const cogsWireCost    = parseFloat(k.cogs_wire_cost)           || 0;
+    const cogsDirectCosts = parseFloat(k.cogs_direct_costs_sold)   || 0;
+    const cogsGrossProfit = parseFloat(k.cogs_gross_profit)        || 0;
+    const cogsGrossMargin = parseFloat(k.cogs_gross_margin_pct)    || 0;
+    const workingProfit   = parseFloat(showRent ? k.cogs_net_profit     : k.cogs_gross_profit)     || 0;
+    const workingMargin   = parseFloat(showRent ? k.cogs_net_margin_pct : k.cogs_gross_margin_pct) || 0;
+
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF('p', 'mm', 'a4');
     const PW = 210, PH = 297, ML = 14, MR = 196, TW = MR - ML;
@@ -1710,16 +1732,22 @@ async function exportPnLPDF() {
     // ═══════════════════════════════════════════
     // TABLE HELPER using autoTable
     // Each section is one autoTable call — clean
-    // columns: label (left) | amount (right)
+    // columns: label (left) | Cash Basis | Working (sold stock only)
     // ═══════════════════════════════════════════
 
-    const COL_L = TW * 0.62;  // label column width
-    const COL_R = TW * 0.38;  // amount column width
+    const COL_L = TW * 0.40;  // label column width
+    const COL_C = TW * 0.30;  // cash-basis amount column width
+    const COL_W = TW * 0.30;  // working (accrual) amount column width
 
-    // Section header row style
-    const sHead = (title) => [{
-      label: title, amount: ''
-    }];
+    // Row builders — one row, two comparable figures
+    const cmpRow = (label, cashVal, workingVal, type = 'item') => ({
+      label, cash: fmtK(cashVal), working: fmtK(workingVal),
+      _type: type, _cashNeg: cashVal < 0, _workingNeg: workingVal < 0,
+    });
+    const pctRow = (label, cashPct, workingPct) => ({
+      label, cash: pct(cashPct), working: pct(workingPct), _type: 'item',
+    });
+    const sectionRow = (title) => ({ label: title, cash: '', working: '', _type: 'section' });
 
     // Draw a section block as a real autoTable
     const drawTable = (rows, opts = {}) => {
@@ -1728,13 +1756,14 @@ async function exportPnLPDF() {
         margin: { left: ML, right: PW - MR },
         tableWidth: TW,
         columns: [
-          { dataKey: 'label',  header: '' },
-          { dataKey: 'amount', header: '' },
+          { dataKey: 'label',   header: '' },
+          { dataKey: 'cash',    header: '' },
+          { dataKey: 'working', header: '' },
         ],
         body: rows,
         styles: {
           font: 'helvetica',
-          fontSize: 9.5,
+          fontSize: 9,
           cellPadding: { top: 2.8, bottom: 2.8, left: 4, right: 4 },
           lineColor: [220, 238, 228],
           lineWidth: 0.2,
@@ -1742,12 +1771,14 @@ async function exportPnLPDF() {
           valign: 'middle',
         },
         columnStyles: {
-          label:  { cellWidth: COL_L, fontStyle: 'normal', textColor: [...MUTE] },
-          amount: { cellWidth: COL_R, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
+          label:   { cellWidth: COL_L, fontStyle: 'normal', textColor: [...MUTE] },
+          cash:    { cellWidth: COL_C, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
+          working: { cellWidth: COL_W, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
         },
         // Override per-row via didParseCell
         didParseCell: function(data) {
-          const r = data.row.raw;
+          const r   = data.row.raw;
+          const col = data.column.dataKey;
           if (r._type === 'section') {
             data.cell.styles.fillColor   = [...G];
             data.cell.styles.textColor   = [...W];
@@ -1758,13 +1789,15 @@ async function exportPnLPDF() {
           } else if (r._type === 'total') {
             data.cell.styles.fillColor   = [...BGLT];
             data.cell.styles.fontStyle   = 'bold';
-            data.cell.styles.fontSize    = 10;
-            data.cell.styles.textColor   = r._neg ? [...RED] : [...G];
+            data.cell.styles.fontSize    = 9.5;
             data.cell.styles.lineWidth   = 0.3;
             data.cell.styles.lineColor   = [...G];
+            if (col === 'cash')          data.cell.styles.textColor = r._cashNeg ? [...RED] : [...G];
+            else if (col === 'working')  data.cell.styles.textColor = r._workingNeg ? [...RED] : [...G];
+            else                         data.cell.styles.textColor = [...INK];
           } else if (r._type === 'item') {
             data.cell.styles.fillColor   = [255, 255, 255];
-            data.cell.styles.textColor   = data.column.dataKey === 'label' ? [...MUTE] : [...INK];
+            data.cell.styles.textColor   = col === 'label' ? [...MUTE] : [...INK];
             data.cell.styles.fontStyle   = 'normal';
             data.cell.styles.lineColor   = [225, 240, 232];
           }
@@ -1774,33 +1807,43 @@ async function exportPnLPDF() {
       y = doc.lastAutoTable.finalY + 6;
     };
 
+    // ── Column headers — printed once, above the first section ──
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...MUTE);
+    doc.text('Column',    ML,                          y);
+    doc.text('Cash Basis', ML + COL_L + COL_C,         y, { align: 'right' });
+    doc.text('Sold Items', ML + COL_L + COL_C + COL_W, y, { align: 'right' });
+    y += 4;
+
     // ── INCOME ───────────────────────────────
     drawTable([
-      { label: 'REVENUE', amount: '', _type: 'section' },
-      { label: 'Revenue Received (Cash from Customers)', amount: fmtK(revenue), _type: 'total', _neg: false },
+      sectionRow('REVENUE'),
+      cmpRow('Revenue Received (Cash from Customers)', revenue, revenue, 'total'),
     ]);
 
     // ── COST OF SALES ─────────────────────────
     drawTable([
-      { label: 'COST OF SALES', amount: '', _type: 'section' },
-      { label: 'Wire / Raw Material Cost',         amount: fmtK(wireCost),    _type: 'item' },
-      { label: 'Labour & Sacks (Conversion Cost)', amount: fmtK(convCost),    _type: 'item' },
-      { label: 'Transport to Market',              amount: fmtK(tranCost),    _type: 'item' },
-      { label: 'Total Cost of Sales',              amount: fmtK(costOfSales), _type: 'total', _neg: false },
+      sectionRow('COST OF SALES'),
+      cmpRow('Wire / Raw Material Cost',         wireCost,    cogsWireCost, 'item'),
+      cmpRow('Labour & Sacks (Conversion Cost)', convCost,    convCost,     'item'),
+      cmpRow('Transport to Market',              tranCost,    tranCost,     'item'),
+      cmpRow('Total Cost of Sales',              costOfSales, cogsDirectCosts, 'total'),
     ]);
 
     // ── GROSS PROFIT ──────────────────────────
     drawTable([
-      { label: 'GROSS PROFIT', amount: '', _type: 'section' },
-      { label: 'Gross Profit  (' + pct(grossMargin) + ' gross margin)', amount: fmtK(grossProfit), _type: 'total', _neg: grossProfit < 0 },
+      sectionRow('GROSS PROFIT'),
+      cmpRow('Gross Profit',   grossProfit, cogsGrossProfit, 'total'),
+      pctRow('Gross Margin',   grossMargin, cogsGrossMargin),
     ]);
 
     // ── OPERATING EXPENSES (rent only if enabled) ─
     if (showRent && rentCost > 0) {
       drawTable([
-        { label: 'OPERATING EXPENSES', amount: '', _type: 'section' },
-        { label: 'Rent Expense (Period)',      amount: fmtK(rentCost), _type: 'item'  },
-        { label: 'Total Operating Expenses',   amount: fmtK(rentCost), _type: 'total', _neg: false },
+        sectionRow('OPERATING EXPENSES'),
+        cmpRow('Rent Expense (Period)',      rentCost, rentCost, 'item'),
+        cmpRow('Total Operating Expenses',   rentCost, rentCost, 'total'),
       ]);
     }
 
@@ -1808,10 +1851,10 @@ async function exportPnLPDF() {
     const dispProfit = showRent ? netProfit   : grossProfit;
     const dispMargin = showRent ? netMargin   : grossMargin;
     const dispLabel  = showRent ? 'Net Profit': 'Gross Profit';
-    const dispType   = showRent ? 'net'       : 'gross';
     drawTable([
-      { label: showRent ? 'NET PROFIT' : 'BOTTOM LINE', amount: '', _type: 'section' },
-      { label: dispLabel + '  (' + pct(dispMargin) + ' ' + dispType + ' margin)', amount: fmtK(dispProfit), _type: 'total', _neg: dispProfit < 0 },
+      sectionRow(showRent ? 'NET PROFIT' : 'BOTTOM LINE'),
+      cmpRow(dispLabel,   dispProfit, workingProfit, 'total'),
+      pctRow('Margin',    dispMargin, workingMargin),
     ]);
 
     // ═══════════════════════════════════════════
