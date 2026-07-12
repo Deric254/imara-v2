@@ -981,24 +981,20 @@ async function loadDash(){
           <div class="kpi-sub ok"><span class="dot" style="background:var(--g500)"></span><span>Cash received · ${from} to ${to}</span></div>
         </div>
       </div>
-      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':''}" title="Revenue minus cost of goods actually SOLD${showRent?' minus Rent':''} — wire cost matched to pieces sold via each sale's saved cost snapshot · not cash paid to suppliers this period · ${from} → ${to}">
-        <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'📈'}</div>
+      <div class="kpi ${(showRent?k.net_profit:k.gross_profit)<0?'danger':''}" title="${showRent?'Revenue minus Cost of Sales minus Rent':'Revenue minus Cost of Sales'} · cash basis — matches P&L PDF and Reconciliation · ${from} → ${to}">
+        <div class="kpi-icon">${(showRent?k.net_profit:k.gross_profit)<0?'📉':'📈'}</div>
         <div class="kpi-body">
           <div class="kpi-label">${showRent?'Net Profit':'Gross Profit'}</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
-          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% ${showRent?'net':'gross'} margin · sold-only</span></div>
-          <div class="kpi-sub" style="opacity:.65" title="Same figure on cash basis — cash actually paid to suppliers this period, sold or not">${compactKES(showRent?k.net_profit:k.gross_profit)} overall (cash)</div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?k.net_profit:k.gross_profit), fmtMoneyExact(showRent?k.net_profit:k.gross_profit))}</div>
+          <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-
-
-      <div class="kpi" title="Wire cost matched to pieces actually SOLD${showRent?' + labour + sacks + transport + rent':' + labour + sacks + transport'} · not cash paid to suppliers this period · ${from} → ${to}">
+      <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent, cash paid this period':'Wire + labour + sacks + transport, cash paid this period'} · ${from} → ${to}">
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold), fmtMoneyExact(showRent?(k.cogs_direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.cogs_direct_costs_sold))}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-(showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct)).toFixed(1):0}% of revenue · est.</span></div>
-          <div class="kpi-sub" style="opacity:.65" title="Cash actually paid to suppliers/labour this period, sold or not">${compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold)} cash-paid</div>
+          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold), fmtMoneyExact(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
         </div>
       </div>
       <div class="kpi" title="Order pipeline — pending / finalized / cancelled, all-time snapshot">
@@ -1606,15 +1602,6 @@ async function exportPnLPDF() {
     const grossMargin = parseFloat(k.gross_margin_pct)   || 0;
     const netProfit   = parseFloat(k.net_profit)         || 0;
     const netMargin   = parseFloat(k.net_margin_pct)     || 0;
-    // SOLD-ONLY (COGS-matched) — wire cost tied to pieces actually sold this
-    // period (via each sale's saved cost snapshot), not cash paid to suppliers.
-    // Shown as an extra marked line below; does not replace any cash-basis figure above.
-    const cogsGrossProfit = parseFloat(k.cogs_gross_profit)     || 0;
-    const cogsGrossMargin = parseFloat(k.cogs_gross_margin_pct) || 0;
-    const cogsNetProfit   = parseFloat(k.cogs_net_profit)       || 0;
-    const cogsNetMargin   = parseFloat(k.cogs_net_margin_pct)   || 0;
-    const cogsWireCost         = parseFloat(k.cogs_wire_cost)         || 0;
-    const cogsDirectCostsSold  = parseFloat(k.cogs_direct_costs_sold) || 0;
     const wireCost    = parseFloat(bd.wire_cost?.amount)       || 0;
     const convCost    = parseFloat(bd.conversion_cost?.amount) || 0;
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;
@@ -1726,39 +1713,24 @@ async function exportPnLPDF() {
     // columns: label (left) | amount (right)
     // ═══════════════════════════════════════════
 
-    const COL_L = TW * 0.62;  // label column width (2-col tables)
-    const COL_R = TW * 0.38;  // amount column width (2-col tables)
-    const COL_L3 = TW * 0.44; // label column width (3-col tables, with sold-only)
-    const COL_R3 = TW * 0.28; // amount column width (3-col)
-    const COL_S3 = TW * 0.28; // sold-only column width (3-col)
-    const BLUE   = [30, 90, 190]; // distinct accent for sold-only figures
+    const COL_L = TW * 0.62;  // label column width
+    const COL_R = TW * 0.38;  // amount column width
 
     // Section header row style
     const sHead = (title) => [{
       label: title, amount: ''
     }];
 
-    // Draw a section block as a real autoTable.
-    // Pass { soldOnly: true } to render a third column beside 'amount' for
-    // rows that include a soldOnly value — styled in BLUE to visually
-    // distinguish it from the cash-basis 'amount' column, without altering
-    // any existing label/amount value.
+    // Draw a section block as a real autoTable
     const drawTable = (rows, opts = {}) => {
-      const three = !!opts.soldOnly;
       doc.autoTable({
         startY: y,
         margin: { left: ML, right: PW - MR },
         tableWidth: TW,
-        columns: three
-          ? [
-              { dataKey: 'label',    header: '' },
-              { dataKey: 'amount',   header: '' },
-              { dataKey: 'soldOnly', header: '' },
-            ]
-          : [
-              { dataKey: 'label',  header: '' },
-              { dataKey: 'amount', header: '' },
-            ],
+        columns: [
+          { dataKey: 'label',  header: '' },
+          { dataKey: 'amount', header: '' },
+        ],
         body: rows,
         styles: {
           font: 'helvetica',
@@ -1769,16 +1741,10 @@ async function exportPnLPDF() {
           textColor: [...INK],
           valign: 'middle',
         },
-        columnStyles: three
-          ? {
-              label:    { cellWidth: COL_L3, fontStyle: 'normal', textColor: [...MUTE] },
-              amount:   { cellWidth: COL_R3, halign: 'right', fontStyle: 'normal', textColor: [...INK] },
-              soldOnly: { cellWidth: COL_S3, halign: 'right', fontStyle: 'normal', textColor: BLUE },
-            }
-          : {
-              label:  { cellWidth: COL_L, fontStyle: 'normal', textColor: [...MUTE] },
-              amount: { cellWidth: COL_R, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
-            },
+        columnStyles: {
+          label:  { cellWidth: COL_L, fontStyle: 'normal', textColor: [...MUTE] },
+          amount: { cellWidth: COL_R, halign: 'right',     fontStyle: 'normal', textColor: [...INK] },
+        },
         // Override per-row via didParseCell
         didParseCell: function(data) {
           const r = data.row.raw;
@@ -1802,13 +1768,6 @@ async function exportPnLPDF() {
             data.cell.styles.fontStyle   = 'normal';
             data.cell.styles.lineColor   = [225, 240, 232];
           }
-          // The sold-only column always keeps its blue accent, regardless of
-          // row type, so it reads as a distinct figure beside the original —
-          // except in section header rows, where it just carries the column
-          // caption in white to match the header bar.
-          if (data.column.dataKey === 'soldOnly' && r._type !== 'section') {
-            data.cell.styles.textColor = BLUE;
-          }
         },
         showHead: false,
       });
@@ -1823,18 +1782,18 @@ async function exportPnLPDF() {
 
     // ── COST OF SALES ─────────────────────────
     drawTable([
-      { label: 'COST OF SALES', amount: 'Cash', soldOnly: 'Sold-Only', _type: 'section' },
-      { label: 'Wire / Raw Material Cost',         amount: fmtK(wireCost),    soldOnly: fmtK(cogsWireCost),        _type: 'item' },
-      { label: 'Labour & Sacks (Conversion Cost)', amount: fmtK(convCost),    soldOnly: fmtK(convCost),            _type: 'item' },
-      { label: 'Transport to Market',              amount: fmtK(tranCost),    soldOnly: fmtK(tranCost),            _type: 'item' },
-      { label: 'Total Cost of Sales',              amount: fmtK(costOfSales), soldOnly: fmtK(cogsDirectCostsSold), _type: 'total', _neg: false },
-    ], { soldOnly: true });
+      { label: 'COST OF SALES', amount: '', _type: 'section' },
+      { label: 'Wire / Raw Material Cost',         amount: fmtK(wireCost),    _type: 'item' },
+      { label: 'Labour & Sacks (Conversion Cost)', amount: fmtK(convCost),    _type: 'item' },
+      { label: 'Transport to Market',              amount: fmtK(tranCost),    _type: 'item' },
+      { label: 'Total Cost of Sales',              amount: fmtK(costOfSales), _type: 'total', _neg: false },
+    ]);
 
     // ── GROSS PROFIT ──────────────────────────
     drawTable([
-      { label: 'GROSS PROFIT', amount: 'Cash', soldOnly: 'Sold-Only', _type: 'section' },
-      { label: 'Gross Profit  (' + pct(grossMargin) + ' gross margin)', amount: fmtK(grossProfit), soldOnly: fmtK(cogsGrossProfit) + '  (' + pct(cogsGrossMargin) + ')', _type: 'total', _neg: grossProfit < 0 },
-    ], { soldOnly: true });
+      { label: 'GROSS PROFIT', amount: '', _type: 'section' },
+      { label: 'Gross Profit  (' + pct(grossMargin) + ' gross margin)', amount: fmtK(grossProfit), _type: 'total', _neg: grossProfit < 0 },
+    ]);
 
     // ── OPERATING EXPENSES (rent only if enabled) ─
     if (showRent && rentCost > 0) {
@@ -1846,21 +1805,14 @@ async function exportPnLPDF() {
     }
 
     // ── NET / BOTTOM-LINE PROFIT ──────────────
-    // Cash-basis figure (amount column) is the reporting basis and matches
-    // Dashboard and Reconciliation exactly, as before. Sold-only column
-    // (soldOnly) is the same underlying cogs_net_profit/cogs_gross_profit
-    // field shown on the Dashboard's dominant KPI — same source, so the two
-    // will always agree for the same date range.
-    const dispProfit     = showRent ? netProfit     : grossProfit;
-    const dispMargin     = showRent ? netMargin     : grossMargin;
-    const dispLabel      = showRent ? 'Net Profit'  : 'Gross Profit';
-    const dispType       = showRent ? 'net'         : 'gross';
-    const dispCogsProfit = showRent ? cogsNetProfit : cogsGrossProfit;
-    const dispCogsMargin = showRent ? cogsNetMargin : cogsGrossMargin;
+    const dispProfit = showRent ? netProfit   : grossProfit;
+    const dispMargin = showRent ? netMargin   : grossMargin;
+    const dispLabel  = showRent ? 'Net Profit': 'Gross Profit';
+    const dispType   = showRent ? 'net'       : 'gross';
     drawTable([
-      { label: showRent ? 'NET PROFIT' : 'BOTTOM LINE', amount: 'Cash', soldOnly: 'Sold-Only', _type: 'section' },
-      { label: dispLabel + '  (' + pct(dispMargin) + ' ' + dispType + ' margin)', amount: fmtK(dispProfit), soldOnly: fmtK(dispCogsProfit) + '  (' + pct(dispCogsMargin) + ')', _type: 'total', _neg: dispProfit < 0 },
-    ], { soldOnly: true });
+      { label: showRent ? 'NET PROFIT' : 'BOTTOM LINE', amount: '', _type: 'section' },
+      { label: dispLabel + '  (' + pct(dispMargin) + ' ' + dispType + ' margin)', amount: fmtK(dispProfit), _type: 'total', _neg: dispProfit < 0 },
+    ]);
 
     // ═══════════════════════════════════════════
     // FOOTER — dark green band, slogan centred
