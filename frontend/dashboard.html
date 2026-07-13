@@ -992,7 +992,7 @@ async function loadDash(){
       <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'info'}" title="${showRent?'Revenue minus Cost of Goods Sold minus Rent':'Revenue minus Cost of Goods Sold'} — wire cost is matched only to units actually sold (FIFO snapshot at time of sale), so wire still sitting in raw stock or in unsold processed pieces is never expensed early · will equal ${showRent?'Net':'Gross'} Profit once all current stock has been sold · ${from} → ${to}">
         <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'🎯'}</div>
         <div class="kpi-body">
-          <div class="kpi-label">Working ${showRent?'Net':'Gross'} Profit</div>
+          <div class="kpi-label">Sold ${showRent?'Net':'Gross'}</div>
           <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
           <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--blue)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
