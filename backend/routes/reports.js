@@ -241,10 +241,25 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   `).get(fromDate, toDate);
   const cogsWireCost   = parseFloat(cogsWireSales.total) || 0;
   const cogsDirectCosts = cogsWireCost + convCost + transportCost;
-  const cogsGrossProfit = revenue - cogsDirectCosts;
+
+  // SOLD-ITEMS REVENUE: the billed value of pieces actually sold in this period
+  // (quantity × selling price on the sale itself), NOT cash collected. Cash
+  // received can belong to a sale from an earlier period (e.g. a customer
+  // settling an old invoice) — using cash revenue here would pair this
+  // period's sold-only costs against a completely different period's sales,
+  // which is exactly the mismatch this column exists to avoid. If nothing was
+  // sold this period, this is 0, regardless of how much cash came in.
+  const soldRevenueRow = await db.prepare(`
+    SELECT COALESCE(SUM(s.quantity * s.selling_price), 0) AS total
+    FROM sales s
+    WHERE s.entry_date BETWEEN ? AND ?
+  `).get(fromDate, toDate);
+  const soldRevenue = parseFloat(soldRevenueRow.total) || 0;
+  const cogsGrossProfit = soldRevenue - cogsDirectCosts;
 
   return {
     revenue,
+    sold_revenue:              soldRevenue,
     pieces_sold:               piecesSold,
     kgs_sold:                  kgsSold,
     wire_cost_per_kg:          wireCostPerKg,
@@ -580,11 +595,13 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
     // COGS-matched equivalents — wire cost tied to what was actually sold, not
-    // raw cash paid to suppliers this period. See getSalesCostSummary for detail.
+    // raw cash paid to suppliers this period, AND revenue tied to what was
+    // actually sold this period, not cash collected (which may belong to an
+    // earlier sale). See getSalesCostSummary for detail.
     const cogsGrossProfit = salesSummary.cogs_gross_profit;
     const cogsNetProfit   = cogsGrossProfit - rentCost;
-    const cogsGrossMargin = salesSummary.revenue > 0 ? (cogsGrossProfit / salesSummary.revenue * 100) : 0;
-    const cogsNetMargin   = salesSummary.revenue > 0 ? (cogsNetProfit   / salesSummary.revenue * 100) : 0;
+    const cogsGrossMargin = salesSummary.sold_revenue > 0 ? (cogsGrossProfit / salesSummary.sold_revenue * 100) : 0;
+    const cogsNetMargin   = salesSummary.sold_revenue > 0 ? (cogsNetProfit   / salesSummary.sold_revenue * 100) : 0;
 
     // Best piece by cash received
     const best = await db.prepare(`
@@ -849,6 +866,7 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
       },
       kpis: {
         total_revenue:             parseFloat(salesSummary.revenue.toFixed(2)),
+        sold_revenue:              parseFloat(salesSummary.sold_revenue.toFixed(2)),
         total_cogs:                parseFloat(salesSummary.direct_costs.toFixed(2)),
         direct_costs_sold:         parseFloat(salesSummary.direct_costs.toFixed(2)),
         gross_profit:              parseFloat(grossProfit.toFixed(2)),

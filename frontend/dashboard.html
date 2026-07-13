@@ -1617,11 +1617,14 @@ async function exportPnLPDF() {
 
     // WORKING (accrual) column — wire cost matched only to units actually sold
     // (FIFO snapshot at time of sale), so wire still sitting in raw stock or
-    // in unsold processed pieces is never expensed early. Conversion (labour
-    // & sacks) and transport costs are unchanged between columns — they are
-    // not affected by the bulk-purchase timing issue this KPI addresses.
-    // Same /dashboard call as above, same from/to slicer — no separate
-    // request, no risk of a mismatched period.
+    // in unsold processed pieces is never expensed early. Revenue is likewise
+    // the billed value of what was actually sold this period, not cash
+    // collected (which can belong to a sale from an earlier period).
+    // Conversion (labour & sacks) and transport costs are unchanged between
+    // columns — not affected by the bulk-purchase/collection timing issue
+    // this column addresses. Same /dashboard call as above, same from/to
+    // slicer — no separate request, no risk of a mismatched period.
+    const soldRevenue     = parseFloat(k.sold_revenue)             || 0;
     const cogsWireCost    = parseFloat(k.cogs_wire_cost)           || 0;
     const cogsDirectCosts = parseFloat(k.cogs_direct_costs_sold)   || 0;
     const cogsGrossProfit = parseFloat(k.cogs_gross_profit)        || 0;
@@ -1819,7 +1822,7 @@ async function exportPnLPDF() {
     // ── INCOME ───────────────────────────────
     drawTable([
       sectionRow('REVENUE'),
-      cmpRow('Revenue Received (Cash from Customers)', revenue, revenue, 'total'),
+      cmpRow('Revenue Received (Cash from Customers)', revenue, soldRevenue, 'total'),
     ]);
 
     // ── COST OF SALES ─────────────────────────
