@@ -994,7 +994,7 @@ async function loadDash(){
         <div class="kpi-body">
           <div class="kpi-label">Working ${showRent?'Net':'Gross'} Profit</div>
           <div class="kpi-value">${tipSpan(compactKES(showRent?k.cogs_net_profit:k.cogs_gross_profit), fmtMoneyExact(showRent?k.cogs_net_profit:k.cogs_gross_profit))}</div>
-          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--blue)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% margin · sold stock only</span></div>
+          <div class="kpi-sub ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'var(--red)':'var(--blue)'}"></span><span>${showRent?k.cogs_net_margin_pct:k.cogs_gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
       <div class="kpi" title="${showRent?'Wire + labour + sacks + transport + rent, cash paid this period':'Wire + labour + sacks + transport, cash paid this period'} · ${from} → ${to}">
