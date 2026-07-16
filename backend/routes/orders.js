@@ -193,6 +193,7 @@ router.post('/orders/:id/convert', authenticate, async (req, res) => {
     } catch (e) {
       if (e.stockError) return res.status(400).json(e.stockError);
       if (e.notFoundError) return res.status(404).json({ error: e.message });
+      if (e.validationError) return res.status(400).json({ error: e.message });
       throw e;
     }
 

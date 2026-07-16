@@ -171,6 +171,59 @@ async function getLandingCost(db, pt) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ACTUAL KG-PER-PIECE RATES — for COGS wire cost matching (NOT spec weight_kg)
+//
+// WHY this exists: piece_types.weight_kg is a planning spec, not a guarantee
+// of actual wire consumption. Production entries allow up to 10% scrap over
+// spec, and real yield can differ from spec for other reasons too. Using spec
+// weight to compute "how much wire is embedded in this sold piece" silently
+// drifts from the real cost whenever yield differs from spec — and this drift
+// never self-corrects, even once every invoice is paid and every supplier is
+// settled, because the error is baked into the QUANTITY side of the formula,
+// not the payment timing.
+//
+// HOW this avoids double-counting on mixed-type production runs: when one
+// run produces more than one piece type, that run's kg cannot simply be
+// divided into "SUM(kg) for type A" and "SUM(kg) for type B" independently —
+// crediting the run's full kg to EACH type it produced silently doubles the
+// cost. Instead, each run's kg is fair-shared across its own items by piece
+// count FIRST, and only the fair share is added to that type+gauge's running
+// total. This is the same principle already used correctly in systemcheck.js's
+// Cash-vs-Sold convergence check — applied here per (piece_type, gauge) so it
+// can be joined against each sale's own gauge_source.
+//
+// Returns: Map keyed by "pieceTypeId::gauge" -> actual kg consumed per piece.
+async function getActualKgPerPieceMap(db) {
+  const runs = await db.prepare(`
+    SELECT pr.id, pr.gauge, pr.kgs_used FROM production pr
+  `).all();
+
+  const rateMap = new Map();       // key -> { kg, pieces }
+  for (const run of runs) {
+    const items = await db.prepare(
+      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+    ).all(run.id);
+    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+    if (totalPiecesInRun === 0) continue;
+
+    for (const item of items) {
+      const key = `${item.piece_type_id}::${run.gauge || ''}`;
+      const fairShareKg = run.kgs_used * (item.pieces_produced / totalPiecesInRun);
+      const entry = rateMap.get(key) || { kg: 0, pieces: 0 };
+      entry.kg     += fairShareKg;
+      entry.pieces += item.pieces_produced;
+      rateMap.set(key, entry);
+    }
+  }
+
+  const result = new Map();
+  for (const [key, { kg, pieces }] of rateMap.entries()) {
+    result.set(key, pieces > 0 ? kg / pieces : 0);
+  }
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CORE P&L SUMMARY
 // Revenue  = cash received on invoice_payments in the period
 // Cost     = cost of goods sold in the period — uses sales.entry_date (accrual for cost)
@@ -228,31 +281,70 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   const grossProfit = revenue - directCosts;
 
   // COGS-MATCHED wire cost: uses the wire_cost_per_kg snapshot saved on each sale
-  // (resolved by FIFO from production at time of sale — immutable). This reflects
-  // only wire actually embedded in pieces that have been SOLD, so a bulk supplier
-  // payment for stock still sitting in the store does not distort profit.
-  // Cash-basis wire_cost above is left untouched — reconciliation and payables
-  // tracking still key off it, per the existing cash-basis contract.
-  const cogsWireSales = await db.prepare(`
-    SELECT COALESCE(SUM(s.quantity * pt.weight_kg * s.wire_cost_per_kg), 0) AS total
+  // (resolved by gauge from production at time of sale — immutable), multiplied
+  // by the ACTUAL kg-per-piece for that piece type + gauge (fair-shared across
+  // production runs — see getActualKgPerPieceMap), NOT the piece type's spec
+  // weight_kg. Spec weight only equals reality when production has exactly zero
+  // scrap; any real-world yield variance silently drifts this figure away from
+  // true cost, and that drift never self-corrects even once every invoice is
+  // paid and every supplier is settled — because the error lives in the
+  // quantity side of the formula, not the payment timing.
+  const kgPerPieceMap = await getActualKgPerPieceMap(db);
+  const cogsWireSalesRows = await db.prepare(`
+    SELECT s.quantity, s.wire_cost_per_kg, s.piece_type_id, COALESCE(s.gauge_source,'') AS gauge_source
     FROM sales s
-    JOIN piece_types pt ON pt.id = s.piece_type_id
+    WHERE s.entry_date BETWEEN ? AND ?
+  `).all(fromDate, toDate);
+  let cogsWireCost = 0;
+  for (const row of cogsWireSalesRows) {
+    const key = `${row.piece_type_id}::${row.gauge_source}`;
+    const kgPerPiece = kgPerPieceMap.get(key) || 0;
+    cogsWireCost += row.quantity * kgPerPiece * row.wire_cost_per_kg;
+  }
+
+  // COGS-MATCHED conversion cost (labour + sacks): uses the
+  // conversion_cost_per_piece snapshot saved on each sale (blended from
+  // production up to the sale date — same methodology as wire cost above),
+  // NOT the cash paid for wages/sacks in this period. A bulk wage payment
+  // covering pieces still sitting unsold in the store must not distort this
+  // figure, exactly as with wire.
+  const cogsConvSales = await db.prepare(`
+    SELECT COALESCE(SUM(s.quantity * s.conversion_cost_per_piece), 0) AS total
+    FROM sales s
     WHERE s.entry_date BETWEEN ? AND ?
   `).get(fromDate, toDate);
-  const cogsWireCost   = parseFloat(cogsWireSales.total) || 0;
-  const cogsDirectCosts = cogsWireCost + convCost + transportCost;
+  const cogsConvCost = parseFloat(cogsConvSales.total) || 0;
 
-  // SOLD-ITEMS REVENUE: the billed value of pieces actually sold in this period
-  // (quantity × selling price on the sale itself), NOT cash collected. Cash
-  // received can belong to a sale from an earlier period (e.g. a customer
-  // settling an old invoice) — using cash revenue here would pair this
-  // period's sold-only costs against a completely different period's sales,
-  // which is exactly the mismatch this column exists to avoid. If nothing was
-  // sold this period, this is 0, regardless of how much cash came in.
-  const soldRevenueRow = await db.prepare(`
-    SELECT COALESCE(SUM(s.quantity * s.selling_price), 0) AS total
+  // COGS-MATCHED transport cost: sales.transport_to_market is already a
+  // real per-sale snapshot (saved at the point of sale — see saleCore.js),
+  // so the sold-matched figure is simply the sum of that column for sales
+  // in this period, NOT cash paid to the transporter in the period.
+  const cogsTransportSales = await db.prepare(`
+    SELECT COALESCE(SUM(s.transport_to_market), 0) AS total
     FROM sales s
     WHERE s.entry_date BETWEEN ? AND ?
+  `).get(fromDate, toDate);
+  const cogsTransportCost = parseFloat(cogsTransportSales.total) || 0;
+
+  const cogsDirectCosts = cogsWireCost + cogsConvCost + cogsTransportCost;
+
+  // SOLD-ITEMS REVENUE: cash actually RECEIVED in this period, but only counting
+  // payments against invoices that originated from an actual sale (invoices.sale_id
+  // IS NOT NULL) — manual/misc invoices are excluded. This is a deliberate choice
+  // (decided with Deric 2026-07-14): revenue is money-in-hand, not billed value.
+  // Consequence: a sale's revenue can land in a different period than its cost —
+  // cost below is still traced to the sale's own period (sale_date), so an unpaid
+  // sale can show 0 revenue against its full cost in the sale's month, with the
+  // matching revenue appearing later once the customer actually pays. Nothing is
+  // ever lost or double-counted: each invoice_payments row is counted exactly once,
+  // in the month it was received.
+  const soldRevenueRow = await db.prepare(`
+    SELECT COALESCE(SUM(ip.amount), 0) AS total
+    FROM invoice_payments ip
+    JOIN invoices i ON ip.invoice_id = i.id
+    WHERE ip.payment_date BETWEEN ? AND ?
+      AND i.sale_id IS NOT NULL
+      AND i.status != 'cancelled'
   `).get(fromDate, toDate);
   const soldRevenue = parseFloat(soldRevenueRow.total) || 0;
   const cogsGrossProfit = soldRevenue - cogsDirectCosts;
@@ -273,19 +365,17 @@ async function getSalesCostSummary(db, fromDate, toDate) {
     direct_costs:              directCosts,
     gross_profit:              grossProfit,
     cogs_wire_cost:            cogsWireCost,
+    cogs_conversion_cost:      cogsConvCost,
+    cogs_transport_cost:       cogsTransportCost,
     cogs_direct_costs:         cogsDirectCosts,
     cogs_gross_profit:         cogsGrossProfit,
+    kg_per_piece_map:          kgPerPieceMap,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DATE UTILITIES
 // ─────────────────────────────────────────────────────────────────────────────
-function toUtcDateParts(value) {
-  const [year, month, day] = String(value).split('-').map(Number);
-  return new Date(Date.UTC(year, (month || 1) - 1, day || 1));
-}
-
 function utcDateStr(d) {
   const y  = d.getUTCFullYear();
   const m  = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -293,51 +383,25 @@ function utcDateStr(d) {
   return `${y}-${m}-${dd}`;
 }
 
-function daysInMonth(year, monthIndex) {
-  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// RENT EXPENSE — obligation incurred, period-prorated (§7, §9)
+// RENT EXPENSE — CASH BASIS (matches wire/conversion/transport cash costs above)
 //
-// Rule: rent expense = rent_months.amount_due prorated over the overlap between
-// the selected date range and each month the owner has explicitly added.
+// Rule: rent expense = money actually paid out against category='rent' in the
+// payments table, within the period. Same shape as wirePaid/operatorPaid/etc.
+// in getSalesCostSummary — a rent month with no payment yet contributes 0 here,
+// exactly like unpaid wire/labour/transport contribute 0 to their totals.
 //
-// Source of truth: rent_months table — rows the owner creates in reconciliation.
-// No row = no rent for that month. The system never assumes, never auto-creates.
-// Payment status is irrelevant here — obligation is incurred when the month
-// is added, not when cash is paid.
-//
-// Proration: daily_rate = amount_due / days_in_month
-//            rent_expense = daily_rate × overlap_days_in_range
-//
-// This is consistent with reconciliation which also reads rent_months.amount_due.
+// NOT used for "rent payable/outstanding" tracking — that stays on
+// getRentPayable below (rent_months.amount_due vs payments), unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
-async function getAccruedRentForRange(db, fromDate, toDate) {
-  const from = toUtcDateParts(fromDate);
-  const to   = toUtcDateParts(toDate);
-
-  // Only months the owner has explicitly added — no fallback, no assumptions
-  const months = await db.prepare(`
-    SELECT month, amount_due FROM rent_months
-    WHERE month BETWEEN ? AND ?
-    ORDER BY month
-  `).all(fromDate.slice(0, 7), toDate.slice(0, 7));
-
-  let rent = 0;
-  for (const row of months) {
-    const [year, month] = String(row.month).split('-').map(Number);
-    if (!year || !month) continue;
-    const monthStart   = new Date(Date.UTC(year, month - 1, 1));
-    const monthEnd     = new Date(Date.UTC(year, month - 1, daysInMonth(year, month - 1)));
-    const overlapStart = from > monthStart ? from : monthStart;
-    const overlapEnd   = to   < monthEnd   ? to   : monthEnd;
-    if (overlapStart > overlapEnd) continue;
-    const overlapDays = Math.floor((overlapEnd - overlapStart) / 86400000) + 1;
-    const dailyRent   = (parseFloat(row.amount_due) || 0) / daysInMonth(year, month - 1);
-    rent += dailyRent * overlapDays;
-  }
-  return rent;
+async function getRentPaidForRange(db, fromDate, toDate) {
+  const row = await db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM payments
+    WHERE category = 'rent'
+      AND payment_date BETWEEN ? AND ?
+  `).get(fromDate, toDate);
+  return parseFloat(row.total) || 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -586,18 +650,19 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     }
 
     const salesSummary = await getSalesCostSummary(db, fromDate, toDate);
-    // Rent Expense — prorated for P&L only (§7, §9).
+    // Rent Expense — cash-basis for P&L, consistent with wire/conversion/transport.
     // This is NOT the same as rent payable — see getRentPayable below.
-    const rentCost    = await getAccruedRentForRange(db, fromDate, toDate);
+    const rentCost    = await getRentPaidForRange(db, fromDate, toDate);
     const grossProfit = salesSummary.gross_profit;           // revenue − cost_of_sales
     const netProfit   = grossProfit - rentCost;              // − period rent expense
     const grossMargin = salesSummary.revenue > 0 ? (grossProfit / salesSummary.revenue * 100) : 0;
     const netMargin   = salesSummary.revenue > 0 ? (netProfit   / salesSummary.revenue * 100) : 0;
 
-    // COGS-matched equivalents — wire cost tied to what was actually sold, not
-    // raw cash paid to suppliers this period, AND revenue tied to what was
-    // actually sold this period, not cash collected (which may belong to an
-    // earlier sale). See getSalesCostSummary for detail.
+    // COGS-matched equivalents — wire/conversion/transport cost tied to what was
+    // actually sold, not raw cash paid this period. Revenue is cash actually
+    // received this period for sale-linked invoices only (can belong to a sale
+    // from an earlier period if payment came in late). See getSalesCostSummary
+    // for detail.
     const cogsGrossProfit = salesSummary.cogs_gross_profit;
     const cogsNetProfit   = cogsGrossProfit - rentCost;
     const cogsGrossMargin = salesSummary.sold_revenue > 0 ? (cogsGrossProfit / salesSummary.sold_revenue * 100) : 0;
@@ -856,12 +921,25 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
       };
     })();
 
+    // Earliest recorded activity across the business — lets the frontend tell
+    // the difference between "no activity yet" and "zero that specific day"
+    // when a wide date range is selected before the business had any records.
+    const earliestRow = await db.prepare(`
+      SELECT MIN(entry_date) AS earliest FROM (
+        SELECT entry_date FROM purchases
+        UNION ALL SELECT entry_date FROM production
+        UNION ALL SELECT entry_date FROM sales
+      )
+    `).get();
+    const earliestActivity = earliestRow?.earliest || null;
+
     res.json({
       period_days: days, from: fromDate, to: toDate,
+      earliest_activity: earliestActivity,
       granularity: {
         unit:         'day',
         step:         1,
-        label:        diffDays <= 31 ? 'Daily' : diffDays <= 90 ? 'Weekly' : diffDays <= 365 ? 'Monthly' : 'Quarterly',
+        label:        'Daily',
         total_points: trends.length,
       },
       kpis: {
@@ -876,6 +954,8 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
         net_margin_pct:            parseFloat(netMargin.toFixed(1)),
         profit_margin_pct:         parseFloat(netMargin.toFixed(1)),
         cogs_wire_cost:            parseFloat(salesSummary.cogs_wire_cost.toFixed(2)),
+        cogs_conversion_cost:      parseFloat(salesSummary.cogs_conversion_cost.toFixed(2)),
+        cogs_transport_cost:       parseFloat(salesSummary.cogs_transport_cost.toFixed(2)),
         cogs_direct_costs_sold:    parseFloat(salesSummary.cogs_direct_costs.toFixed(2)),
         cogs_gross_profit:         parseFloat(cogsGrossProfit.toFixed(2)),
         cogs_gross_margin_pct:     parseFloat(cogsGrossMargin.toFixed(1)),
@@ -950,6 +1030,14 @@ const ALLOWED_KEYS = [
   'show_rent_dashboard',
 ];
 
+// Keys that must be non-negative numbers — these feed directly into production
+// and sale cost calculations, so an invalid value here would silently corrupt
+// every cost figure computed from it going forward.
+const NUMERIC_KEYS = new Set([
+  'cost_per_kg', 'transport_cost', 'transport_to_market', 'operator_cost',
+  'knuckler_cost', 'sack_cost', 'rent_allocation', 'stock_threshold', 'invoice_tax_pct',
+]);
+
 router.get('/config', authenticate, async (_req, res) => {
   try {
     const rows = await getDb().prepare('SELECT key, value FROM config').all();
@@ -965,6 +1053,26 @@ router.get('/config', authenticate, async (_req, res) => {
 router.put('/config', authenticate, requireRole('owner', 'admin'), async (req, res) => {
   try {
     const db = getDb();
+
+    // Validate every value BEFORE writing anything — all-or-nothing, so a bad
+    // value in one field can never leave the config in a half-saved state.
+    for (const [key, value] of Object.entries(req.body)) {
+      if (!ALLOWED_KEYS.includes(key)) continue;
+      if (NUMERIC_KEYS.has(key)) {
+        const n = parseFloat(value);
+        if (value === '' || value === null || value === undefined) continue; // empty is allowed — clears the field
+        if (isNaN(n) || n < 0) {
+          return res.status(400).json({ error: `${key} must be a non-negative number (got "${value}").` });
+        }
+        if (key === 'invoice_tax_pct' && n > 100) {
+          return res.status(400).json({ error: `invoice_tax_pct must be between 0 and 100 (got "${value}").` });
+        }
+      }
+      if (key === 'show_rent_dashboard' && value !== '0' && value !== '1') {
+        return res.status(400).json({ error: `show_rent_dashboard must be "0" or "1" (got "${value}").` });
+      }
+    }
+
     for (const [key, value] of Object.entries(req.body)) {
       if (!ALLOWED_KEYS.includes(key)) continue;
       await db.prepare(
@@ -1010,6 +1118,9 @@ router.post('/piece-types', authenticate, requireRole('owner', 'admin'), async (
     if (isNaN(parsedLength) || parsedLength <= 0) return res.status(400).json({ error: 'length_m must be a valid number > 0' });
     if (isNaN(parsedWeight) || parsedWeight <= 0) return res.status(400).json({ error: 'weight_kg must be a valid number > 0' });
     const db    = getDb();
+    if (default_price !== undefined && default_price !== null && default_price !== '' &&
+        !Number.isFinite(Number(default_price)))
+      return res.status(400).json({ error: 'default_price must be a valid number' });
     const price = parseFloat(default_price) || 0;
     const r = await db.prepare(
       'INSERT INTO piece_types(name, length_m, weight_kg, default_price) VALUES(?,?,?,?) RETURNING id'
@@ -1034,6 +1145,9 @@ router.put('/piece-types/:id', authenticate, requireRole('owner', 'admin'), asyn
     const db       = getDb();
     const existing = await db.prepare('SELECT id FROM piece_types WHERE id=?').get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Piece type not found' });
+    if (default_price !== undefined && default_price !== null && default_price !== '' &&
+        !Number.isFinite(Number(default_price)))
+      return res.status(400).json({ error: 'default_price must be a valid number' });
     const price = parseFloat(default_price) || 0;
     await db.prepare('UPDATE piece_types SET name=?, length_m=?, weight_kg=?, default_price=? WHERE id=?')
       .run(name, parsedLength, parsedWeight, price, req.params.id);
@@ -1047,9 +1161,11 @@ router.delete('/piece-types/:id', authenticate, requireRole('owner', 'admin'), a
     const pieceId = parseInt(req.params.id, 10);
     const existing = await db.prepare('SELECT * FROM piece_types WHERE id=?').get(pieceId);
     if (!existing) return res.status(404).json({ error: 'Piece type not found' });
-    const usedInProd  = (await db.prepare('SELECT COUNT(*) AS c FROM production_items WHERE piece_type_id=?').get(pieceId)).c;
-    const usedInSales = (await db.prepare('SELECT COUNT(*) AS c FROM sales           WHERE piece_type_id=?').get(pieceId)).c;
-    if (usedInProd > 0 || usedInSales > 0)
+    const usedInProd    = (await db.prepare('SELECT COUNT(*) AS c FROM production_items WHERE piece_type_id=?').get(pieceId)).c;
+    const usedInSales    = (await db.prepare('SELECT COUNT(*) AS c FROM sales           WHERE piece_type_id=?').get(pieceId)).c;
+    const usedInInvoices = (await db.prepare('SELECT COUNT(*) AS c FROM invoice_items   WHERE piece_type_id=?').get(pieceId)).c;
+    const usedInOrders   = (await db.prepare('SELECT COUNT(*) AS c FROM order_items     WHERE piece_type_id=?').get(pieceId)).c;
+    if (usedInProd > 0 || usedInSales > 0 || usedInInvoices > 0 || usedInOrders > 0)
       return res.status(400).json({ error: 'Piece type cannot be deleted because it is already used in system records' });
     await db.prepare('DELETE FROM piece_types WHERE id=?').run(pieceId);
     await writeAudit(db, { userId: req.user.id, action: 'DELETE_PIECE_TYPE', table: 'piece_types', recordId: pieceId, oldVals: existing, ip: req.ip });
@@ -1387,7 +1503,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
     }
 
     const salesSummary = await getSalesCostSummary(db, fromDate, toDate);
-    const rentCost     = await getAccruedRentForRange(db, fromDate, toDate);
+    const rentCost     = await getRentPaidForRange(db, fromDate, toDate);
 
     // Detail rows — §11: LEFT JOIN sales s ON s.id = i.sale_id to get the
     // saved transport snapshot. COALESCE(s.transport_to_market, 0) means:
@@ -1428,8 +1544,12 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
     const convPerPiece  = salesSummary.conversion_cost_per_piece;
 
     // Wire cost drill-down: sourced from the SAME population and formula as the
-    // COGS top-line above (sales entered in period, each row's own saved
-    // wire_cost_per_kg) so these rows always sum to cost_breakdown.wire_cost.amount.
+    // COGS-matched top-line (cost_breakdown.wire_cost.cogs_amount) — each row
+    // uses its own saved wire_cost_per_kg snapshot together with the actual
+    // kg-per-piece for that piece type + gauge (not spec weight_kg — see
+    // getActualKgPerPieceMap), so these rows always sum to cogs_amount exactly.
+    // This is a per-sale-entry view, not cash-received based, so it does NOT
+    // back the cash-basis wire_cost.amount figure above it.
     // Deliberately separate from detailRows below, which is cash-received based
     // and still correctly backs conversion_cost/transport_cost (those remain
     // cash-basis, unchanged).
@@ -1437,7 +1557,8 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       SELECT s.entry_date      AS entry_date,
              pt.name            AS piece_name,
              s.quantity         AS quantity,
-             pt.weight_kg       AS weight_kg,
+             s.piece_type_id    AS piece_type_id,
+             COALESCE(s.gauge_source,'') AS gauge_source,
              s.wire_cost_per_kg AS wire_cost_per_kg,
              s.selling_price    AS selling_price
       FROM sales s
@@ -1446,16 +1567,19 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       ORDER BY s.entry_date DESC
     `).all(fromDate, toDate);
 
-    const wireCostDetails = wireDetailRows.map(r => ({
-      entry_date:    r.entry_date,
-      piece_name:    r.piece_name,
-      quantity:      r.quantity,
-      weight_kg:     r.weight_kg,
-      kgs_sold:      parseFloat((r.quantity * r.weight_kg).toFixed(3)),
-      wire_cost:     parseFloat((r.quantity * r.weight_kg * r.wire_cost_per_kg).toFixed(2)),
-      selling_price: r.selling_price,
-      revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
-    }));
+    const wireCostDetails = wireDetailRows.map(r => {
+      const kgPerPiece = salesSummary.kg_per_piece_map.get(`${r.piece_type_id}::${r.gauge_source}`) || 0;
+      return {
+        entry_date:    r.entry_date,
+        piece_name:    r.piece_name,
+        quantity:      r.quantity,
+        weight_kg:     parseFloat(kgPerPiece.toFixed(4)),
+        kgs_sold:      parseFloat((r.quantity * kgPerPiece).toFixed(3)),
+        wire_cost:     parseFloat((r.quantity * kgPerPiece * r.wire_cost_per_kg).toFixed(2)),
+        selling_price: r.selling_price,
+        revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
+      };
+    });
 
     const conversionCostDetails = detailRows.map(r => ({
       entry_date:      r.entry_date,
@@ -1479,10 +1603,12 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       }));
 
     const rentDetails = await db.prepare(`
-      SELECT month, amount_due FROM rent_months
-      WHERE month BETWEEN ? AND ?
-      ORDER BY month
-    `).all(fromDate.slice(0, 7), toDate.slice(0, 7));
+      SELECT payment_date, amount, rent_month, payee_name, notes
+      FROM payments
+      WHERE category = 'rent'
+        AND payment_date BETWEEN ? AND ?
+      ORDER BY payment_date
+    `).all(fromDate, toDate);
 
     // CASH-BASIS — same figures as /api/dashboard and Reconciliation, so this
     // breakdown's totals always tally with those two (see getSalesCostSummary).
@@ -1521,19 +1647,23 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
         conversion_cost: {
           amount:      parseFloat(salesSummary.conversion_cost.toFixed(2)),
           percentage:  parseFloat(convCostPct.toFixed(1)),
-          description: 'Labour costs (operator + knuckler + sack costs)',
+          description: 'Cash paid for labour + sacks this period',
+          cogs_amount: parseFloat(salesSummary.cogs_conversion_cost.toFixed(2)),
+          cogs_note:   'cogs_amount = conversion_cost_per_piece snapshot matched to pieces actually sold this period — informational only, not used in the totals above',
           details:     conversionCostDetails,
         },
         transport_cost: {
           amount:      parseFloat(salesSummary.transport_to_market_cost.toFixed(2)),
           percentage:  parseFloat(transportCostPct.toFixed(1)),
-          description: 'Transport to market — read from saved sale records (§11)',
+          description: 'Cash paid to transporter this period',
+          cogs_amount: parseFloat(salesSummary.cogs_transport_cost.toFixed(2)),
+          cogs_note:   'cogs_amount = transport saved on sales actually made this period — informational only, not used in the totals above',
           details:     transportCostDetails,
         },
         rent_cost: {
           amount:      parseFloat(rentCost.toFixed(2)),
           percentage:  salesSummary.revenue > 0 ? parseFloat((rentCost / salesSummary.revenue * 100).toFixed(1)) : 0,
-          description: 'Rent accrued for this period (prorated by calendar overlap)',
+          description: 'Cash paid for rent this period',
           details:     rentDetails,
         },
         net_profit: {

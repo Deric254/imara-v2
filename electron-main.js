@@ -1,6 +1,5 @@
 // electron-main.js — IMARA LINKS Desktop App
 // This file lives in the project ROOT and is the Electron entry point.
-// Am testing the build procee with this comment
 
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path    = require('path');
@@ -235,10 +234,6 @@ ipcMain.on('focus-window', () => {
   } catch (_) {}
 });
 
-ipcMain.on('check-for-updates', () => {
-  checkForUpdatesManually();
-});
-
 // ── Find a free port (fallback if 9000 is taken) ─────────────────────────────
 function findFreePort(preferred) {
   return new Promise((resolve) => {
@@ -312,6 +307,12 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use('/api',                require('./backend/routes/systemcheck'));
 
     backendApp.get('/health', (_req, res) => res.json({ status: 'ok', version: app.getVersion() }));
+
+    // Unmatched /api/* requests must return a clean JSON 404, not fall through
+    // to the SPA fallback below. Without this, a broken or mistyped API call
+    // silently returns the login page's HTML with a 200 status — the frontend
+    // then fails trying to JSON.parse() HTML instead of seeing a clear error.
+    backendApp.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
     const frontendPath = path.join(__dirname, 'frontend');
     backendApp.use(express.static(frontendPath));
@@ -567,4 +568,3 @@ ipcMain.handle('backup:write-second', async (_event, { folderPath, filename, jso
     return { ok: false, error: e.message };
   }
 });
-//Triggering new version logic 

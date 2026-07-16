@@ -35,10 +35,10 @@
       <button class="btn btn-primary btn-sm" onclick="loadAudit()">Apply</button>
       <div style="display:flex;gap:.25rem;flex-wrap:wrap">
         <button class="period-preset" onclick="preset(0,this)">Today</button>
-        <button class="period-preset" onclick="preset(7,this)">7 Days</button>
+        <button class="period-preset" onclick="preset(7,this)">Week</button>
         <button class="period-preset" onclick="preset('this_month',this)">This Month</button>
         <button class="period-preset" onclick="preset('last_month',this)">Last Month</button>
-        <button class="period-preset" onclick="preset(90,this)">90 Days</button>
+        <button class="period-preset" onclick="preset(90,this)">3 Months</button>
         <button class="period-preset" onclick="preset(365,this)">1 Year</button>
       </div>
     </div>
@@ -103,8 +103,13 @@
       from = new Date(today.getFullYear(), today.getMonth(), 1);
       to   = today;
     } else if (days === 'last_month') {
+      // 1st of previous month → today (last full month plus current month so far)
       from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-      to   = new Date(today.getFullYear(), today.getMonth(), 0);
+      to   = today;
+    } else if (days === 90) {
+      // "3 Months": 1st of the month 3 months back → today
+      from = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+      to   = today;
     } else {
       to   = today;
       from = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
@@ -178,6 +183,7 @@
   async function loadAudit() {
     const from = document.getElementById('fromDate').value;
     const to = document.getElementById('toDate').value;
+    if (from && to && from > to) { showToast('Start date is after end date — please check your range.', 'error'); return; }
     const tableBody = document.getElementById('auditTable');
     const exportBtn = document.getElementById('exportBtn');
 
@@ -240,6 +246,11 @@
     downloadCSV(`audit_log_${from}_to_${to}`, headers, rows);
   }
 
+  {
+    const _todayCap = localDateString(new Date());
+    document.getElementById('fromDate').max = _todayCap;
+    document.getElementById('toDate').max   = _todayCap;
+  }
   preset(7, document.querySelector('.period-preset[onclick*="preset(7"]'));
   // Deactivate preset buttons when user manually changes dates
   document.getElementById('fromDate').addEventListener('change', () => {

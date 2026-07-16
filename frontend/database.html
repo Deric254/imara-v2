@@ -534,6 +534,16 @@ async function runQuery() {
   const sql = document.getElementById('sqlEditor').value.trim();
   if (!sql) return;
 
+  const firstWord = sql.trim().split(/\s+/)[0].toUpperCase();
+  const isReadOnly = ['SELECT', 'WITH', 'EXPLAIN', 'PRAGMA'].includes(firstWord);
+  if (!isReadOnly) {
+    const confirmed = await appConfirm(
+      `This is a WRITE query (${firstWord}) and will modify the database directly, bypassing all normal validation and safeguards. This cannot be undone except by restoring a backup.\n\nSQL:\n${sql}\n\nProceed?`,
+      { confirmLabel: 'Run Write Query' }
+    );
+    if (!confirmed) return;
+  }
+
   queryRunning = true;
   const btn = document.getElementById('btnRun');
   btn.disabled = true;
@@ -633,7 +643,7 @@ function onFileChosen(input) {
 
 async function doImport() {
   if (!importFileData) return;
-  if (!(await appConfirm('Import this backup? All data will be restored with original IDs. Existing records with the same ID will be replaced. Proceed?'))) return;
+  if (!(await appConfirm('CRITICAL: This will replace ALL current data — including users — with the data from the backup file, exactly as it was at backup time. This cannot be undone. Proceed?', { confirmLabel: 'Replace All Data' }))) return;
   const btn = document.getElementById('btnImport');
   btn.disabled = true;
   btn.textContent = 'Importing…';
@@ -641,12 +651,20 @@ async function doImport() {
     const result = await api('POST', '/backup/import', importFileData);
     document.getElementById('importStatus').innerHTML = `
       <div class="import-status ok">
-        ✓ ${escHtml(result.summary || 'Import complete')}<br>
-        <small>${result.results?.failed?.length ? 'Skipped: ' + result.results.failed.map(f => f.table).join(', ') : 'All tables imported'}</small>
+        ✓ ${escHtml(result.summary || 'Restore complete')}<br>
+        <small>Database matches the backup exactly. Signing out…</small>
       </div>`;
     btn.textContent = '✓ Done';
-    await loadTables();
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Import Backup'; }, 3000);
+    // Restore fully replaces the users table too, so whoever ran this may no
+    // longer exist, may have a different role, or may have a different
+    // password than a moment ago — there's no valid session to keep. Force
+    // a sign-out and send them to login so they authenticate fresh against
+    // the restored accounts, same as the Backup page's restore flow.
+    showToast('Restore complete — signing out to refresh your session.', 'success');
+    setTimeout(() => {
+      Store.clear();
+      location.href = 'login.html';
+    }, 1500);
   } catch(e) {
     document.getElementById('importStatus').innerHTML = `<div class="import-status err">⚠ ${escHtml(e.error || 'Import failed')}</div>`;
     btn.disabled = false;

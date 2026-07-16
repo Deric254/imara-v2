@@ -6,7 +6,6 @@ const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { getDb } = require('../db');
 
 const ADMIN_OR_OWNER = [authenticate, requireRole('owner', 'admin')];
-const OWNER_ONLY      = [authenticate, requireRole('owner')];
 
 // ── GET /api/database/tables — list all tables with row counts ────────────────
 router.get('/tables', ...ADMIN_OR_OWNER, async (req, res) => {
@@ -61,12 +60,12 @@ router.get('/table/:name', ...ADMIN_OR_OWNER, async (req, res) => {
 });
 
 // ── POST /api/database/query — run an arbitrary SQL query ────────────────────
-// OWNER ONLY: this can write to any table, including audit_log itself, which
-// would let a write here erase the evidence of the write. Everything else in
-// this file (listing tables, viewing rows, viewing schema) is read-only and
-// stays available to Admin — only the ability to execute arbitrary writes is
-// restricted here.
-router.post('/query', ...OWNER_ONLY, async (req, res) => {
+// ADMIN_OR_OWNER: Admin is a trusted authority in this system, so query access
+// is not blocked — matching the frontend, which already showed this editor to
+// both roles (database.html: requireAuth(['owner','admin'])). Every query run
+// here — read or write — is captured in audit_log below so there's a full
+// record of who ran what, even though execution itself is unrestricted.
+router.post('/query', ...ADMIN_OR_OWNER, async (req, res) => {
   const { sql } = req.body;
   if (!sql || typeof sql !== 'string' || sql.trim().length === 0) {
     return res.status(400).json({ error: 'No SQL provided' });
@@ -97,15 +96,19 @@ router.post('/query', ...OWNER_ONLY, async (req, res) => {
       };
     }
 
-    if (result.type === 'write') {
-      await writeAudit(db, {
-        userId: req.user.id,
-        action: 'DB_QUERY_WRITE',
-        table: 'database_manager',
-        newVals: { sql: trimmed.slice(0, 500), changes: result.changes },
-        ip: req.ip
-      });
-    }
+    await writeAudit(db, {
+      userId: req.user.id,
+      action: result.type === 'write' ? 'DB_QUERY_WRITE' : 'DB_QUERY_READ',
+      table: 'database_manager',
+      newVals: {
+        sql: trimmed.slice(0, 500),
+        role: req.user.role,
+        ...(result.type === 'write'
+          ? { changes: result.changes }
+          : { row_count: result.row_count })
+      },
+      ip: req.ip
+    });
 
     res.json(result);
   } catch (err) {

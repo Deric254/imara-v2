@@ -4,7 +4,7 @@ const { body, validationResult } = require('express-validator');
 const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { checkAndNotifyStock } = require('./reports');
-const { getCfgNumber, resolveWireCostPerKgForSale, createBatchSaleCore } = require('../lib/saleCore');
+const { getCfgNumber, createBatchSaleCore } = require('../lib/saleCore');
 const { isFutureDate } = require('../lib/dateGuard');
 
 function localDateString(date = new Date()) {
@@ -883,6 +883,7 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
         result = await createBatchSaleCore(db, { entry_date, buyer_name, items, userId: req.user.id, userName: req.user.full_name });
       } catch (e) {
         if (e.notFoundError) return res.status(404).json({ error: e.message });
+        if (e.validationError) return res.status(400).json({ error: e.message });
         throw e;
       }
       const { saleIds, invoiceId: autoInvoiceId } = result;
@@ -900,154 +901,6 @@ router.post('/sales/batch', authenticate, blockProductionStaff,
     } catch(e) {
       if (e.stockError) return res.status(400).json(e.stockError);
       console.error('POST sales/batch error:', e);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-);
-
-router.post('/sales', authenticate, blockProductionStaff,
-  body('entry_date').isISO8601().withMessage('Valid date required')
-    .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
-  body('piece_type_id').isInt({ min: 1 }).withMessage('Piece type required'),
-  body('quantity').isInt({ min: 1 }).withMessage('Quantity must be >= 1'),
-  body('selling_price').isFloat({ min: 0 }).withMessage('Price must be >= 0'),
-  body('transport_to_market').optional().isFloat({ min: 0 }),
-  body('buyer_name').notEmpty().trim().withMessage('Buyer name is required'),
-  body('gauge_source').notEmpty().trim().withMessage('Wire gauge source is required'),
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-
-    try {
-      const { entry_date, piece_type_id, quantity, selling_price, buyer_name, gauge_source } = req.body;
-      const db = getDb();
-      
-      // GAUGE-AWARE INVENTORY CHECK — ATOMIC: check + insert in one transaction
-      // This is the only way to guarantee two simultaneous rapid requests cannot
-      // both pass the availability check before either writes to the DB.
-      const gaugeKey = (gauge_source || '').trim();
-
-      const pt = await db.prepare('SELECT * FROM piece_types WHERE id=? AND active=1').get(piece_type_id);
-      if (!pt) return res.status(404).json({ error: 'Piece type not found' });
-
-      const transport_rate_per_piece = await getCfgNumber(db, 'transport_to_market');
-      const transport_to_market = (req.body.transport_to_market !== undefined && req.body.transport_to_market !== null)
-        ? parseFloat(req.body.transport_to_market) || 0
-        : transport_rate_per_piece * parseInt(quantity);
-
-      const price_overridden = parseFloat(selling_price) !== parseFloat(pt.default_price) ? 1 : 0;
-
-      let result;
-      let autoInvoiceId = null;
-
-      // ATOMIC: stock check + sale insert + auto-invoice ALL in one transaction.
-      // If any step fails the entire operation rolls back — no orphaned sale or invoice.
-      await db.transaction(async () => {
-        // Re-read inventory INSIDE the transaction — authoritative, race-proof
-        const producedInGauge = await db.prepare(`
-          SELECT COALESCE(SUM(pi.pieces_produced), 0) AS produced
-          FROM production_items pi
-          JOIN production pr ON pi.production_id = pr.id
-          WHERE pi.piece_type_id = ?
-            AND COALESCE(pr.gauge, '') = ?
-        `).get(piece_type_id, gaugeKey);
-
-        const soldInGauge = await db.prepare(`
-          SELECT COALESCE(SUM(quantity), 0) AS sold
-          FROM sales
-          WHERE piece_type_id = ?
-            AND COALESCE(gauge_source, '') = ?
-        `).get(piece_type_id, gaugeKey);
-
-        const produced  = parseInt(producedInGauge.produced) || 0;
-        const sold      = parseInt(soldInGauge.sold) || 0;
-        const available = produced - sold;
-
-        if (parseInt(quantity) > available) {
-          const gaugeLabel = gaugeKey || 'unspecified gauge';
-          const _e = new Error(`Cannot sell ${quantity} pieces. Inventory for ${pt.name} (${gaugeLabel}): Produced=${produced}, Sold=${sold}, Available=${available} pieces.`);
-          _e.stockError = { error: 'INSUFFICIENT_STOCK_FOR_GAUGE', message: _e.message,
-            inventory: { produced, sold, available, requested: parseInt(quantity) } };
-          throw _e;
-        }
-
-        const wireCostPerKg = await resolveWireCostPerKgForSale(db, piece_type_id, entry_date);
-        result = await db.prepare(
-          `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
-        ).run(entry_date, piece_type_id, quantity, selling_price, pt.default_price, price_overridden, transport_to_market, buyer_name || '', gauge_source || '', req.user.id, wireCostPerKg);
-
-        // ── Auto-generate invoice INSIDE the transaction (atomic with the sale) ──
-        const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';
-        const last   = await db.prepare(`SELECT invoice_number FROM invoices WHERE id = (SELECT MAX(id) FROM invoices)`).get();
-        let seq = 1001;
-        if (last?.invoice_number) {
-          const parts = last.invoice_number.split('-');
-          const n = parseInt(parts[parts.length - 1]);
-          if (!isNaN(n)) seq = n + 1;
-        }
-        const yr           = new Date().getFullYear().toString().slice(-2);
-        const invNum       = `${prefix}-${yr}-${String(seq).padStart(4,'0')}`;
-        const lineTotal    = parseFloat((parseFloat(quantity) * parseFloat(selling_price)).toFixed(2));
-        const customerName = (buyer_name && buyer_name.trim()) ? buyer_name.trim() : 'Walk-in Customer';
-
-        const invRes = await db.prepare(`
-          INSERT INTO invoices(
-            invoice_number, invoice_date, due_date, customer_name,
-            status, subtotal, discount_pct, discount_amount,
-            tax_pct, tax_amount, total_amount, amount_paid,
-            notes, created_by, sale_id
-          ) VALUES(?,?,?,?,'partial_payment',?,0,0,0,0,?,0,?,?,?) RETURNING id
-        `).run(
-          invNum, entry_date, entry_date, customerName,
-          lineTotal, lineTotal,
-          `Auto-generated from sale on ${entry_date}`,
-          req.user.id, result.lastInsertRowid
-        );
-
-        if (invRes && invRes.lastInsertRowid) {
-          autoInvoiceId = invRes.lastInsertRowid;
-          await db.prepare(`
-            INSERT INTO invoice_items(invoice_id, piece_type_id, description, gauge, quantity, unit_price, line_total)
-            VALUES(?,?,?,?,?,?,?)
-          `).run(
-            autoInvoiceId,
-            piece_type_id,
-            pt.name,
-            gauge_source || '',
-            parseInt(quantity),
-            parseFloat(selling_price),
-            lineTotal
-          );
-        }
-      });
-
-      await writeAudit(db, {
-        userId: req.user.id,
-        action: price_overridden ? 'PRICE_OVERRIDE' : 'CREATE_SALE',
-        table: 'sales', recordId: result.lastInsertRowid,
-        oldVals: price_overridden ? { default: pt.default_price } : null,
-        newVals: { selling: selling_price, transport: transport_to_market, auto_invoice_id: autoInvoiceId },
-        ip: req.ip
-      });
-
-      const row = await db.prepare(`
-        SELECT s.*, pt.name AS piece_name, pt.length_m, pt.weight_kg,
-          u.full_name AS entered_by_name,
-          ROUND((s.quantity*s.selling_price),2) AS revenue,
-          ROUND((s.quantity*pt.weight_kg),2) AS kgs_sold,
-          ROUND((s.quantity*pt.length_m),2) AS meters_sold
-        FROM sales s
-        JOIN piece_types pt ON s.piece_type_id=pt.id
-        JOIN users u ON s.entered_by=u.id
-        WHERE s.id=?`).get(result.lastInsertRowid);
-
-      // Fire-and-forget: check stock after sale, notify owner if low
-      checkAndNotifyStock(db, req.user.id).catch(() => {});
-      res.status(201).json(row);
-    } catch(e) {
-      if (e.stockError) return res.status(400).json(e.stockError);
-      console.error('POST sales error:', e);
       res.status(500).json({ error: 'Internal server error' });
     }
   }

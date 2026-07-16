@@ -3,7 +3,6 @@ const express = require('express');
 const router  = express.Router();
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { getDb } = require('../db');
-const bcrypt = require('bcryptjs');
 
 const OWNER_ONLY      = [authenticate, requireRole('owner')];
 const ADMIN_OR_OWNER  = [authenticate, requireRole('owner', 'admin')];
@@ -28,22 +27,30 @@ router.get('/export', ...ADMIN_OR_OWNER, async (req, res) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
 
     const backups = {};
+    const tableErrors = {};
     for (const table of ALL_TABLES) {
       try {
         backups[table] = await db.prepare(`SELECT * FROM ${table}`).all();
       } catch (e) {
         console.warn(`Warning: Could not backup table ${table}:`, e.message);
         backups[table] = [];
+        tableErrors[table] = e.message;
       }
     }
 
     const totalRecords = Object.values(backups).reduce((s, t) => s + t.length, 0);
+    const exportComplete = Object.keys(tableErrors).length === 0;
 
     const backupData = {
       export_date:   new Date().toISOString(),
       version:       '3.0',
       database:      'imara_links',
       tables:        backups,
+      // export_complete=false means at least one table failed to read during
+      // export (see table_errors) — this file is not a trustworthy point-in-time
+      // snapshot and /import refuses to restore from it.
+      export_complete: exportComplete,
+      table_errors:  tableErrors,
       summary: {
         total_tables:  Object.keys(backups).length,
         total_records: totalRecords
@@ -69,11 +76,18 @@ router.get('/export', ...ADMIN_OR_OWNER, async (req, res) => {
 });
 
 /* ── POST /api/backup/import ────────────────────────────────────────────────── */
-// OWNER ONLY: a restore overwrites live business data (INSERT OR REPLACE) row
-// by row across every table. Also: table and column names below come from the
-// uploaded file itself, not from the schema, so they're validated against a
-// strict allowlist/pattern before ever reaching a SQL string — a backup file
-// is just JSON on disk and can be edited by anyone before being re-uploaded.
+// OWNER ONLY: a restore overwrites live business data across every table.
+// Also: table and column names below come from the uploaded file itself, not
+// from the schema, so they're validated against a strict allowlist/pattern
+// before ever reaching a SQL string — a backup file is just JSON on disk and
+// can be edited by anyone before being re-uploaded.
+//
+// DISASTER-RECOVERY SEMANTICS: this restores the system exactly as it was at
+// the moment of backup — not a merge with whatever exists now. Every table
+// present in the backup (including users) is fully replaced with the
+// backup's rows, so a role/password/active-state change made after the
+// backup is reverted too, same as any other data. A restore is assumed to be
+// recovery from a disaster, not a convenience merge.
 const SAFE_IDENTIFIER = /^[a-zA-Z0-9_]+$/;
 router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (req, res) => {
   try {
@@ -92,84 +106,92 @@ router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (re
       });
     }
 
-    const importResults = { success: [], failed: [], total_imported: 0 };
+    // A backup that failed to fully capture one or more tables at export time
+    // is not a trustworthy point-in-time snapshot. Restoring from it would
+    // wipe those tables' current data and replace it with nothing. Refuse
+    // before touching the database. (Older backups predating this field are
+    // trusted as-is — there's no way to retroactively check them.)
+    if (backupData.export_complete === false) {
+      const failedTables = Object.keys(backupData.table_errors || {}).join(', ') || 'unknown table(s)';
+      return res.status(400).json({
+        error:   'INCOMPLETE_BACKUP',
+        message: `This backup file did not fully capture the database at export time (failed: ${failedTables}). Restoring from it would erase current data for those tables. Aborted — no changes made.`
+      });
+    }
 
-    // Insert in parent-first order so foreign keys are never orphaned.
-    // Only tables this app actually knows about are ever imported — a
-    // genuine backup (from /export, right above) never contains anything
-    // else, so this drops nothing legitimate while closing off arbitrary
-    // table names coming from an uploaded file.
-    const orderedTables = ALL_TABLES.filter(t => backupData.tables[t]);
+    // Only tables this app actually knows about are ever restored, in
+    // parent-first order — a genuine backup (from /export, right above)
+    // never contains anything else, so this drops nothing legitimate while
+    // closing off arbitrary table names coming from an uploaded file.
+    const orderedTables = ALL_TABLES.filter(t => Object.prototype.hasOwnProperty.call(backupData.tables, t));
 
-    // ACID: the whole restore runs as ONE transaction. Previously each row was
-    // its own implicit auto-commit statement — a crash or thrown error partway
-    // through left a half-restored database with no way back, and nothing
-    // stopped a live sale/invoice write from landing in the middle of the
-    // restore window. Wrapping it here means either the entire backup lands,
-    // or none of it does, and it can't interleave with concurrent writes
-    // because the transaction queue serialises against everything else.
+    // Pre-flight validation — every row's column names are checked against
+    // the allowlist BEFORE any destructive operation runs, so a malformed
+    // file is rejected up front instead of mid-restore with data already wiped.
+    for (const tableName of orderedTables) {
+      const records = backupData.tables[tableName];
+      if (!Array.isArray(records)) {
+        return res.status(400).json({
+          error:   'INVALID_FORMAT',
+          message: `Backup file has a malformed entry for table "${tableName}" — expected a list of rows. Aborted — no changes made.`
+        });
+      }
+      for (const record of records) {
+        if (!record || typeof record !== 'object' || !Object.keys(record).every(k => SAFE_IDENTIFIER.test(k))) {
+          return res.status(400).json({
+            error:   'INVALID_FORMAT',
+            message: `Backup file contains an invalid row or column name in table "${tableName}". Aborted — no changes made.`
+          });
+        }
+      }
+    }
+
+    const importResults = { success: [], total_imported: 0 };
+
+    // ACID + full replace, ONE transaction: every table present in the backup
+    // is cleared and reloaded from the backup's rows. Deletes run in reverse
+    // dependency order (children first), inserts in forward dependency order
+    // (parents first) — same graph ALL_TABLES already encodes — so foreign
+    // keys are never left dangling mid-restore. If ANY row anywhere fails,
+    // the whole thing throws and the transaction rolls back completely: a
+    // failed restore must fail loudly and leave the database exactly as it
+    // was before the restore was attempted — never half-done, and never
+    // silently missing rows while reporting success.
     await db.transaction(async () => {
+      for (const tableName of [...orderedTables].reverse()) {
+        try {
+          await db.exec(`DELETE FROM ${tableName}`);
+        } catch (e) {
+          throw new Error(`Restore aborted — could not clear table "${tableName}" before restoring it: ${e.message}`);
+        }
+      }
+
       for (const tableName of orderedTables) {
         const records = backupData.tables[tableName];
-        if (!Array.isArray(records) || records.length === 0) continue;
-
-        try {
-          let imported = 0;
-
-          if (tableName === 'users') {
-            // Users: merge by username — update non-sensitive fields, skip if username exists
-            for (const record of records) {
-              try {
-                const existing = await db.prepare('SELECT id FROM users WHERE username = ?').get(record.username);
-                if (existing) {
-                  // User already exists — skip (don't overwrite passwords or roles)
-                  continue;
-                }
-                const keys = Object.keys(record);
-                if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
-                  throw new Error('Backup file contains an invalid column name for users');
-                }
-                // New user from backup — insert with original id preserved
-                const cols  = keys.join(', ');
-                const phs   = keys.map(() => '?').join(', ');
-                const vals  = Object.values(record);
-                await db.prepare(`INSERT OR IGNORE INTO users (${cols}) VALUES (${phs})`).run(...vals);
-                imported++;
-              } catch(e) {
-                // skip individual user errors silently
-              }
-            }
-          } else {
-            // All other tables: INSERT OR REPLACE preserving original IDs
-            // This restores FK integrity — invoice_items still point to the right invoice IDs
-            for (const record of records) {
-              try {
-                const keys = Object.keys(record);
-                if (!keys.every(k => SAFE_IDENTIFIER.test(k))) {
-                  throw new Error(`Backup file contains an invalid column name for ${tableName}`);
-                }
-                const cols = keys.join(', ');
-                const phs  = keys.map(() => '?').join(', ');
-                const vals = Object.values(record);
-                await db.prepare(
-                  `INSERT OR REPLACE INTO ${tableName} (${cols}) VALUES (${phs})`
-                ).run(...vals);
-                imported++;
-              } catch(e) {
-                // skip individual row errors
-              }
-            }
+        let imported = 0;
+        for (const record of records) {
+          const keys = Object.keys(record);
+          const cols = keys.join(', ');
+          const phs  = keys.map(() => '?').join(', ');
+          const vals = Object.values(record);
+          try {
+            await db.prepare(`INSERT INTO ${tableName} (${cols}) VALUES (${phs})`).run(...vals);
+            imported++;
+          } catch (e) {
+            throw new Error(`Restore aborted — failed to restore "${tableName}" row (id=${record.id ?? '?'}): ${e.message}`);
           }
-
-          importResults.total_imported += imported;
-          importResults.success.push(`${tableName} (${imported})`);
-
-        } catch (e) {
-          importResults.failed.push({ table: tableName, reason: e.message });
         }
+        importResults.total_imported += imported;
+        importResults.success.push(`${tableName} (${imported})`);
       }
     });
 
+    // Non-critical: this audit write runs after the restore has already
+    // committed. If the acting user's own account isn't part of the restored
+    // users table (e.g. it was created after the backup was taken), this
+    // insert can itself fail — that must not turn an actually-successful
+    // restore into a reported failure, so writeAudit's default (log and
+    // continue) applies here rather than propagating.
     await writeAudit(db, {
       userId:  req.user.id,
       action:  'DATABASE_IMPORT',
@@ -179,14 +201,14 @@ router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (re
     });
 
     res.json({
-      message: 'Import completed',
+      message: 'Restore completed — database matches the backup exactly.',
       results: importResults,
-      summary: `Imported ${importResults.total_imported} records across ${importResults.success.length} tables.`
+      summary: `Restored ${importResults.total_imported} records across ${importResults.success.length} tables.`
     });
 
   } catch (error) {
     console.error('Backup import error:', error);
-    res.status(500).json({ error: 'IMPORT_FAILED', message: 'Failed to import backup' });
+    res.status(500).json({ error: 'IMPORT_FAILED', message: error.message || 'Failed to restore backup — no changes were made.' });
   }
 });
 

@@ -239,7 +239,11 @@ async function exportBackup() {
     const jsonString = await resp.text();
 
     // Quick sanity parse — catches a corrupt response before we save anything
-    JSON.parse(jsonString);
+    const parsedBackup = JSON.parse(jsonString);
+    if (parsedBackup.export_complete === false) {
+      const failedTables = Object.keys(parsedBackup.table_errors || {}).join(', ') || 'unknown';
+      showToast(`⚠️ Backup saved but INCOMPLETE — failed to capture: ${failedTables}. This file cannot be used to restore.`, 'error', 15000);
+    }
 
     // 2. Derive filename
     const ts       = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);

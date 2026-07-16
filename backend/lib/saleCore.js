@@ -14,22 +14,92 @@ async function getCfgNumber(db, key) {
   return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
 }
 
-// Wire cost per kg for a piece type at a point in time — resolved from all
-// production runs for that piece type up to and including entryDate.
-// Uses production.total_cost minus overheads: the exact stored cost from
-// actual FIFO batch draws. Written to sales.wire_cost_per_kg at insert time
-// and never changed — permanent record of cost at point of sale.
-async function resolveWireCostPerKgForSale(db, pieceTypeId, entryDate) {
-  const result = await db.prepare(`
-    SELECT
-      COALESCE(SUM(pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation), 0) AS total_wire_cost,
-      COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+// Wire cost per kg for a piece type AND GAUGE at a point in time.
+//
+// WHY gauge filtering AND fair-sharing are both required:
+// (1) GAUGE: different wire gauges are purchased at different prices, so the
+//     landed cost per kg genuinely differs between gauges. Blending gauges
+//     together produces a rate that reflects neither accurately.
+// (2) FAIR-SHARE WITHIN EACH RUN: when a single production run makes more
+//     than one piece type (e.g. one run produces both 10mini and 20mega from
+//     the same batch of wire), that run's total cost cannot simply be summed
+//     once per piece type — doing so credits the FULL run cost to EVERY
+//     piece type it produced, inflating all of their rates by the cost that
+//     rightfully belongs to their run-mates. Each run's cost must be split
+//     across its own items by piece count FIRST, and only that piece type's
+//     fair share added to the running total, before dividing by kg to get
+//     a rate. Confirmed on real data: this exact double-counting was the
+//     cause of a persistent gap between the Dashboard's cash-basis Net
+//     Profit and the Sold-matched Net Profit KPI that never closed even
+//     once every invoice was paid and every supplier settled — because the
+//     error lived in how the snapshot was computed, not in payment timing.
+//
+// Written to sales.wire_cost_per_kg at insert time and never changed —
+// permanent record of cost at point of sale for that specific gauge.
+async function resolveWireCostPerKgForSale(db, pieceTypeId, gaugeSource, entryDate) {
+  const gauge = (gaugeSource || '').trim();
+  const runs = await db.prepare(`
+    SELECT pr.id, pr.kgs_used,
+           pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation AS wire_cost
     FROM production pr
-    JOIN production_items pi ON pi.production_id = pr.id
-    WHERE pi.piece_type_id = ?
+    WHERE COALESCE(pr.gauge, '') = ?
       AND pr.entry_date <= ?
-  `).get(pieceTypeId, entryDate);
-  return result.total_kgs > 0 ? result.total_wire_cost / result.total_kgs : 0;
+  `).all(gauge, entryDate);
+
+  let totalWireCost = 0, totalKgs = 0;
+  for (const run of runs) {
+    const items = await db.prepare(
+      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+    ).all(run.id);
+    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+    if (totalPiecesInRun === 0) continue;
+    const thisTypePieces = items
+      .filter(i => i.piece_type_id === pieceTypeId)
+      .reduce((s, i) => s + i.pieces_produced, 0);
+    if (thisTypePieces === 0) continue;
+    const share = thisTypePieces / totalPiecesInRun;
+    totalWireCost += run.wire_cost * share;
+    totalKgs      += run.kgs_used * share;
+  }
+  return totalKgs > 0 ? totalWireCost / totalKgs : 0;
+}
+
+// Conversion cost (operator + knuckler + sack) per piece for a piece type at
+// a point in time — fair-shared the same way as resolveWireCostPerKgForSale
+// above (per-run, by piece count, before aggregating). Conversion cost is
+// NOT gauge-dependent (labour effort is the same regardless of which gauge
+// wire is being worked), so this blends across gauges intentionally, but
+// still fair-shares across piece types within a mixed-type run — the same
+// double-counting bug applied here too before this fix.
+//
+// Written to sales.conversion_cost_per_piece at insert time and never
+// changed — permanent record of cost at point of sale. Lets the "Sold" P&L
+// column match conversion cost to units actually sold, exactly the way it
+// already matches wire cost, instead of falling back to whatever labour/sack
+// cash was paid out in the period (which is what the cash-basis column is for).
+async function resolveConversionCostPerPieceForSale(db, pieceTypeId, entryDate) {
+  const runs = await db.prepare(`
+    SELECT pr.id, pr.operator_cost + pr.knuckler_cost + pr.sack_cost AS conv_cost
+    FROM production pr
+    WHERE pr.entry_date <= ?
+  `).all(entryDate);
+
+  let totalConvCost = 0, totalPieces = 0;
+  for (const run of runs) {
+    const items = await db.prepare(
+      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+    ).all(run.id);
+    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+    if (totalPiecesInRun === 0) continue;
+    const thisTypePieces = items
+      .filter(i => i.piece_type_id === pieceTypeId)
+      .reduce((s, i) => s + i.pieces_produced, 0);
+    if (thisTypePieces === 0) continue;
+    const share = thisTypePieces / totalPiecesInRun;
+    totalConvCost += run.conv_cost * share;
+    totalPieces   += thisTypePieces;
+  }
+  return totalPieces > 0 ? totalConvCost / totalPieces : 0;
 }
 
 // Creates one or more sales + one invoice, atomically, with the exact same
@@ -65,6 +135,37 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
 
   const transport_rate_per_piece = await getCfgNumber(db, 'transport_to_market');
 
+  // Defensive guard: this function is the shared core for every sale-creating
+  // entry point (direct sales, order conversion). A NaN quantity would silently
+  // bypass the stock-availability check below (`row.quantity > available` is
+  // always false when row.quantity is NaN), so garbage is rejected here rather
+  // than trusted to have already been validated by the caller.
+  for (const item of items) {
+    const q = Number(item.quantity);
+    if (!Number.isFinite(q) || q <= 0) {
+      const e = new Error(`Invalid quantity for piece type ${item.piece_type_id}: must be a positive number`);
+      e.validationError = true;
+      throw e;
+    }
+    const p = Number(item.selling_price);
+    if (!Number.isFinite(p) || p < 0) {
+      const e = new Error(`Invalid selling_price for piece type ${item.piece_type_id}: must be a valid, non-negative number`);
+      e.validationError = true;
+      throw e;
+    }
+    // transport_to_market is an optional per-item override; when provided it must
+    // be a valid, non-negative number — no route validates this field today, so
+    // without this check garbage here would silently become 0 via `|| 0` below.
+    if (item.transport_to_market !== undefined && item.transport_to_market !== null && item.transport_to_market !== '') {
+      const t = Number(item.transport_to_market);
+      if (!Number.isFinite(t) || t < 0) {
+        const e = new Error(`Invalid transport_to_market for piece type ${item.piece_type_id}: must be a valid, non-negative number`);
+        e.validationError = true;
+        throw e;
+      }
+    }
+  }
+
   const enriched = items.map(item => {
     const pt = pieceTypes[item.piece_type_id];
     const transport_to_market = (item.transport_to_market !== undefined && item.transport_to_market !== null)
@@ -86,7 +187,19 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
 
   await db.transaction(async () => {
     // 1. Stock check for every item (inside transaction for ACID guarantee)
+    //
+    // IMPORTANT: two or more line items in the SAME batch can share the same
+    // piece_type_id + gauge_source (e.g. two rows of the same product sold to
+    // different prices/customers in one go). The sales table isn't touched
+    // until step 2 below, so a naive per-row DB check would validate every
+    // such row against the same stale "sold so far" snapshot and let the
+    // batch collectively oversell — each row looks fine alone, but together
+    // they exceed what was ever produced. batchReserved tracks quantity
+    // already claimed by earlier rows in THIS batch so it's counted too.
+    const batchReserved = {}; // key: `${piece_type_id}::${gauge_source}` -> running qty
     for (const row of enriched) {
+      const key = `${row.piece_type_id}::${row.gauge_source}`;
+
       const producedInGauge = await db.prepare(
         `SELECT COALESCE(SUM(pi.pieces_produced),0) AS produced
          FROM production_items pi
@@ -99,28 +212,34 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
          FROM sales WHERE piece_type_id=? AND COALESCE(gauge_source, '')=?`
       ).get(row.piece_type_id, row.gauge_source);
 
-      const produced  = parseInt(producedInGauge.produced) || 0;
-      const sold      = parseInt(soldInGauge.sold) || 0;
-      const available = produced - sold;
+      const produced       = parseInt(producedInGauge.produced) || 0;
+      const soldAlready     = parseInt(soldInGauge.sold) || 0;
+      const claimedInBatch  = batchReserved[key] || 0;
+      const available       = produced - soldAlready - claimedInBatch;
 
       if (row.quantity > available) {
         const gaugeLabel = row.gauge_source || 'unspecified gauge';
         const e = new Error(`Cannot sell ${row.quantity} pieces of ${row.pt.name} (${gaugeLabel}). Available: ${available}.`);
         e.stockError = { error: 'INSUFFICIENT_STOCK_FOR_GAUGE', message: e.message,
-          inventory: { produced, sold, available, requested: row.quantity } };
+          inventory: { produced, sold: soldAlready + claimedInBatch, available, requested: row.quantity } };
         throw e;
       }
+
+      // Reserve this row's quantity so the NEXT row checking the same
+      // piece_type + gauge sees it as already spoken for.
+      batchReserved[key] = claimedInBatch + row.quantity;
     }
 
     // 2. Insert each sale row
     for (const row of enriched) {
-      const wireCostPerKg = await resolveWireCostPerKgForSale(db, row.piece_type_id, entry_date);
+      const wireCostPerKg = await resolveWireCostPerKgForSale(db, row.piece_type_id, row.gauge_source, entry_date);
+      const conversionCostPerPiece = await resolveConversionCostPerPieceForSale(db, row.piece_type_id, entry_date);
       const saleRes = await db.prepare(
-        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg,entered_by_name)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg,entered_by_name,conversion_cost_per_piece)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
       ).run(entry_date, row.piece_type_id, row.quantity, row.selling_price,
             row.pt.default_price, row.price_overridden, row.transport_to_market,
-            customerName, row.gauge_source, userId, wireCostPerKg, userName);
+            customerName, row.gauge_source, userId, wireCostPerKg, userName, conversionCostPerPiece);
       saleIds.push(saleRes.lastInsertRowid);
     }
 
@@ -174,4 +293,4 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
   return { saleIds, invoiceId, enrichedCount: enriched.length, customerName };
 }
 
-module.exports = { getCfgNumber, resolveWireCostPerKgForSale, createBatchSaleCore };
+module.exports = { getCfgNumber, resolveWireCostPerKgForSale, resolveConversionCostPerPieceForSale, createBatchSaleCore };

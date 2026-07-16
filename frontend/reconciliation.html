@@ -149,10 +149,10 @@ async function init() {
   <button class="btn btn-primary btn-sm" onclick="loadAll()">Apply</button>
   <div style="display:flex;gap:.25rem;flex-wrap:wrap">
     <button class="period-preset" onclick="applyPreset(0,this)">Today</button>
-    <button class="period-preset" onclick="applyPreset(7,this)">7 Days</button>
+    <button class="period-preset" onclick="applyPreset(7,this)">Week</button>
     <button class="period-preset" onclick="applyPreset('this_month',this)">This Month</button>
     <button class="period-preset" onclick="applyPreset('last_month',this)">Last Month</button>
-    <button class="period-preset" onclick="applyPreset(90,this)">90 Days</button>
+    <button class="period-preset" onclick="applyPreset(90,this)">3 Months</button>
     <button class="period-preset" onclick="applyPreset(365,this)">1 Year</button>
   </div>
   <button class="btn btn-secondary btn-sm" onclick="openReconStatement()" style="margin-left:auto">Statement</button>
@@ -455,8 +455,13 @@ function applyPreset(days, btn) {
     from = new Date(today.getFullYear(), today.getMonth(), 1);
     to   = today;
   } else if (days === 'last_month') {
+    // 1st of previous month → today (last full month plus current month so far)
     from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    to   = new Date(today.getFullYear(), today.getMonth(), 0);
+    to   = today;
+  } else if (days === 90) {
+    // "3 Months": 1st of the month 3 months back → today
+    from = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+    to   = today;
   } else {
     to   = today;
     from = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
@@ -470,6 +475,7 @@ async function loadAll() {
   const from = document.getElementById('fromDate').value;
   const to   = document.getElementById('toDate').value;
   if (!from || !to) return;
+  if (from > to) { showToast('Start date is after end date — please check your range.', 'error'); return; }
   PageProgress.show(10, 'Loading reconciliation…');
 
   // Show loading skeleton in active section immediately
@@ -1668,6 +1674,11 @@ async function saveRentMonth() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 init().then(() => {
+  {
+    const _todayCap = _reconLocalDate(new Date());
+    document.getElementById('fromDate').max = _todayCap;
+    document.getElementById('toDate').max   = _todayCap;
+  }
   applyPreset(7, document.querySelector('.period-preset[onclick*="applyPreset(7"]'));
   // Deactivate preset buttons when user manually changes dates
   document.getElementById('fromDate').addEventListener('change', () => {

@@ -665,10 +665,10 @@ if (user.role === 'admin') {
     <button class="btn btn-primary btn-sm" onclick="loadDash()">Apply</button>
     <div style="display:flex;gap:.25rem;margin-left:auto;flex-wrap:wrap">
       <button class="period-preset active" onclick="applyPreset(0,this)">Today</button>
-      <button class="period-preset"        onclick="applyPreset(7,this)">7 Days</button>
+      <button class="period-preset"        onclick="applyPreset(7,this)">Week</button>
       <button class="period-preset"        onclick="applyPreset('this_month',this)">This Month</button>
       <button class="period-preset"        onclick="applyPreset('last_month',this)">Last Month</button>
-      <button class="period-preset"        onclick="applyPreset(90,this)">90 Days</button>
+      <button class="period-preset"        onclick="applyPreset(90,this)">3 Months</button>
       <button class="period-preset"        onclick="applyPreset(365,this)">1 Year</button>
     </div>
     <div id="granWrap" style="display:none;align-items:center;gap:.25rem;margin-left:.5rem">
@@ -679,7 +679,9 @@ if (user.role === 'admin') {
   <div class="kpi-grid" id="kpiGrid"></div>
   <div class="chart-pair">
     <div class="card"><div class="card-title">Revenue Trend</div>
-      <div class="chart-wrap-rel"><button class="chart-reset-btn" id="revenueChartReset" onclick="resetChartZoom('revenueChart')">↺ Reset</button><div class="chart-container"><canvas id="revenueChart"></canvas></div></div></div>
+      <div class="chart-wrap-rel"><button class="chart-reset-btn" id="revenueChartReset" onclick="resetChartZoom('revenueChart')">↺ Reset</button><div class="chart-container"><canvas id="revenueChart"></canvas></div></div>
+      <div id="earliestActivityNote" style="display:none;font-size:.75rem;color:var(--muted);text-align:center;margin-top:.4rem"></div>
+    </div>
     <div class="card"><div class="card-title">Production — kg Wire Used</div>
       <div class="chart-wrap-rel"><button class="chart-reset-btn" id="prodChartReset" onclick="resetChartZoom('prodChart')">↺ Reset</button><div class="chart-container"><canvas id="prodChart"></canvas></div></div></div>
   </div>
@@ -820,9 +822,14 @@ function applyPreset(days, btn) {
     fromD = new Date(today.getFullYear(), today.getMonth(), 1);
     toD   = today;
   } else if (days === 'last_month') {
-    // full previous calendar month: 1st → last day
+    // 1st of previous month → today (last full month plus current month so far)
     fromD = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    toD   = new Date(today.getFullYear(), today.getMonth(), 0);
+    toD   = today;
+  } else if (days === 90) {
+    // "3 Months": 1st of the month 3 months back → today
+    // (3 full trailing months plus however far into the current month we are)
+    fromD = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+    toD   = today;
   } else {
     toD   = today;
     fromD = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
@@ -832,20 +839,6 @@ function applyPreset(days, btn) {
   sessionStorage.setItem('dash_fromDate', localDateStr(fromD));
   sessionStorage.setItem('dash_toDate',   localDateStr(toD));
   loadDash();
-}
-
-function _granularity(from, to) {
-  // Parse YYYY-MM-DD as local date (not UTC) to avoid timezone-induced off-by-one
-  function _parseLocal(s) {
-    const [y,m,d] = s.split('-').map(Number);
-    return new Date(y, m-1, d);
-  }
-  const d = Math.round((_parseLocal(to)-_parseLocal(from))/864e5)+1;
-  if (d<=1)   return 'Daily';
-  if (d<=31)  return 'Daily';
-  if (d<=90)  return 'Weekly';
-  if (d<=365) return 'Monthly';
-  return 'Quarterly';
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -902,6 +895,7 @@ async function loadDash(){
   const from=document.getElementById('fromDate')?.value;
   const to=document.getElementById('toDate')?.value;
   if(!from||!to) return;
+  if(from>to){ showToast('Start date is after end date — please check your range.','error'); return; }
   _dashLoading = true;
 
   // Show skeleton + chart loaders immediately — no idle white screen
@@ -909,9 +903,8 @@ async function loadDash(){
   showAllChartLoaders();
   PageProgress.show(5, 'Loading dashboard…');
 
-  const gran=_granularity(from,to);
-  const gw=document.getElementById('granWrap'), gb=document.getElementById('granBadge');
-  if(gw&&gb){gw.style.display='flex';gb.textContent=gran;}
+  const gw=document.getElementById('granWrap');
+  if(gw) gw.style.display='flex';
 
   try {
     // Fire all 6 fetches in parallel; update progress as each resolves
@@ -950,6 +943,16 @@ async function loadDash(){
     }
     const k=d.kpis, raw=inv.raw_material;
 
+    const earliestNote = document.getElementById('earliestActivityNote');
+    if (earliestNote) {
+      if (d.earliest_activity && from < d.earliest_activity) {
+        earliestNote.textContent = `Data available from ${d.earliest_activity}`;
+        earliestNote.style.display = 'block';
+      } else {
+        earliestNote.style.display = 'none';
+      }
+    }
+
     // ── Show Rent toggle ─────────────────────────────────────────────────────
     // Uses the shared loadGlobalConfig / getConfig pattern from shared.js.
     // No extra network call — config is cached after first load.
@@ -961,6 +964,12 @@ async function loadDash(){
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     // Outstanding figures are all-time snapshots, not period-filtered
+    // Single source for the Cost of Sales KPI — value and its % subtitle
+    // must always describe the exact same figure, so this is computed once
+    // and both the KES amount and the percentage below read from it.
+    const costOfSalesShown = showRent
+      ? k.direct_costs_sold + (parseFloat(rb.cost_breakdown?.rent_cost?.amount) || 0)
+      : k.direct_costs_sold;
     const recvAmt  = d.summary?.invoices?.outstanding_amount || 0;
     const recvCnt  = d.summary?.invoices?.partial_count || 0;
     const payAmt   = showRent
@@ -989,7 +998,7 @@ async function loadDash(){
           <div class="kpi-sub ${(showRent?k.net_profit:k.gross_profit)<0?'danger':'ok'}"><span class="dot" style="background:${(showRent?k.net_profit:k.gross_profit)<0?'var(--red)':'var(--g500)'}"></span><span>${showRent?k.net_margin_pct:k.gross_margin_pct}% ${showRent?'net':'gross'} margin</span></div>
         </div>
       </div>
-      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'info'}" title="${showRent?'Revenue minus Cost of Goods Sold minus Rent':'Revenue minus Cost of Goods Sold'} — wire cost is matched only to units actually sold (FIFO snapshot at time of sale), so wire still sitting in raw stock or in unsold processed pieces is never expensed early · will equal ${showRent?'Net':'Gross'} Profit once all current stock has been sold · ${from} → ${to}">
+      <div class="kpi ${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'danger':'info'}" title="Profit from items sold · ${from} → ${to}">
         <div class="kpi-icon">${(showRent?k.cogs_net_profit:k.cogs_gross_profit)<0?'📉':'🎯'}</div>
         <div class="kpi-body">
           <div class="kpi-label">Sold ${showRent?'Net':'Gross'}</div>
@@ -1001,8 +1010,8 @@ async function loadDash(){
         <div class="kpi-icon">🧾</div>
         <div class="kpi-body">
           <div class="kpi-label">Cost of Sales</div>
-          <div class="kpi-value">${tipSpan(compactKES(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold), fmtMoneyExact(showRent?(k.direct_costs_sold+(parseFloat(rb.cost_breakdown?.rent_cost?.amount)||0)):k.direct_costs_sold))}</div>
-          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(100-k.net_margin_pct).toFixed(1):0}% of revenue · est.</span></div>
+          <div class="kpi-value">${tipSpan(compactKES(costOfSalesShown), fmtMoneyExact(costOfSalesShown))}</div>
+          <div class="kpi-sub"><span class="dot"></span><span>${k.total_revenue>0?(costOfSalesShown/k.total_revenue*100).toFixed(1):0}% of revenue</span></div>
         </div>
       </div>
       <div class="kpi" title="Order pipeline — pending / finalized / cancelled, all-time snapshot">
@@ -1496,6 +1505,8 @@ if (user.role==='admin') {
   const _savedTo   = sessionStorage.getItem('dash_toDate');
   const toD = new Date();
   const _todayStr = _localDateStr(toD);
+  document.getElementById('fromDate').max = _todayStr;
+  document.getElementById('toDate').max   = _todayStr;
   const _isStale  = _savedTo && _savedTo !== _todayStr;
   // 7 Days = today-6 to today = 7 inclusive calendar days (same fix as applyPreset)
   const fromD = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate()-6);
@@ -1505,6 +1516,7 @@ if (user.role==='admin') {
     // Saved dates are from a previous day — clear them so presets recalculate from today
     sessionStorage.removeItem('dash_fromDate');
     sessionStorage.removeItem('dash_toDate');
+    showToast('Your saved date range expired — showing last 7 days.');
   }
   if (!_isStale && (_savedFrom || _savedTo)) {
     document.querySelectorAll('.period-preset').forEach(b => b.classList.remove('active'));
@@ -1615,17 +1627,20 @@ async function exportPnLPDF() {
     const tranCost    = parseFloat(bd.transport_cost?.amount)  || 0;
     const rentCost    = parseFloat(bd.rent_cost?.amount)       || 0;
 
-    // WORKING (accrual) column — wire cost matched only to units actually sold
-    // (FIFO snapshot at time of sale), so wire still sitting in raw stock or
-    // in unsold processed pieces is never expensed early. Revenue is likewise
-    // the billed value of what was actually sold this period, not cash
-    // collected (which can belong to a sale from an earlier period).
-    // Conversion (labour & sacks) and transport costs are unchanged between
-    // columns — not affected by the bulk-purchase/collection timing issue
-    // this column addresses. Same /dashboard call as above, same from/to
-    // slicer — no separate request, no risk of a mismatched period.
+    // WORKING (accrual) column — every direct cost line is matched only to
+    // units actually sold (a per-sale snapshot resolved at the point of sale,
+    // the same way wire cost already was), so cost still sitting in raw
+    // stock, unsold processed pieces, or a bulk cash payment for stock not
+    // yet sold never distorts this column. Revenue is cash actually RECEIVED
+    // this period against sale-linked invoices only (manual invoices excluded) —
+    // it can belong to a sale from an earlier period if payment came in late,
+    // so a sale's revenue and its cost can land in different periods. Same /dashboard and
+    // /revenue-breakdown calls as above, same from/to slicer — no separate
+    // request, no risk of a mismatched period.
     const soldRevenue     = parseFloat(k.sold_revenue)             || 0;
     const cogsWireCost    = parseFloat(k.cogs_wire_cost)           || 0;
+    const cogsConvCost    = parseFloat(bd.conversion_cost?.cogs_amount) || 0;
+    const cogsTranCost    = parseFloat(bd.transport_cost?.cogs_amount)  || 0;
     const cogsDirectCosts = parseFloat(k.cogs_direct_costs_sold)   || 0;
     const cogsGrossProfit = parseFloat(k.cogs_gross_profit)        || 0;
     const cogsGrossMargin = parseFloat(k.cogs_gross_margin_pct)    || 0;
@@ -1829,8 +1844,8 @@ async function exportPnLPDF() {
     drawTable([
       sectionRow('COST OF SALES'),
       cmpRow('Wire / Raw Material Cost',         wireCost,    cogsWireCost, 'item'),
-      cmpRow('Labour & Sacks (Conversion Cost)', convCost,    convCost,     'item'),
-      cmpRow('Transport to Market',              tranCost,    tranCost,     'item'),
+      cmpRow('Labour & Sacks (Conversion Cost)', convCost,    cogsConvCost, 'item'),
+      cmpRow('Transport to Market',              tranCost,    cogsTranCost, 'item'),
       cmpRow('Total Cost of Sales',              costOfSales, cogsDirectCosts, 'total'),
     ]);
 

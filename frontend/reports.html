@@ -53,10 +53,10 @@ async function init() {
     <button class="btn btn-primary btn-sm" onclick="loadAll()">Apply</button>
     <div style="display:flex;gap:.25rem;flex-wrap:wrap">
       <button class="period-preset" onclick="preset(0,this)">Today</button>
-      <button class="period-preset" onclick="preset(7,this)">7 Days</button>
+      <button class="period-preset" onclick="preset(7,this)">Week</button>
       <button class="period-preset" onclick="preset('this_month',this)">This Month</button>
       <button class="period-preset" onclick="preset('last_month',this)">Last Month</button>
-      <button class="period-preset" onclick="preset(90,this)">90 Days</button>
+      <button class="period-preset" onclick="preset(90,this)">3 Months</button>
       <button class="period-preset" onclick="preset(365,this)">1 Year</button>
     </div>
     <button class="btn btn-primary btn-sm" onclick="generatePDF()" id="pdfBtn" style="margin-left:auto;background:var(--red);border-color:var(--red)">📄 Export PDF</button>
@@ -165,8 +165,13 @@ function preset(days, btn) {
     from = new Date(today.getFullYear(), today.getMonth(), 1);
     to   = today;
   } else if (days === 'last_month') {
+    // 1st of previous month → today (last full month plus current month so far)
     from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    to   = new Date(today.getFullYear(), today.getMonth(), 0);
+    to   = today;
+  } else if (days === 90) {
+    // "3 Months": 1st of the month 3 months back → today
+    from = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+    to   = today;
   } else {
     to   = today;
     from = days === 0 ? new Date(today) : new Date(today.getFullYear(), today.getMonth(), today.getDate() - (days - 1));
@@ -181,6 +186,7 @@ async function loadAll() {
   const from = document.getElementById('fromDate').value;
   const to   = document.getElementById('toDate').value;
   if (!from || !to) return;
+  if (from > to) { showToast('Start date is after end date — please check your range.', 'error'); return; }
   PageProgress.show(10, 'Loading report data…');
 
   // Show skeletons in all table bodies while loading
@@ -233,7 +239,7 @@ async function loadAll() {
       <div class="kpi rev"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Revenue</div><span>💰</span></div>
         <div class="kpi-value mono">${tipSpan(fmt(totalRev), fmtMoneyExact(totalRev))}</div><div class="kpi-sub">KES total income</div></div>
       <div class="kpi ${profit<0?'danger':'prof'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Net Profit</div><span>📈</span></div>
-        <div class="kpi-value mono">${tipSpan(fmt(profit), fmtMoneyExact(profit))}</div><div class="kpi-sub">sold items only, plus rent</div></div>
+        <div class="kpi-value mono">${tipSpan(fmt(profit), fmtMoneyExact(profit))}</div><div class="kpi-sub">cash received minus cash paid, plus rent</div></div>
       <div class="kpi buy"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Material Flow</div><span>📦</span></div>
         <div class="kpi-value mono">${tipSpan(fmtKg(totalKgs), fmtKgExact(totalKgs))}</div><div class="kpi-sub">raw wire bought</div></div>
       <div class="kpi ${parseFloat(efficiency)<90?'warning':'prod'}"><div style="display:flex;justify-content:space-between"><div class="kpi-label">Utilization</div><span>⚙</span></div>
@@ -475,8 +481,10 @@ async function generatePDF() {
     // 3. Financial Summary (Executive Summary)
     const totalRev  = _sales.reduce((s,r) => s + (parseFloat(r.revenue)||0), 0);
     const directCosts = parseFloat(_dashboard?.kpis?.direct_costs_sold ?? 0);
-    // Rent cost removed from profit calculation
-    const profit = parseFloat(_dashboard?.kpis?.net_profit ?? (totalRev - directCosts));
+    const rentCost = parseFloat(_dashboard?.kpis?.rent_cost ?? 0);
+    // net_profit from the dashboard is cash-basis and already has rent subtracted;
+    // the fallback below matches that so it doesn't disagree with the primary value.
+    const profit = parseFloat(_dashboard?.kpis?.net_profit ?? (totalRev - directCosts - rentCost));
     
     // Calculate top product for PDF
     const productSales = {};
@@ -492,7 +500,7 @@ async function generatePDF() {
       body: [
         ['Total Revenue', `KES ${fmt(totalRev)}`, 'Gross sales for the period'],
         ['Sold Item Direct Costs', `KES ${fmt(directCosts)}`, `Wire + conversion + market transport for ${fmt(_dashboard?.kpis?.total_pieces_sold ?? 0)} sold pieces`],
-        ['Net Profit', `KES ${fmt(profit)}`, 'Revenue minus sold-item direct costs (excluding rent)'],
+        ['Net Profit', `KES ${fmt(profit)}`, 'Cash received minus cash paid, including rent'],
         ['Best Performing Item', topProduct[0], `${fmt(topProduct[1])} KES revenue generated`],
       ],
       theme: 'grid',
@@ -793,6 +801,11 @@ async function loadGaugeKpi() {
 const _origShowTab = typeof showTab !== 'undefined' ? showTab : null;
 
 init().then(() => {
+  {
+    const _todayCap = localDateString(new Date());
+    document.getElementById('fromDate').max = _todayCap;
+    document.getElementById('toDate').max   = _todayCap;
+  }
   preset(7, document.querySelector('.period-preset[onclick*="preset(7"]'));
   // Deactivate preset buttons when user manually changes dates
   document.getElementById('fromDate').addEventListener('change', () => {

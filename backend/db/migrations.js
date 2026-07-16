@@ -507,6 +507,180 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    id: '015-sales-conversion-cost-per-piece',
+    version: '2.12.0',
+    description: 'Add conversion_cost_per_piece to sales table. Stores the actual blended labour (operator+knuckler+sack) cost per piece at the time of sale, resolved the same way wire_cost_per_kg already is — blended from production records for that piece type up to and including the sale date. Immutable after insert. Lets the Sold P&L column match conversion cost to units actually sold instead of reusing the cash-paid figure.',
+    async up(db) {
+      try {
+        const cols = await db.prepare('PRAGMA table_info(sales)').all();
+        if (!cols.some(c => c.name === 'conversion_cost_per_piece')) {
+          await db.exec('ALTER TABLE sales ADD COLUMN conversion_cost_per_piece REAL NOT NULL DEFAULT 0');
+        }
+
+        // Backfill existing sales rows: for each sale, compute the blended
+        // conversion cost per piece from all production runs for that
+        // piece_type_id up to and including the sale's entry_date.
+        const sales = await db.prepare(
+          `SELECT id, piece_type_id, entry_date FROM sales WHERE conversion_cost_per_piece = 0`
+        ).all();
+
+        for (const sale of sales) {
+          const result = await db.prepare(`
+            SELECT
+              COALESCE(SUM(pr.operator_cost + pr.knuckler_cost + pr.sack_cost), 0) AS total_conv_cost,
+              COALESCE(SUM(pi.pieces_produced), 0) AS total_pieces
+            FROM production pr
+            JOIN production_items pi ON pi.production_id = pr.id
+            WHERE pi.piece_type_id = ?
+              AND pr.entry_date <= ?
+          `).get(sale.piece_type_id, sale.entry_date);
+
+          const conversionCostPerPiece = result.total_pieces > 0
+            ? result.total_conv_cost / result.total_pieces
+            : 0;
+
+          await db.prepare(
+            `UPDATE sales SET conversion_cost_per_piece = ? WHERE id = ?`
+          ).run(conversionCostPerPiece, sale.id);
+        }
+      } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
+        console.warn('Migration 015:', err?.message);
+      }
+    },
+  },
+  {
+    id: '016-wire-cost-per-kg-by-gauge',
+    version: '2.13.0',
+    description: 'Recompute sales.wire_cost_per_kg per gauge instead of blended across all gauges for a piece type. Different wire gauges are purchased at different landed costs, so blending them together produced a rate that matched neither gauge — this permanently threw off the Dashboard Sold Gross/Net KPI, the P&L PDF Sold Items column, the wire cost drill-down panel, and the Cash Basis vs Sold Items system check, none of which could balance while the rate was blended. Fix: re-resolve each existing sale\'s wire_cost_per_kg using only production runs matching both its piece_type_id AND its gauge_source, exactly what saleCore.js now does for new sales going forward.',
+    async up(db) {
+      try {
+        const sales = await db.prepare(
+          `SELECT id, piece_type_id, gauge_source, entry_date FROM sales`
+        ).all();
+
+        for (const sale of sales) {
+          const gauge = (sale.gauge_source || '').trim();
+          const result = await db.prepare(`
+            SELECT
+              COALESCE(SUM(pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation), 0) AS total_wire_cost,
+              COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+            FROM production pr
+            JOIN production_items pi ON pi.production_id = pr.id
+            WHERE pi.piece_type_id = ?
+              AND COALESCE(pr.gauge, '') = ?
+              AND pr.entry_date <= ?
+          `).get(sale.piece_type_id, gauge, sale.entry_date);
+
+          const correctedRate = result.total_kgs > 0
+            ? result.total_wire_cost / result.total_kgs
+            : 0;
+
+          await db.prepare(
+            `UPDATE sales SET wire_cost_per_kg = ? WHERE id = ?`
+          ).run(correctedRate, sale.id);
+        }
+
+        console.log(`✅  Migration 016: recomputed wire_cost_per_kg on ${sales.length} sale(s) using gauge-specific rates`);
+      } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
+        console.warn('Migration 016:', err?.message);
+      }
+    },
+  },
+  {
+    id: '017-fair-share-mixed-production-runs',
+    version: '2.14.0',
+    description: 'Recompute sales.wire_cost_per_kg and sales.conversion_cost_per_piece using a fair-share-by-piece-count formula for production runs that made more than one piece type. The previous formula summed a shared run\'s FULL cost once per piece type it produced instead of splitting it fairly, inflating the rate for every piece type that shared a run. This caused a persistent gap between the Dashboard\'s cash-basis Net Profit and the Sold-matched Net Profit KPI that never closed even once every invoice was paid and every supplier settled, because the error was baked into the immutable snapshot at the moment of sale, not related to payment timing. Confirmed on real data: this fix closes the gap to exactly zero.',
+    async up(db) {
+      try {
+        const sales = await db.prepare(
+          `SELECT id, piece_type_id, gauge_source, entry_date FROM sales`
+        ).all();
+
+        // Cache production run + item lookups across sales in this migration run —
+        // avoids re-querying the same production data for every sale.
+        const runCache = new Map(); // gauge -> array of {id, kgs_used, wire_cost, conv_cost}
+        const itemsCache = new Map(); // production_id -> array of {piece_type_id, pieces_produced}
+
+        async function getItems(productionId) {
+          if (itemsCache.has(productionId)) return itemsCache.get(productionId);
+          const items = await db.prepare(
+            'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+          ).all(productionId);
+          itemsCache.set(productionId, items);
+          return items;
+        }
+
+        for (const sale of sales) {
+          const gauge = (sale.gauge_source || '').trim();
+
+          // ── Wire cost per kg: fair-shared within each run matching this gauge ──
+          const wireCacheKey = `wire::${gauge}::${sale.entry_date}`;
+          let wireRuns = runCache.get(wireCacheKey);
+          if (!wireRuns) {
+            wireRuns = await db.prepare(`
+              SELECT id, kgs_used,
+                     total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation AS wire_cost
+              FROM production
+              WHERE COALESCE(gauge, '') = ? AND entry_date <= ?
+            `).all(gauge, sale.entry_date);
+            runCache.set(wireCacheKey, wireRuns);
+          }
+          let totalWireCost = 0, totalKgs = 0;
+          for (const run of wireRuns) {
+            const items = await getItems(run.id);
+            const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+            if (totalPiecesInRun === 0) continue;
+            const thisTypePieces = items
+              .filter(i => i.piece_type_id === sale.piece_type_id)
+              .reduce((s, i) => s + i.pieces_produced, 0);
+            if (thisTypePieces === 0) continue;
+            const share = thisTypePieces / totalPiecesInRun;
+            totalWireCost += run.wire_cost * share;
+            totalKgs      += run.kgs_used * share;
+          }
+          const correctedWireRate = totalKgs > 0 ? totalWireCost / totalKgs : 0;
+
+          // ── Conversion cost per piece: fair-shared within each run, any gauge ──
+          const convCacheKey = `conv::${sale.entry_date}`;
+          let convRuns = runCache.get(convCacheKey);
+          if (!convRuns) {
+            convRuns = await db.prepare(`
+              SELECT id, operator_cost + knuckler_cost + sack_cost AS conv_cost
+              FROM production
+              WHERE entry_date <= ?
+            `).all(sale.entry_date);
+            runCache.set(convCacheKey, convRuns);
+          }
+          let totalConvCost = 0, totalConvPieces = 0;
+          for (const run of convRuns) {
+            const items = await getItems(run.id);
+            const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+            if (totalPiecesInRun === 0) continue;
+            const thisTypePieces = items
+              .filter(i => i.piece_type_id === sale.piece_type_id)
+              .reduce((s, i) => s + i.pieces_produced, 0);
+            if (thisTypePieces === 0) continue;
+            const share = thisTypePieces / totalPiecesInRun;
+            totalConvCost   += run.conv_cost * share;
+            totalConvPieces += thisTypePieces;
+          }
+          const correctedConvRate = totalConvPieces > 0 ? totalConvCost / totalConvPieces : 0;
+
+          await db.prepare(
+            `UPDATE sales SET wire_cost_per_kg = ?, conversion_cost_per_piece = ? WHERE id = ?`
+          ).run(correctedWireRate, correctedConvRate, sale.id);
+        }
+
+        console.log(`✅  Migration 017: recomputed wire_cost_per_kg and conversion_cost_per_piece on ${sales.length} sale(s) using fair-share-within-run formula`);
+      } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
+        console.warn('Migration 017:', err?.message);
+      }
+    },
+  },
 ];
 
 // Track which migrations have been applied

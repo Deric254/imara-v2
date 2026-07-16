@@ -202,9 +202,9 @@ async function loadAll() {
 function renderKpis(s) {
   const t = s && s.totals ? s.totals : {};
   document.getElementById('kpiStrip').innerHTML = `
-    <div class="inv-kpi blue"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_billed)}</div><div class="inv-kpi-l">Total Invoiced (${t.total_invoices||0})</div></div>
-    <div class="inv-kpi green"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_collected)}</div><div class="inv-kpi-l">Collected &mdash; ${t.paid_count||0} Paid</div></div>
-    <div class="inv-kpi ${(t.total_outstanding||0)>0?'amber':''}"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_outstanding)}</div><div class="inv-kpi-l">Outstanding &mdash; ${t.partial_payment_count||0} Pending</div></div>`;
+    <div class="inv-kpi blue" title="Total value of invoices created in this period"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_billed)}</div><div class="inv-kpi-l">Total Invoiced (${t.total_invoices||0})</div></div>
+    <div class="inv-kpi green" title="Payments received against invoices created in this period — filtered by invoice date, not payment date. May differ from Dashboard's Revenue Received, which filters by the date each payment actually came in."><div class="inv-kpi-v">${cur()} ${fmtM(t.total_collected)}</div><div class="inv-kpi-l">Collected &mdash; ${t.paid_count||0} Paid</div></div>
+    <div class="inv-kpi ${(t.total_outstanding||0)>0?'amber':''}" title="Invoices created in this period with a balance still owed"><div class="inv-kpi-v">${cur()} ${fmtM(t.total_outstanding)}</div><div class="inv-kpi-l">Outstanding &mdash; ${t.partial_payment_count||0} Pending</div></div>`;
 }
 
 function isPending(inv) {
@@ -1073,7 +1073,6 @@ async function confirmPayment(id) {
 
 /* ── CREATE / EDIT ── */
 function openCreate(){ _editId=null; showForm(null); }
-function openEdit(inv){ _editId=inv.id; showForm(inv); }
 
 function showForm(inv) {
   const now = new Date();

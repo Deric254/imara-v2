@@ -41,12 +41,11 @@ async function loadSystemHealth() {
     await loadGlobalConfig();
     
     // Fetch health data from all endpoints
-    const [users, production, sales, invoices, payments, dbStats] = await Promise.all([
+    const [users, production, sales, invoices, dbStats] = await Promise.all([
       api('GET', '/users').catch(() => []),
       api('GET', '/daily/production?from=2000-01-01&to=2099-12-31').catch(() => []),
       api('GET', '/daily/sales?from=2000-01-01&to=2099-12-31').catch(() => []),
       api('GET', '/invoices?from=2000-01-01&to=2099-12-31').catch(() => []),
-      api('GET', '/reconciliation/summary?from=2000-01-01&to=2099-12-31').catch(() => {}),
       api('GET', '/db-stats').catch(() => null),
     ]);
 

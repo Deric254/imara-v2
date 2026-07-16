@@ -17,6 +17,39 @@ pg.innerHTML = `
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem" id="configGrid">
 
   <div class="card">
+    <div class="card-title">Business Information</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="label">Business Name</label>
+        <input class="input" id="c_business_name" placeholder="IMARA LINKS">
+      </div>
+      <div class="form-group">
+        <label class="label">Currency Code</label>
+        <input class="input" id="c_currency" placeholder="KES" maxlength="5" style="text-transform:uppercase">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="label">Business Slogan</label>
+      <input class="input" id="c_business_slogan" placeholder="Built Strong By IMARA">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="label">Invoice Number Prefix</label>
+        <input class="input" id="c_invoice_prefix" placeholder="INV" maxlength="10" style="text-transform:uppercase">
+      </div>
+      <div class="form-group">
+        <label class="label">Invoice Tax <span style="font-weight:400;color:var(--muted)">(%)</span></label>
+        <input class="input" type="number" id="c_invoice_tax_pct" min="0" max="100" step="0.1" placeholder="0">
+      </div>
+    </div>
+    <div style="font-size:.75rem;color:var(--muted);margin-top:.3rem;margin-bottom:.75rem">
+      These appear on every invoice, receipt, and P&amp;L report exported from the system.
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveBusinessInfo()">Save Business Info</button>
+    <div id="biz_err" class="err" style="margin-top:.5rem"></div>
+  </div>
+
+  <div class="card">
     <div class="card-title">Default Costs Market (KES)</div>
     <div class="form-row">
       <div class="form-group">
@@ -172,6 +205,11 @@ async function load() {
     document.getElementById('c_rent').value = getConfig('rent_allocation', '');
     document.getElementById('c_threshold').value = getConfig('stock_threshold', '');
     document.getElementById('c_wire_gauges').value = getConfig('wire_gauges', '');
+    document.getElementById('c_business_name').value = getConfig('business_name', '');
+    document.getElementById('c_business_slogan').value = getConfig('business_slogan', '');
+    document.getElementById('c_currency').value = getConfig('currency', '');
+    document.getElementById('c_invoice_prefix').value = getConfig('invoice_prefix', '');
+    document.getElementById('c_invoice_tax_pct').value = getConfig('invoice_tax_pct', '');
 
     // Load rent toggle state
     setRentToggle(getConfig('show_rent_dashboard', '0') === '1');
@@ -215,6 +253,27 @@ function escJs(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
+async function saveBusinessInfo() {
+  showErr('biz_err', '');
+  const vals = {
+    business_name:    document.getElementById('c_business_name').value.trim(),
+    business_slogan:  document.getElementById('c_business_slogan').value.trim(),
+    currency:         document.getElementById('c_currency').value.trim().toUpperCase(),
+    invoice_prefix:   document.getElementById('c_invoice_prefix').value.trim().toUpperCase(),
+    invoice_tax_pct:  document.getElementById('c_invoice_tax_pct').value,
+  };
+  if (vals.invoice_tax_pct !== '' && (isNaN(parseFloat(vals.invoice_tax_pct)) || parseFloat(vals.invoice_tax_pct) < 0 || parseFloat(vals.invoice_tax_pct) > 100)) {
+    return showErr('biz_err', 'Invoice tax must be a number between 0 and 100');
+  }
+  try {
+    await api('PUT', '/config', vals);
+    await refreshGlobalConfig();
+    showToast('Business info saved');
+  } catch (e) {
+    showErr('biz_err', e.error || 'Failed to save');
+  }
+}
+
 async function saveCosts() {
   showErr('cost_err', '');
   const vals = {
@@ -226,7 +285,7 @@ async function saveCosts() {
     rent_allocation: document.getElementById('c_rent').value,
   };
   for (const [k, v] of Object.entries(vals)) {
-    if (v !== '' && isNaN(parseFloat(v))) return showErr('cost_err', `Invalid value for ${k}`);
+    if (v !== '' && (isNaN(parseFloat(v)) || parseFloat(v) < 0)) return showErr('cost_err', `${k} must be a non-negative number`);
   }
   try {
     await api('PUT', '/config', vals);
@@ -260,8 +319,8 @@ async function saveMetrics() {
     stock_threshold:      document.getElementById('c_threshold').value,
     show_rent_dashboard:  _rentOn ? '1' : '0',
   };
-  if (vals.stock_threshold !== '' && isNaN(parseFloat(vals.stock_threshold))) {
-    return showErr('metric_err', 'Invalid threshold');
+  if (vals.stock_threshold !== '' && (isNaN(parseFloat(vals.stock_threshold)) || parseFloat(vals.stock_threshold) < 0)) {
+    return showErr('metric_err', 'Threshold must be a non-negative number');
   }
   try {
     await api('PUT', '/config', vals);

@@ -8,6 +8,11 @@ const { isFutureDate } = require('../lib/dateGuard');
 
 const OWNER_ADMIN = [authenticate, requireRole('owner','admin')];
 const num = v => parseFloat(v) || 0;
+// num() coerces anything non-numeric (including garbage text) down to 0, which is
+// indistinguishable from a legitimately-entered 0. isValidNumber() is the explicit
+// gate used before num() on user-supplied fields, so garbage is rejected with a
+// clear error instead of silently being stored as 0.
+const isValidNumber = v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
 
 // ── Generate invoice number ───────────────────────────────────────────────────
 // Uses MAX(id) rather than ORDER BY id DESC LIMIT 1 so that deleting the most
@@ -211,13 +216,19 @@ router.post('/', ...OWNER_ADMIN,
       if (!items?.length) return res.status(400).json({ error: 'At least one item required' });
       if (isFutureDate(invoice_date))
         return res.status(400).json({ error: 'invoice_date cannot be in the future' });
+      if (!isValidNumber(discount_pct))
+        return res.status(400).json({ error: 'discount_pct must be a valid number' });
       if (num(discount_pct) < 0 || num(discount_pct) > 100)
         return res.status(400).json({ error: 'discount_pct must be between 0 and 100' });
+      if (!isValidNumber(amount_paid))
+        return res.status(400).json({ error: 'amount_paid must be a valid number' });
 
       // Validate items
       for (const [i, item] of items.entries()) {
         if (!item.description?.trim()) return res.status(400).json({ error: `Item ${i+1}: description required` });
+        if (!isValidNumber(item.quantity)) return res.status(400).json({ error: `Item ${i+1}: quantity must be a valid number` });
         if (!(num(item.quantity) > 0)) return res.status(400).json({ error: `Item ${i+1}: quantity must be > 0` });
+        if (!isValidNumber(item.unit_price)) return res.status(400).json({ error: `Item ${i+1}: price must be a valid number` });
         if (num(item.unit_price) < 0) return res.status(400).json({ error: `Item ${i+1}: price cannot be negative` });
       }
 
@@ -332,14 +343,20 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     // Same per-item guards as invoice creation — an edit must not be able to
     // silently zero-out a line's price/quantity or save a blank description.
     if (items) {
+      if (!isValidNumber(discount_pct))
+        return res.status(400).json({ error: 'discount_pct must be a valid number' });
       if (num(discount_pct) < 0 || num(discount_pct) > 100)
         return res.status(400).json({ error: 'discount_pct must be between 0 and 100' });
       for (const [i, item] of items.entries()) {
         if (!item.description?.trim()) return res.status(400).json({ error: `Item ${i+1}: description required` });
+        if (!isValidNumber(item.quantity)) return res.status(400).json({ error: `Item ${i+1}: quantity must be a valid number` });
         if (!(num(item.quantity) > 0)) return res.status(400).json({ error: `Item ${i+1}: quantity must be > 0` });
+        if (!isValidNumber(item.unit_price)) return res.status(400).json({ error: `Item ${i+1}: price must be a valid number` });
         if (num(item.unit_price) < 0) return res.status(400).json({ error: `Item ${i+1}: price cannot be negative` });
       }
     }
+    if (amount_paid != null && !isValidNumber(amount_paid))
+      return res.status(400).json({ error: 'amount_paid must be a valid number' });
 
     const taxPct = parseFloat((await db.prepare("SELECT value FROM config WHERE key='invoice_tax_pct'").get())?.value || 0);
 
@@ -507,7 +524,9 @@ router.post('/:id/cash', ...OWNER_ADMIN, async (req, res) => {
     if (inv.status === 'cancelled') return res.status(400).json({ error: 'Cannot pay a cancelled invoice' });
 
     const { amount_paid, payment_method = 'cash', payment_date, notes = '' } = req.body;
-    if (!amount_paid || parseFloat(amount_paid) <= 0)
+    if (!isValidNumber(amount_paid))
+      return res.status(400).json({ error: 'amount_paid must be a valid number' });
+    if (parseFloat(amount_paid) <= 0)
       return res.status(400).json({ error: 'amount_paid must be > 0' });
     if (!payment_date)
       return res.status(400).json({ error: 'payment_date required' });

@@ -147,6 +147,9 @@ async function runChecks(db) {
       ['invoice_payments → invoices', `SELECT COUNT(*) n FROM invoice_payments p LEFT JOIN invoices i ON i.id=p.invoice_id WHERE i.id IS NULL`],
       ['production_items → production', `SELECT COUNT(*) n FROM production_items pi LEFT JOIN production pr ON pr.id=pi.production_id WHERE pr.id IS NULL`],
       ['sales → piece_types',         `SELECT COUNT(*) n FROM sales s LEFT JOIN piece_types pt ON pt.id=s.piece_type_id WHERE pt.id IS NULL`],
+      ['invoice_items → piece_types', `SELECT COUNT(*) n FROM invoice_items ii LEFT JOIN piece_types pt ON pt.id=ii.piece_type_id WHERE ii.piece_type_id IS NOT NULL AND pt.id IS NULL`],
+      ['order_items → piece_types',   `SELECT COUNT(*) n FROM order_items oi LEFT JOIN piece_types pt ON pt.id=oi.piece_type_id WHERE pt.id IS NULL`],
+      ['production → purchases',      `SELECT COUNT(*) n FROM production pr LEFT JOIN purchases p ON p.id=pr.purchase_id WHERE pr.purchase_id IS NOT NULL AND p.id IS NULL`],
     ];
     const results = [];
     for (const [label, sql] of orphanChecks) {
@@ -154,7 +157,7 @@ async function runChecks(db) {
       if (r.n > 0) results.push(`${label}: ${r.n} orphaned row(s)`);
     }
     push('referential_integrity', 'No orphaned rows in key relationships', results.length ? 'fail' : 'pass',
-      results.length ? results.join('; ') : 'Checked 5 key relationships — no orphaned rows found.');
+      results.length ? results.join('; ') : `Checked ${orphanChecks.length} key relationships — no orphaned rows found.`);
   } catch (e) {
     push('referential_integrity', 'No orphaned rows in key relationships', 'fail', `Check could not run: ${e.message}`);
   }
@@ -173,10 +176,6 @@ async function runChecks(db) {
     const cashCosts = (paidMap.supplier||0)+(paidMap.wages_operator||0)+(paidMap.wages_knuckler||0)+(paidMap.sack||0)+(paidMap.transport_to_market||0);
     const rentPaid  = paidMap.rent || 0;
     const totalPayments = Object.values(paidMap).reduce((a,b)=>a+b, 0);
-
-    const outstanding = await db.prepare(`
-      SELECT COALESCE(SUM(amount_due),0) AS due FROM rent_months WHERE month = ? AND paid = 0
-    `).get(`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`);
 
     const diff = Math.abs((cashCosts + rentPaid) - totalPayments);
     push('pnl_reconciliation_tie', `Cost of Sales + Rent ties to Reconciliation (${from} to ${to})`,
@@ -207,11 +206,58 @@ async function runChecks(db) {
       ) y ON y.piece_type_id = x.piece_type_id AND y.gauge = x.gauge
     `).get();
 
-    const cashWireCost = (await db.prepare(`SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE category = 'supplier'`).get()).v;
-    const soldWireCost = (await db.prepare(`
-      SELECT COALESCE(SUM(s.quantity * pt.weight_kg * s.wire_cost_per_kg),0) AS v
-      FROM sales s JOIN piece_types pt ON pt.id = s.piece_type_id
-    `).get()).v;
+    const cashWireCost = (await db.prepare('SELECT COALESCE(SUM(amount),0) AS v FROM payments WHERE category = \'supplier\'').get()).v;
+
+    // soldWireCost — production-inward attribution:
+    //
+    // For each production run, take the wire cost recorded on that run and
+    // multiply it by the fraction of its pieces that have been sold.
+    // When every piece from every run is sold, each fraction is 1.0 and
+    // soldWireCost = total production wire cost = cash paid to suppliers.
+    //
+    // WHY this formula and not (quantity x weight_kg x wire_cost_per_kg):
+    //   weight_kg is a planning spec. Production may use more or less wire per
+    //   piece than the spec (scrap, yield variation). The spec-based formula
+    //   permanently under- or over-counts wire cost relative to actual spend.
+    //   The production-inward formula starts from the real wire cost recorded
+    //   at production time and distributes exactly that cost to sold pieces.
+    //   Result: once all stock is sold, soldWireCost always equals cashWireCost
+    //   to within floating-point rounding regardless of scrap or yield.
+    const productionRuns = await db.prepare(
+      'SELECT pr.id, pr.gauge, ' +
+      'pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation AS wire_cost ' +
+      'FROM production pr'
+    ).all();
+
+    let soldWireCost = 0;
+    for (const run of productionRuns) {
+      const runItems = await db.prepare(
+        'SELECT pi.piece_type_id, pi.pieces_produced FROM production_items pi WHERE pi.production_id = ?'
+      ).all(run.id);
+
+      const totalPiecesThisRun = runItems.reduce((s, i) => s + i.pieces_produced, 0);
+      if (totalPiecesThisRun === 0) continue;
+
+      let runSoldFraction = 0;
+      for (const item of runItems) {
+        const produced = (await db.prepare(
+          'SELECT COALESCE(SUM(pi2.pieces_produced),0) AS v ' +
+          'FROM production_items pi2 JOIN production pr2 ON pr2.id = pi2.production_id ' +
+          'WHERE pi2.piece_type_id = ? AND COALESCE(pr2.gauge,\'\') = ?'
+        ).get(item.piece_type_id, run.gauge || '')).v;
+
+        const sold = (await db.prepare(
+          'SELECT COALESCE(SUM(quantity),0) AS v FROM sales ' +
+          'WHERE piece_type_id = ? AND COALESCE(gauge_source,\'\') = ?'
+        ).get(item.piece_type_id, run.gauge || '')).v;
+
+        const typeFrac = produced > 0 ? Math.min(sold / produced, 1.0) : 0;
+        runSoldFraction += (item.pieces_produced / totalPiecesThisRun) * typeFrac;
+      }
+
+      soldWireCost += parseFloat(run.wire_cost) * runSoldFraction;
+    }
+    soldWireCost = parseFloat(soldWireCost.toFixed(2));
 
     const fullySoldThrough = rawStockKg <= 0.5 && remaining.remaining <= 0;
     const diff = Math.abs(cashWireCost - soldWireCost);
