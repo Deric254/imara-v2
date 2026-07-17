@@ -1126,10 +1126,14 @@ router.get('/gauge-kpi', authenticate, async (req, res) => {
     const produced = await db.prepare(`
       SELECT pr.gauge,
              ROUND(SUM(pr.kgs_used),2)                       AS kgs_used,
-             COALESCE(SUM(pi.pieces_produced),0)                       AS pieces_produced,
+             COALESCE(SUM(item_totals.total_pieces),0)                 AS pieces_produced,
              COUNT(DISTINCT pr.id)                                      AS run_count
       FROM production pr
-      LEFT JOIN production_items pi ON pi.production_id = pr.id
+      LEFT JOIN (
+        SELECT production_id, SUM(pieces_produced) AS total_pieces
+        FROM production_items
+        GROUP BY production_id
+      ) item_totals ON item_totals.production_id = pr.id
       WHERE pr.entry_date BETWEEN ? AND ? AND pr.gauge != ''
       GROUP BY pr.gauge ORDER BY kgs_used DESC
     `).all(from, to);

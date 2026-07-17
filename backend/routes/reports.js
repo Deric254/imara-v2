@@ -13,6 +13,7 @@
 const router = require('express').Router();
 const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
+const { getCfgNumber } = require('../lib/saleCore');
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,12 +61,11 @@ async function checkAndNotifyStock(db, enteredBy) {
     const gaugeStocks = await db.prepare(`
       SELECT
         COALESCE(p.gauge, '') AS gauge,
-        COALESCE(SUM(p.kgs_bought), 0) AS bought,
-        COALESCE(SUM(pr.kgs_used), 0)  AS used
-      FROM (SELECT gauge, kgs_bought FROM purchases) p
-      FULL OUTER JOIN (SELECT gauge, kgs_used FROM production) pr
+        COALESCE(p.bought, 0) AS bought,
+        COALESCE(pr.used, 0)  AS used
+      FROM (SELECT gauge, SUM(kgs_bought) AS bought FROM purchases GROUP BY gauge) p
+      FULL OUTER JOIN (SELECT gauge, SUM(kgs_used) AS used FROM production GROUP BY gauge) pr
         ON COALESCE(p.gauge, '') = COALESCE(pr.gauge, '')
-      GROUP BY COALESCE(p.gauge, '')
     `).all().catch(() => null);
 
     if (gaugeStocks && gaugeStocks.length > 0) {
@@ -138,26 +138,34 @@ async function checkAndNotifyStock(db, enteredBy) {
   } catch (_) {}
 }
 
-async function getCfgNumber(db, key) {
-  return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
-}
-
 // Wire cost per kg for a given piece_type_id up to toDate — used only by
 // getLandingCost (suggested price preview). Reads from stored production records.
 async function getWireCostPerKgForPieceType(db, pieceTypeId, toDate) {
-  const result = await db.prepare(`
-    SELECT
-      COALESCE(SUM(
-        pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation
-      ), 0) AS total_wire_cost,
-      COALESCE(SUM(pr.kgs_used), 0) AS total_kgs
+  const runs = await db.prepare(`
+    SELECT pr.id, pr.kgs_used,
+           pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation AS wire_cost
     FROM production pr
     JOIN production_items pi ON pi.production_id = pr.id
     WHERE pi.piece_type_id = ?
       AND pr.entry_date <= ?
-  `).get(pieceTypeId, toDate);
+  `).all(pieceTypeId, toDate);
 
-  if (result.total_kgs > 0) return result.total_wire_cost / result.total_kgs;
+  let totalWireCost = 0, totalKgs = 0;
+  for (const run of runs) {
+    const items = await db.prepare(
+      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+    ).all(run.id);
+    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+    if (totalPiecesInRun === 0) continue;
+    const thisTypePieces = items
+      .filter(i => i.piece_type_id === pieceTypeId)
+      .reduce((s, i) => s + i.pieces_produced, 0);
+    const share = thisTypePieces / totalPiecesInRun;
+    totalWireCost += run.wire_cost * share;
+    totalKgs      += run.kgs_used * share;
+  }
+
+  if (totalKgs > 0) return totalWireCost / totalKgs;
   return 0;
 }
 
@@ -168,59 +176,6 @@ async function getLandingCost(db, pt) {
   const knuckler      = await getCfgNumber(db, 'knuckler_cost');
   const sack          = await getCfgNumber(db, 'sack_cost');
   return (wireCostPerKg * pt.weight_kg) + operator + knuckler + (sack * 2);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ACTUAL KG-PER-PIECE RATES — for COGS wire cost matching (NOT spec weight_kg)
-//
-// WHY this exists: piece_types.weight_kg is a planning spec, not a guarantee
-// of actual wire consumption. Production entries allow up to 10% scrap over
-// spec, and real yield can differ from spec for other reasons too. Using spec
-// weight to compute "how much wire is embedded in this sold piece" silently
-// drifts from the real cost whenever yield differs from spec — and this drift
-// never self-corrects, even once every invoice is paid and every supplier is
-// settled, because the error is baked into the QUANTITY side of the formula,
-// not the payment timing.
-//
-// HOW this avoids double-counting on mixed-type production runs: when one
-// run produces more than one piece type, that run's kg cannot simply be
-// divided into "SUM(kg) for type A" and "SUM(kg) for type B" independently —
-// crediting the run's full kg to EACH type it produced silently doubles the
-// cost. Instead, each run's kg is fair-shared across its own items by piece
-// count FIRST, and only the fair share is added to that type+gauge's running
-// total. This is the same principle already used correctly in systemcheck.js's
-// Cash-vs-Sold convergence check — applied here per (piece_type, gauge) so it
-// can be joined against each sale's own gauge_source.
-//
-// Returns: Map keyed by "pieceTypeId::gauge" -> actual kg consumed per piece.
-async function getActualKgPerPieceMap(db) {
-  const runs = await db.prepare(`
-    SELECT pr.id, pr.gauge, pr.kgs_used FROM production pr
-  `).all();
-
-  const rateMap = new Map();       // key -> { kg, pieces }
-  for (const run of runs) {
-    const items = await db.prepare(
-      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
-    ).all(run.id);
-    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
-    if (totalPiecesInRun === 0) continue;
-
-    for (const item of items) {
-      const key = `${item.piece_type_id}::${run.gauge || ''}`;
-      const fairShareKg = run.kgs_used * (item.pieces_produced / totalPiecesInRun);
-      const entry = rateMap.get(key) || { kg: 0, pieces: 0 };
-      entry.kg     += fairShareKg;
-      entry.pieces += item.pieces_produced;
-      rateMap.set(key, entry);
-    }
-  }
-
-  const result = new Map();
-  for (const [key, { kg, pieces }] of rateMap.entries()) {
-    result.set(key, pieces > 0 ? kg / pieces : 0);
-  }
-  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -280,26 +235,24 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   const directCosts = wireCost + convCost + transportCost;
   const grossProfit = revenue - directCosts;
 
-  // COGS-MATCHED wire cost: uses the wire_cost_per_kg snapshot saved on each sale
-  // (resolved by gauge from production at time of sale — immutable), multiplied
-  // by the ACTUAL kg-per-piece for that piece type + gauge (fair-shared across
-  // production runs — see getActualKgPerPieceMap), NOT the piece type's spec
-  // weight_kg. Spec weight only equals reality when production has exactly zero
-  // scrap; any real-world yield variance silently drifts this figure away from
-  // true cost, and that drift never self-corrects even once every invoice is
-  // paid and every supplier is settled — because the error lives in the
-  // quantity side of the formula, not the payment timing.
-  const kgPerPieceMap = await getActualKgPerPieceMap(db);
+  // COGS-MATCHED wire cost: reads wire_cost_per_piece directly — the TRUE
+  // FIFO-attributed cost computed once, at the moment of sale, by walking
+  // through production and all prior sales for that piece type + gauge in
+  // chronological order (see resolveWireCostPerKgForSale in saleCore.js).
+  // This is NOT quantity × a separately-recomputed kg-per-piece × a stored
+  // rate — that two-factor approach was itself a source of drift, because
+  // the kg-per-piece side used all-time production data with no concept of
+  // what earlier sales had already consumed, silently re-attributing cost
+  // that an earlier sale already claimed. wire_cost_per_piece is the single
+  // source of truth; nothing here needs to be recomputed or multiplied.
   const cogsWireSalesRows = await db.prepare(`
-    SELECT s.quantity, s.wire_cost_per_kg, s.piece_type_id, COALESCE(s.gauge_source,'') AS gauge_source
+    SELECT s.quantity, s.wire_cost_per_piece
     FROM sales s
     WHERE s.entry_date BETWEEN ? AND ?
   `).all(fromDate, toDate);
   let cogsWireCost = 0;
   for (const row of cogsWireSalesRows) {
-    const key = `${row.piece_type_id}::${row.gauge_source}`;
-    const kgPerPiece = kgPerPieceMap.get(key) || 0;
-    cogsWireCost += row.quantity * kgPerPiece * row.wire_cost_per_kg;
+    cogsWireCost += row.quantity * row.wire_cost_per_piece;
   }
 
   // COGS-MATCHED conversion cost (labour + sacks): uses the
@@ -369,7 +322,6 @@ async function getSalesCostSummary(db, fromDate, toDate) {
     cogs_transport_cost:       cogsTransportCost,
     cogs_direct_costs:         cogsDirectCosts,
     cogs_gross_profit:         cogsGrossProfit,
-    kg_per_piece_map:          kgPerPieceMap,
   };
 }
 
@@ -1540,46 +1492,40 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       ORDER BY i.invoice_date DESC
     `).all(fromDate, toDate);
 
-    const wireCostPerKg = salesSummary.wire_cost_per_kg;
     const convPerPiece  = salesSummary.conversion_cost_per_piece;
 
     // Wire cost drill-down: sourced from the SAME population and formula as the
     // COGS-matched top-line (cost_breakdown.wire_cost.cogs_amount) — each row
-    // uses its own saved wire_cost_per_kg snapshot together with the actual
-    // kg-per-piece for that piece type + gauge (not spec weight_kg — see
-    // getActualKgPerPieceMap), so these rows always sum to cogs_amount exactly.
+    // reads wire_cost_per_piece directly (the TRUE FIFO-attributed cost
+    // computed once at the moment of sale — see saleCore.js), so these rows
+    // always sum to cogs_amount exactly, with no separate recalculation.
     // This is a per-sale-entry view, not cash-received based, so it does NOT
     // back the cash-basis wire_cost.amount figure above it.
     // Deliberately separate from detailRows below, which is cash-received based
     // and still correctly backs conversion_cost/transport_cost (those remain
     // cash-basis, unchanged).
     const wireDetailRows = await db.prepare(`
-      SELECT s.entry_date      AS entry_date,
-             pt.name            AS piece_name,
-             s.quantity         AS quantity,
-             s.piece_type_id    AS piece_type_id,
-             COALESCE(s.gauge_source,'') AS gauge_source,
-             s.wire_cost_per_kg AS wire_cost_per_kg,
-             s.selling_price    AS selling_price
+      SELECT s.entry_date        AS entry_date,
+             pt.name              AS piece_name,
+             s.quantity           AS quantity,
+             s.wire_cost_per_kg   AS wire_cost_per_kg,
+             s.wire_cost_per_piece AS wire_cost_per_piece,
+             s.selling_price      AS selling_price
       FROM sales s
       JOIN piece_types pt ON pt.id = s.piece_type_id
       WHERE s.entry_date BETWEEN ? AND ?
       ORDER BY s.entry_date DESC
     `).all(fromDate, toDate);
 
-    const wireCostDetails = wireDetailRows.map(r => {
-      const kgPerPiece = salesSummary.kg_per_piece_map.get(`${r.piece_type_id}::${r.gauge_source}`) || 0;
-      return {
-        entry_date:    r.entry_date,
-        piece_name:    r.piece_name,
-        quantity:      r.quantity,
-        weight_kg:     parseFloat(kgPerPiece.toFixed(4)),
-        kgs_sold:      parseFloat((r.quantity * kgPerPiece).toFixed(3)),
-        wire_cost:     parseFloat((r.quantity * kgPerPiece * r.wire_cost_per_kg).toFixed(2)),
-        selling_price: r.selling_price,
-        revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
-      };
-    });
+    const wireCostDetails = wireDetailRows.map(r => ({
+      entry_date:    r.entry_date,
+      piece_name:    r.piece_name,
+      quantity:      r.quantity,
+      wire_cost_per_kg: parseFloat((r.wire_cost_per_kg || 0).toFixed(4)),
+      wire_cost:     parseFloat((r.quantity * r.wire_cost_per_piece).toFixed(2)),
+      selling_price: r.selling_price,
+      revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
+    }));
 
     const conversionCostDetails = detailRows.map(r => ({
       entry_date:      r.entry_date,
@@ -1931,9 +1877,13 @@ router.get('/export/gauge-analysis', authenticate, requireRole('owner', 'admin')
          FROM purchases WHERE gauge=? AND entry_date BETWEEN ? AND ?`
       ).get(gauge, from, to);
       const p = await db.prepare(
-        `SELECT COALESCE(SUM(kgs_used),0) AS kgs, COALESCE(SUM(pi.pieces_produced),0) AS pcs,
-                COALESCE(SUM(total_cost - operator_cost - knuckler_cost - sack_cost - rent_allocation),0) AS wire_cost
-         FROM production pr LEFT JOIN production_items pi ON pi.production_id=pr.id
+        `SELECT COALESCE(SUM(pr.kgs_used),0) AS kgs, COALESCE(SUM(item_totals.total_pieces),0) AS pcs,
+                COALESCE(SUM(pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation),0) AS wire_cost
+         FROM production pr
+         LEFT JOIN (
+           SELECT production_id, SUM(pieces_produced) AS total_pieces
+           FROM production_items GROUP BY production_id
+         ) item_totals ON item_totals.production_id = pr.id
          WHERE pr.gauge=? AND pr.entry_date BETWEEN ? AND ?`
       ).get(gauge, from, to);
       const s = await db.prepare(

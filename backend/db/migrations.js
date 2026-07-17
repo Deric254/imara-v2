@@ -1,9 +1,6 @@
 // backend/db/migrations.js — Database schema migrations
 // Ensures backwards compatibility when app updates
 
-const fs = require('fs');
-const path = require('path');
-
 // A migration's catch block should only ever swallow an error that means
 // "this exact change was already applied" (e.g. a column/table that already
 // exists from a previous run of this same migration) — that's genuinely
@@ -678,6 +675,125 @@ const MIGRATIONS = [
       } catch (err) {
         if (!isBenignSchemaError(err)) throw err;
         console.warn('Migration 017:', err?.message);
+      }
+    },
+  },
+  {
+    id: '018-fifo-cost-attribution',
+    version: '2.15.0',
+    description: 'Add sales.wire_cost_per_piece and recompute wire_cost_per_kg, wire_cost_per_piece, and conversion_cost_per_piece on all existing sales using TRUE FIFO consumption instead of independently-recomputed blended averages. The previous approach (migration 017) correctly fair-shared cost within a mixed-type production run, but each sale still independently recomputed a fresh blended average of ALL qualifying production up to its own moment — which silently re-included production that an EARLIER sale had already fully claimed, whenever multiple sales drew from the same pool over time. Confirmed on real data: a single piece_type+gauge combination showed a KES 3,975.82 gap between what sales summed to and what production actually cost, even though every purchase, production run, and payment individually balanced to the shilling. FIFO processes each combination chronologically exactly once, consuming from the front of a production queue the same way real inventory is drawn down, so no kg or cost can ever be attributed to more than one sale.',
+    async up(db) {
+      try {
+        const cols = await db.prepare("PRAGMA table_info(sales)").all();
+        if (!cols.some(c => c.name === 'wire_cost_per_piece')) {
+          await db.exec('ALTER TABLE sales ADD COLUMN wire_cost_per_piece REAL NOT NULL DEFAULT 0');
+        }
+
+        // ── Wire cost: FIFO per (piece_type_id, gauge) ──────────────────────
+        const wireCombos = await db.prepare(`
+          SELECT DISTINCT pi.piece_type_id, COALESCE(pr.gauge,'') AS gauge
+          FROM production_items pi JOIN production pr ON pr.id = pi.production_id
+        `).all();
+
+        for (const combo of wireCombos) {
+          const runs = await db.prepare(`
+            SELECT id, kgs_used, total_cost, operator_cost, knuckler_cost, sack_cost, rent_allocation
+            FROM production WHERE COALESCE(gauge,'') = ?
+            ORDER BY created_at
+          `).all(combo.gauge);
+
+          const batchQueue = [];
+          for (const run of runs) {
+            const items = await db.prepare(
+              'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+            ).all(run.id);
+            const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+            if (totalPiecesInRun === 0) continue;
+            const thisTypePieces = items
+              .filter(i => i.piece_type_id === combo.piece_type_id)
+              .reduce((s, i) => s + i.pieces_produced, 0);
+            if (thisTypePieces === 0) continue;
+            const share = thisTypePieces / totalPiecesInRun;
+            const wireCost = (run.total_cost - run.operator_cost - run.knuckler_cost - run.sack_cost - run.rent_allocation) * share;
+            const kg = (run.kgs_used || 0) * share;
+            batchQueue.push({ piecesLeft: thisTypePieces, costPerPiece: wireCost / thisTypePieces, kgPerPiece: kg / thisTypePieces });
+          }
+
+          const sales = await db.prepare(`
+            SELECT id, quantity FROM sales
+            WHERE piece_type_id = ? AND COALESCE(gauge_source,'') = ?
+            ORDER BY created_at
+          `).all(combo.piece_type_id, combo.gauge);
+
+          for (const sale of sales) {
+            let remaining = sale.quantity, totalCost = 0, totalKg = 0, idx = 0;
+            while (remaining > 0 && idx < batchQueue.length) {
+              const batch = batchQueue[idx];
+              if (batch.piecesLeft <= 0) { idx++; continue; }
+              const draw = Math.min(remaining, batch.piecesLeft);
+              totalCost += draw * batch.costPerPiece;
+              totalKg   += draw * batch.kgPerPiece;
+              batch.piecesLeft -= draw;
+              remaining -= draw;
+              if (batch.piecesLeft <= 0) idx++;
+            }
+            const perPiece = sale.quantity > 0 ? totalCost / sale.quantity : 0;
+            const perKg    = totalKg > 0 ? totalCost / totalKg : 0;
+            await db.prepare(
+              `UPDATE sales SET wire_cost_per_kg = ?, wire_cost_per_piece = ? WHERE id = ?`
+            ).run(perKg, perPiece, sale.id);
+          }
+        }
+
+        // ── Conversion cost: FIFO per piece_type_id (not gauge-dependent) ──
+        const convTypes = await db.prepare('SELECT DISTINCT piece_type_id FROM production_items').all();
+
+        for (const t of convTypes) {
+          const runs = await db.prepare(`
+            SELECT id, operator_cost, knuckler_cost, sack_cost
+            FROM production ORDER BY created_at
+          `).all();
+
+          const batchQueue = [];
+          for (const run of runs) {
+            const items = await db.prepare(
+              'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+            ).all(run.id);
+            const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+            if (totalPiecesInRun === 0) continue;
+            const thisTypePieces = items
+              .filter(i => i.piece_type_id === t.piece_type_id)
+              .reduce((s, i) => s + i.pieces_produced, 0);
+            if (thisTypePieces === 0) continue;
+            const share = thisTypePieces / totalPiecesInRun;
+            const convCost = (run.operator_cost + run.knuckler_cost + run.sack_cost) * share;
+            batchQueue.push({ piecesLeft: thisTypePieces, costPerPiece: convCost / thisTypePieces });
+          }
+
+          const sales = await db.prepare(
+            'SELECT id, quantity FROM sales WHERE piece_type_id = ? ORDER BY created_at'
+          ).all(t.piece_type_id);
+
+          for (const sale of sales) {
+            let remaining = sale.quantity, totalCost = 0, idx = 0;
+            while (remaining > 0 && idx < batchQueue.length) {
+              const batch = batchQueue[idx];
+              if (batch.piecesLeft <= 0) { idx++; continue; }
+              const draw = Math.min(remaining, batch.piecesLeft);
+              totalCost += draw * batch.costPerPiece;
+              batch.piecesLeft -= draw;
+              remaining -= draw;
+              if (batch.piecesLeft <= 0) idx++;
+            }
+            const perPiece = sale.quantity > 0 ? totalCost / sale.quantity : 0;
+            await db.prepare('UPDATE sales SET conversion_cost_per_piece = ? WHERE id = ?').run(perPiece, sale.id);
+          }
+        }
+
+        console.log('✅  Migration 018: recomputed wire and conversion cost on all sales using true FIFO attribution');
+      } catch (err) {
+        if (!isBenignSchemaError(err)) throw err;
+        console.warn('Migration 018:', err?.message);
       }
     },
   },

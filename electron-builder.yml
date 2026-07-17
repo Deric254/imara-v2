@@ -10,6 +10,7 @@ files:
   - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
   - "!**/node_modules/.bin"
   - "!**/*.{o,a,lib,so,so.a,gyp,gypi,target.gyp}"
+  - "!backend/test-*.js"
 
 win:
   target:

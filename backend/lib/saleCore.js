@@ -14,6 +14,109 @@ async function getCfgNumber(db, key) {
   return parseFloat((await db.prepare('SELECT value FROM config WHERE key=?').get(key))?.value || 0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIFO COST ATTRIBUTION — shared by wire cost and conversion cost resolution
+//
+// WHY plain "blended average up to now" is wrong:
+// The earlier approach computed a fresh blended average of ALL qualifying
+// production up to a sale's moment, independently for EVERY sale. This looks
+// reasonable in isolation, but when multiple sales draw from the SAME pool of
+// production runs over time, each sale's "average as of now" silently
+// re-includes production that an EARLIER sale already fully claimed —
+// double-attributing that cost. Confirmed on real data: a single piece type
+// + gauge combination showed a KES 3,975.82 gap between what sales summed to
+// and what production actually cost, purely from this effect — even though
+// every purchase, every production run, and every payment individually
+// balanced to the shilling.
+//
+// THE FIX: true FIFO. Build a chronological queue of "batches" — each
+// production run's fair share of cost for this piece type, split by piece
+// count if the run made more than one type. Walk through every EXISTING sale
+// for this piece type (and gauge, for wire) in chronological order first,
+// consuming from the front of the queue exactly like real inventory would be
+// drawn down. Whatever is left after replaying prior sales is what a NEW
+// sale actually draws from. No production kg or cost can ever be claimed by
+// more than one sale, by construction.
+//
+// costField: a function (run) => cost for that run (wire cost or conv cost).
+// gaugeFilter: if set, only production runs matching this gauge are considered
+// (used for wire; conversion cost is not gauge-dependent, so pass null).
+async function fifoAttributeCost(db, { pieceTypeId, gauge, entryDate, quantity, costField }) {
+  const gaugeClause = gauge !== null ? `AND COALESCE(pr.gauge, '') = ?` : '';
+  const params = gauge !== null ? [gauge] : [];
+
+  const runs = await db.prepare(`
+    SELECT pr.id, pr.kgs_used, pr.total_cost, pr.operator_cost, pr.knuckler_cost, pr.sack_cost, pr.rent_allocation
+    FROM production pr
+    WHERE pr.entry_date <= ? ${gaugeClause}
+    ORDER BY pr.created_at
+  `).all(entryDate, ...params);
+
+  // Build the chronological batch queue: each entry is this piece type's
+  // fair share (by piece count) of one production run's cost and kg.
+  const batchQueue = [];
+  for (const run of runs) {
+    const items = await db.prepare(
+      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
+    ).all(run.id);
+    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
+    if (totalPiecesInRun === 0) continue;
+    const thisTypePieces = items
+      .filter(i => i.piece_type_id === pieceTypeId)
+      .reduce((s, i) => s + i.pieces_produced, 0);
+    if (thisTypePieces === 0) continue;
+    const share = thisTypePieces / totalPiecesInRun;
+    const runCost = costField(run) * share;
+    const runKg   = (run.kgs_used || 0) * share;
+    batchQueue.push({
+      piecesLeft:  thisTypePieces,
+      costPerPiece: runCost / thisTypePieces,
+      kgPerPiece:   runKg / thisTypePieces,
+    });
+  }
+
+  // Replay every sale that ALREADY EXISTS in the table for this piece type
+  // (+ gauge, for wire), consuming from the front of the queue in the order
+  // they actually happened. The new sale isn't inserted yet at this point,
+  // so everything currently in the table is inherently "prior" — no extra
+  // timestamp cutoff needed on this side.
+  const priorSalesGaugeClause = gauge !== null ? `AND COALESCE(gauge_source, '') = ?` : '';
+  const priorSalesParams = gauge !== null ? [gauge] : [];
+  const priorSales = await db.prepare(`
+    SELECT quantity FROM sales
+    WHERE piece_type_id = ? AND entry_date <= ? ${priorSalesGaugeClause}
+    ORDER BY created_at
+  `).all(pieceTypeId, entryDate, ...priorSalesParams);
+
+  function consume(qty) {
+    let remaining = qty;
+    let totalCost = 0, totalKg = 0;
+    let idx = 0;
+    while (remaining > 0 && idx < batchQueue.length) {
+      const batch = batchQueue[idx];
+      if (batch.piecesLeft <= 0) { idx++; continue; }
+      const draw = Math.min(remaining, batch.piecesLeft);
+      totalCost += draw * batch.costPerPiece;
+      totalKg   += draw * batch.kgPerPiece;
+      batch.piecesLeft -= draw;
+      remaining -= draw;
+      if (batch.piecesLeft <= 0) idx++;
+    }
+    return { totalCost, totalKg, unfulfilled: remaining };
+  }
+
+  for (const prior of priorSales) consume(prior.quantity);
+
+  // Now attribute the NEW sale's quantity from whatever remains.
+  const result = consume(quantity);
+  return {
+    totalCost: result.totalCost,
+    totalKg:   result.totalKg,
+    perPiece:  quantity > 0 ? result.totalCost / quantity : 0,
+    perKg:     result.totalKg > 0 ? result.totalCost / result.totalKg : 0,
+  };
+}
+
 // Wire cost per kg for a piece type AND GAUGE at a point in time.
 //
 // WHY gauge filtering AND fair-sharing are both required:
@@ -36,70 +139,31 @@ async function getCfgNumber(db, key) {
 //
 // Written to sales.wire_cost_per_kg at insert time and never changed —
 // permanent record of cost at point of sale for that specific gauge.
-async function resolveWireCostPerKgForSale(db, pieceTypeId, gaugeSource, entryDate) {
+async function resolveWireCostPerKgForSale(db, pieceTypeId, gaugeSource, entryDate, quantity) {
   const gauge = (gaugeSource || '').trim();
-  const runs = await db.prepare(`
-    SELECT pr.id, pr.kgs_used,
-           pr.total_cost - pr.operator_cost - pr.knuckler_cost - pr.sack_cost - pr.rent_allocation AS wire_cost
-    FROM production pr
-    WHERE COALESCE(pr.gauge, '') = ?
-      AND pr.entry_date <= ?
-  `).all(gauge, entryDate);
-
-  let totalWireCost = 0, totalKgs = 0;
-  for (const run of runs) {
-    const items = await db.prepare(
-      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
-    ).all(run.id);
-    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
-    if (totalPiecesInRun === 0) continue;
-    const thisTypePieces = items
-      .filter(i => i.piece_type_id === pieceTypeId)
-      .reduce((s, i) => s + i.pieces_produced, 0);
-    if (thisTypePieces === 0) continue;
-    const share = thisTypePieces / totalPiecesInRun;
-    totalWireCost += run.wire_cost * share;
-    totalKgs      += run.kgs_used * share;
-  }
-  return totalKgs > 0 ? totalWireCost / totalKgs : 0;
+  const result = await fifoAttributeCost(db, {
+    pieceTypeId, gauge, entryDate, quantity,
+    costField: (run) => run.total_cost - run.operator_cost - run.knuckler_cost - run.sack_cost - run.rent_allocation,
+  });
+  return { wireCostPerKg: result.perKg, wireCostPerPiece: result.perPiece, kgPerPiece: result.totalKg > 0 && quantity > 0 ? result.totalKg / quantity : 0 };
 }
 
-// Conversion cost (operator + knuckler + sack) per piece for a piece type at
-// a point in time — fair-shared the same way as resolveWireCostPerKgForSale
-// above (per-run, by piece count, before aggregating). Conversion cost is
+// Conversion cost (operator + knuckler + sack) per piece for a piece type,
+// via the same true-FIFO attribution as wire cost above. Conversion cost is
 // NOT gauge-dependent (labour effort is the same regardless of which gauge
-// wire is being worked), so this blends across gauges intentionally, but
-// still fair-shares across piece types within a mixed-type run — the same
-// double-counting bug applied here too before this fix.
+// wire is being worked), so gauge is passed as null here.
 //
 // Written to sales.conversion_cost_per_piece at insert time and never
 // changed — permanent record of cost at point of sale. Lets the "Sold" P&L
 // column match conversion cost to units actually sold, exactly the way it
 // already matches wire cost, instead of falling back to whatever labour/sack
 // cash was paid out in the period (which is what the cash-basis column is for).
-async function resolveConversionCostPerPieceForSale(db, pieceTypeId, entryDate) {
-  const runs = await db.prepare(`
-    SELECT pr.id, pr.operator_cost + pr.knuckler_cost + pr.sack_cost AS conv_cost
-    FROM production pr
-    WHERE pr.entry_date <= ?
-  `).all(entryDate);
-
-  let totalConvCost = 0, totalPieces = 0;
-  for (const run of runs) {
-    const items = await db.prepare(
-      'SELECT piece_type_id, pieces_produced FROM production_items WHERE production_id = ?'
-    ).all(run.id);
-    const totalPiecesInRun = items.reduce((s, i) => s + i.pieces_produced, 0);
-    if (totalPiecesInRun === 0) continue;
-    const thisTypePieces = items
-      .filter(i => i.piece_type_id === pieceTypeId)
-      .reduce((s, i) => s + i.pieces_produced, 0);
-    if (thisTypePieces === 0) continue;
-    const share = thisTypePieces / totalPiecesInRun;
-    totalConvCost += run.conv_cost * share;
-    totalPieces   += thisTypePieces;
-  }
-  return totalPieces > 0 ? totalConvCost / totalPieces : 0;
+async function resolveConversionCostPerPieceForSale(db, pieceTypeId, entryDate, quantity) {
+  const result = await fifoAttributeCost(db, {
+    pieceTypeId, gauge: null, entryDate, quantity,
+    costField: (run) => run.operator_cost + run.knuckler_cost + run.sack_cost,
+  });
+  return result.perPiece;
 }
 
 // Creates one or more sales + one invoice, atomically, with the exact same
@@ -196,6 +260,17 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
     // batch collectively oversell — each row looks fine alone, but together
     // they exceed what was ever produced. batchReserved tracks quantity
     // already claimed by earlier rows in THIS batch so it's counted too.
+    //
+    // Both queries below are bounded by entry_date <= this sale's own date —
+    // matching exactly what resolveWireCostPerKgForSale uses to attribute
+    // cost. Without this bound, a backdated sale (entry_date earlier than
+    // the production that would supply it) could pass this stock check by
+    // seeing production dated AFTER itself, while cost attribution correctly
+    // refuses to see that same future-dated production — silently producing
+    // a sale that's allowed but has zero cost basis. Bounding both queries
+    // the same way means a sale can only ever draw stock (and cost) from
+    // what genuinely existed as of its own date, and the two checks can
+    // never disagree with each other again.
     const batchReserved = {}; // key: `${piece_type_id}::${gauge_source}` -> running qty
     for (const row of enriched) {
       const key = `${row.piece_type_id}::${row.gauge_source}`;
@@ -204,13 +279,13 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
         `SELECT COALESCE(SUM(pi.pieces_produced),0) AS produced
          FROM production_items pi
          JOIN production pr ON pi.production_id=pr.id
-         WHERE pi.piece_type_id=? AND COALESCE(pr.gauge,'')=?`
-      ).get(row.piece_type_id, row.gauge_source);
+         WHERE pi.piece_type_id=? AND COALESCE(pr.gauge,'')=? AND pr.entry_date <= ?`
+      ).get(row.piece_type_id, row.gauge_source, entry_date);
 
       const soldInGauge = await db.prepare(
         `SELECT COALESCE(SUM(quantity), 0) AS sold
-         FROM sales WHERE piece_type_id=? AND COALESCE(gauge_source, '')=?`
-      ).get(row.piece_type_id, row.gauge_source);
+         FROM sales WHERE piece_type_id=? AND COALESCE(gauge_source, '')=? AND entry_date <= ?`
+      ).get(row.piece_type_id, row.gauge_source, entry_date);
 
       const produced       = parseInt(producedInGauge.produced) || 0;
       const soldAlready     = parseInt(soldInGauge.sold) || 0;
@@ -219,7 +294,7 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
 
       if (row.quantity > available) {
         const gaugeLabel = row.gauge_source || 'unspecified gauge';
-        const e = new Error(`Cannot sell ${row.quantity} pieces of ${row.pt.name} (${gaugeLabel}). Available: ${available}.`);
+        const e = new Error(`Cannot sell ${row.quantity} pieces of ${row.pt.name} (${gaugeLabel}) as of ${entry_date}. Available: ${available}.`);
         e.stockError = { error: 'INSUFFICIENT_STOCK_FOR_GAUGE', message: e.message,
           inventory: { produced, sold: soldAlready + claimedInBatch, available, requested: row.quantity } };
         throw e;
@@ -232,14 +307,14 @@ async function createBatchSaleCore(db, { entry_date, buyer_name, items, userId, 
 
     // 2. Insert each sale row
     for (const row of enriched) {
-      const wireCostPerKg = await resolveWireCostPerKgForSale(db, row.piece_type_id, row.gauge_source, entry_date);
-      const conversionCostPerPiece = await resolveConversionCostPerPieceForSale(db, row.piece_type_id, entry_date);
+      const wireResult = await resolveWireCostPerKgForSale(db, row.piece_type_id, row.gauge_source, entry_date, row.quantity);
+      const conversionCostPerPiece = await resolveConversionCostPerPieceForSale(db, row.piece_type_id, entry_date, row.quantity);
       const saleRes = await db.prepare(
-        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg,entered_by_name,conversion_cost_per_piece)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
+        `INSERT INTO sales(entry_date,piece_type_id,quantity,selling_price,default_price,price_overridden,transport_to_market,buyer_name,gauge_source,entered_by,wire_cost_per_kg,wire_cost_per_piece,entered_by_name,conversion_cost_per_piece)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`
       ).run(entry_date, row.piece_type_id, row.quantity, row.selling_price,
             row.pt.default_price, row.price_overridden, row.transport_to_market,
-            customerName, row.gauge_source, userId, wireCostPerKg, userName, conversionCostPerPiece);
+            customerName, row.gauge_source, userId, wireResult.wireCostPerKg, wireResult.wireCostPerPiece, userName, conversionCostPerPiece);
       saleIds.push(saleRes.lastInsertRowid);
     }
 

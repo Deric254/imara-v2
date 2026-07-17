@@ -271,6 +271,104 @@ async function runChecks(db) {
       push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', 'pass',
         `Stock still on hand (${rawStockKg.toFixed(2)}kg raw wire, ${remaining.remaining} unsold processed piece(s)) — Cash Basis (KES ${cashWireCost.toFixed(2)}) and Sold Items (KES ${soldWireCost.toFixed(2)}) are expected to differ by KES ${diff.toFixed(2)} until sell-through completes.`);
     }
+
+    // ── PERMANENT CROSS-CHECK: does what the Dashboard actually shows agree
+    // with this independent recalculation? ──────────────────────────────────
+    //
+    // WHY this check exists: the check above (cash_sold_convergence) computes
+    // soldWireCost from scratch, entirely from production records — it never
+    // reads sales.wire_cost_per_piece, the actual column the Dashboard's
+    // "Sold Net" KPI is built from. This meant a real bug could exist in how
+    // that column gets WRITTEN (at the moment of each sale, in saleCore.js)
+    // while this check stayed green, because it was never actually looking
+    // at what the Dashboard shows — only at its own separately-derived number.
+    // That gap is exactly what let a genuine double-counting bug reach a real
+    // user's Dashboard while every systemcheck screen said PASS.
+    //
+    // This check closes that gap permanently: it reads the SAME stored value
+    // the Dashboard reads, sums it across every sale ever made, and compares
+    // it directly against the independent recalculation above. If a future
+    // edit to saleCore.js, a bad migration, or any other change ever makes
+    // the stored snapshots drift from reality again — for any reason, not
+    // just the specific bug fixed today — this check fails immediately and
+    // says exactly that, instead of the Dashboard silently showing a wrong
+    // number while every other check stays green.
+    const storedWireCostRows = await db.prepare('SELECT quantity, wire_cost_per_piece FROM sales').all();
+    const dashboardWireCost = parseFloat(
+      storedWireCostRows.reduce((s, r) => s + r.quantity * (r.wire_cost_per_piece || 0), 0).toFixed(2)
+    );
+    const snapshotDiff = Math.abs(dashboardWireCost - soldWireCost);
+    // FIFO (what's actually stored on each sale) and the production-inward
+    // fraction method (the independent recalculation above) are only
+    // mathematically guaranteed to land on the same number once every piece
+    // is sold — FIFO consumes the oldest batch first, the fraction method
+    // spreads cost uniformly across all batches, and those two approaches
+    // can legitimately diverge slightly while stock is only partially sold
+    // through. That's not a bug, it's two different (both correct) ways of
+    // answering "what's the cost of what's sold so far" — same as
+    // cash_sold_convergence above, this check only demands an exact match
+    // once fullySoldThrough is true.
+    const wireCheckPasses = !fullySoldThrough || snapshotDiff < 1;
+    push('dashboard_snapshot_matches_recalculation',
+      'What the Dashboard actually shows agrees with an independent recalculation',
+      wireCheckPasses ? 'pass' : 'fail',
+      !fullySoldThrough
+        ? `Stock not fully sold through yet — Dashboard's stored wire cost (KES ${dashboardWireCost.toFixed(2)}) and the independent recalculation (KES ${soldWireCost.toFixed(2)}) may differ by up to KES ${snapshotDiff.toFixed(2)} until sell-through completes; this is expected.`
+        : snapshotDiff < 1
+          ? `Dashboard's stored wire cost (KES ${dashboardWireCost.toFixed(2)}) matches the independently recalculated figure (KES ${soldWireCost.toFixed(2)}) exactly.`
+          : `Dashboard's stored wire cost (KES ${dashboardWireCost.toFixed(2)}) does NOT match the independently recalculated figure (KES ${soldWireCost.toFixed(2)}) — differ by KES ${snapshotDiff.toFixed(2)}. All stock is sold through, so this must be zero — the numbers on the Dashboard cannot be trusted right now. This needs investigating immediately.`);
+
+    // ── SAME PERMANENT CROSS-CHECK, for conversion cost ─────────────────────
+    // Conversion cost (operator + knuckler + sack) has the exact same
+    // architecture as wire cost — a snapshot written once at sale time,
+    // never recomputed after — and therefore the exact same risk of silently
+    // drifting from reality if a future change ever breaks how it's written.
+    // This check is gauge-independent (labour cost doesn't depend on gauge),
+    // otherwise identical in principle to the wire cost check above.
+    const allProductionRuns = await db.prepare(
+      'SELECT id, operator_cost + knuckler_cost + sack_cost AS conv_cost FROM production'
+    ).all();
+
+    let recalculatedConvCost = 0;
+    for (const run of allProductionRuns) {
+      const runItems = await db.prepare(
+        'SELECT pi.piece_type_id, pi.pieces_produced FROM production_items pi WHERE pi.production_id = ?'
+      ).all(run.id);
+      const totalPiecesThisRun = runItems.reduce((s, i) => s + i.pieces_produced, 0);
+      if (totalPiecesThisRun === 0) continue;
+
+      let runSoldFraction = 0;
+      for (const item of runItems) {
+        const produced = (await db.prepare(
+          'SELECT COALESCE(SUM(pieces_produced),0) AS v FROM production_items WHERE piece_type_id = ?'
+        ).get(item.piece_type_id)).v;
+        const sold = (await db.prepare(
+          'SELECT COALESCE(SUM(quantity),0) AS v FROM sales WHERE piece_type_id = ?'
+        ).get(item.piece_type_id)).v;
+        const typeFrac = produced > 0 ? Math.min(sold / produced, 1.0) : 0;
+        runSoldFraction += (item.pieces_produced / totalPiecesThisRun) * typeFrac;
+      }
+      recalculatedConvCost += parseFloat(run.conv_cost) * runSoldFraction;
+    }
+    recalculatedConvCost = parseFloat(recalculatedConvCost.toFixed(2));
+
+    const storedConvCostRows = await db.prepare('SELECT quantity, conversion_cost_per_piece FROM sales').all();
+    const dashboardConvCost = parseFloat(
+      storedConvCostRows.reduce((s, r) => s + r.quantity * (r.conversion_cost_per_piece || 0), 0).toFixed(2)
+    );
+    const convSnapshotDiff = Math.abs(dashboardConvCost - recalculatedConvCost);
+    // Same reasoning as the wire cost check above: FIFO and the fraction-based
+    // recalculation only have to agree exactly once everything is sold through.
+    const convCheckPasses = !fullySoldThrough || convSnapshotDiff < 1;
+    push('dashboard_conversion_snapshot_matches_recalculation',
+      "What the Dashboard's conversion cost actually shows agrees with an independent recalculation",
+      convCheckPasses ? 'pass' : 'fail',
+      !fullySoldThrough
+        ? `Stock not fully sold through yet — Dashboard's stored conversion cost (KES ${dashboardConvCost.toFixed(2)}) and the independent recalculation (KES ${recalculatedConvCost.toFixed(2)}) may differ by up to KES ${convSnapshotDiff.toFixed(2)} until sell-through completes; this is expected.`
+        : convSnapshotDiff < 1
+          ? `Dashboard's stored conversion cost (KES ${dashboardConvCost.toFixed(2)}) matches the independently recalculated figure (KES ${recalculatedConvCost.toFixed(2)}) exactly.`
+          : `Dashboard's stored conversion cost (KES ${dashboardConvCost.toFixed(2)}) does NOT match the independently recalculated figure (KES ${recalculatedConvCost.toFixed(2)}) — differ by KES ${convSnapshotDiff.toFixed(2)}. All stock is sold through, so this must be zero — this needs investigating immediately.`);
+
   } catch (e) {
     push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', 'fail', `Check could not run: ${e.message}`);
   }

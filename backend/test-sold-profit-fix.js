@@ -133,7 +133,7 @@ async function main() {
   const juneCogsGrossProfit = juneSoldRevenue - cogsDirectCosts; // full cost lands in June (sale month)
   const julyCogsGrossProfit = julySoldRevenue - 0;               // no new cost in July
 
-  report('cogs_wire_cost = 110', cogsWireCost === 110, `got ${cogsWireCost}`);
+  report('cogs_wire_cost = 110', Math.abs(cogsWireCost - 110) < 0.001, `got ${cogsWireCost}`);
   report('cogs_conversion_cost = 90 (snapshot), NOT 5000 (cash)', cogsConvCost === 90, `got ${cogsConvCost}`);
   report('cogs_transport_cost = 200 (snapshot), NOT 9999 (cash)', cogsTransportCost === 200, `got ${cogsTransportCost}`);
   report('June sold_revenue = 900 (cash received in June only, manual invoice excluded)', juneSoldRevenue === 900, `got ${juneSoldRevenue}`);
