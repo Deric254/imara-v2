@@ -13,6 +13,7 @@
 const router = require('express').Router();
 const { getDb } = require('../db');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { getSalesCostSummary, getRentPaidForRange } = require('./reports');
 
 async function runChecks(db) {
   const checks = [];
@@ -368,6 +369,51 @@ async function runChecks(db) {
         : convSnapshotDiff < 1
           ? `Dashboard's stored conversion cost (KES ${dashboardConvCost.toFixed(2)}) matches the independently recalculated figure (KES ${recalculatedConvCost.toFixed(2)}) exactly.`
           : `Dashboard's stored conversion cost (KES ${dashboardConvCost.toFixed(2)}) does NOT match the independently recalculated figure (KES ${recalculatedConvCost.toFixed(2)}) — differ by KES ${convSnapshotDiff.toFixed(2)}. All stock is sold through, so this must be zero — this needs investigating immediately.`);
+
+    // ── PAYMENT-GATED SOLD NET vs CASH-BASIS NET PROFIT ──────────────────────
+    //
+    // WHY this check exists: the two checks above compare sales.wire_cost_per_piece
+    // (an accrual snapshot) against an independent accrual recalculation — both
+    // sides ignore payment timing entirely, so they will always agree with each
+    // other regardless of how much has actually been paid. Since the Dashboard's
+    // Sold Net KPI was redesigned to be PAYMENT-GATED (cost only counts once it's
+    // actually been paid, matching how revenue already behaves), those two checks
+    // no longer watch what the Dashboard actually displays — exactly the same
+    // "systemcheck says PASS while the Dashboard shows something else" gap this
+    // whole system-check apparatus exists to prevent.
+    //
+    // This check calls the EXACT SAME functions the Dashboard calls
+    // (getSalesCostSummary, getRentPaidForRange, imported directly from
+    // reports.js — not re-derived here) for an all-time range, and verifies a
+    // fundamental, provable invariant: once every piece ever produced has been
+    // sold, payment-gated Sold Net MUST equal cash-basis Net Profit, regardless
+    // of what fraction of any given bill has been paid — because with zero
+    // unsold stock, there is nowhere for a paid-or-unpaid cost to "hide" outside
+    // of what's already been sold. If this check ever fails, it means the
+    // payment-gating logic itself (backend/lib/paymentGatedCost.js) has a real
+    // bug, not that a supplier bill is still outstanding.
+    try {
+      const allTimeFrom = '2000-01-01', allTimeTo = '2099-12-31';
+      const summary = await getSalesCostSummary(db, allTimeFrom, allTimeTo);
+      const allTimeRent = await getRentPaidForRange(db, allTimeFrom, allTimeTo);
+      const netProfit = summary.gross_profit - allTimeRent;
+      const soldNet = summary.cogs_gross_profit - allTimeRent;
+      const gap = Math.abs(netProfit - soldNet);
+
+      // Reuses the same fullySoldThrough computed above (raw stock + unsold
+      // pieces) — this invariant only has to hold once nothing remains unsold.
+      const checkPasses = !fullySoldThrough || gap < 1;
+      push('payment_gated_sold_net_matches_net_profit',
+        'Payment-gated Sold Net converges with cash-basis Net Profit once stock is fully sold',
+        checkPasses ? 'pass' : 'fail',
+        !fullySoldThrough
+          ? `Stock not fully sold through yet — Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) may differ by up to KES ${gap.toFixed(2)} until sell-through completes; this is expected.`
+          : gap < 1
+            ? `All stock is sold through — Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) match exactly, as required regardless of payment status.`
+            : `All stock is sold through, but Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) differ by KES ${gap.toFixed(2)}. This must always be zero once nothing remains in stock — indicates a real bug in the payment-gating logic, needs investigating immediately.`);
+    } catch (e) {
+      push('payment_gated_sold_net_matches_net_profit', 'Payment-gated Sold Net converges with cash-basis Net Profit once stock is fully sold', 'fail', `Check could not run: ${e.message}`);
+    }
 
   } catch (e) {
     push('cash_sold_convergence', 'Cash Basis converges with Sold Items once stock is fully sold', 'fail', `Check could not run: ${e.message}`);

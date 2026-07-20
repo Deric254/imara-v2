@@ -8,15 +8,46 @@ const OWNER_ONLY      = [authenticate, requireRole('owner')];
 const ADMIN_OR_OWNER  = [authenticate, requireRole('owner', 'admin')];
 
 // All tables in the correct insert order (parents before children)
+// Dependency order matters for restore, not just export: every table here
+// must come AFTER every table it references via a foreign key, or restoring
+// will fail with a FOREIGN KEY constraint violation the moment a row tries
+// to reference a parent that hasn't been inserted yet. This bit a real user:
+// config.updated_by references users(id), but config was previously listed
+// BEFORE users, so restoring config rows crashed outright. This order is
+// verified against every REFERENCES clause in sqlite-schema.js.
 const ALL_TABLES = [
-  'config', 'suppliers', 'piece_types',
-  'users',
-  'purchases', 'production', 'production_items',
+  // Roots — reference nothing
+  'users', 'suppliers', 'piece_types',
+  // References users only
+  'config',
+  // References suppliers + users
+  'purchases',
+  // References purchases + users
+  'production',
+  // References production + piece_types
+  'production_items',
+  // References production + purchases (FIFO wire batch draw history —
+  // previously missing from backup entirely)
+  'production_batch_usage',
+  // References piece_types + users
   'sales',
-  'invoices', 'invoice_items', 'invoice_payments',
-  'orders', 'order_items',
-  'payments', 'rent_months',
+  // References users + sales (nullable)
+  'invoices',
+  // References invoices + piece_types
+  'invoice_items',
+  // References invoices + users
+  'invoice_payments',
+  // References users + invoices (nullable)
+  'orders',
+  // References orders + piece_types
+  'order_items',
+  // References users + suppliers
+  'payments',
+  // References payments (nullable)
+  'rent_months',
+  // References users
   'no_activity_days',
+  // References users (nullable)
   'notifications', 'audit_log'
 ];
 
@@ -89,7 +120,7 @@ router.get('/export', ...ADMIN_OR_OWNER, async (req, res) => {
 // backup is reverted too, same as any other data. A restore is assumed to be
 // recovery from a disaster, not a convenience merge.
 const SAFE_IDENTIFIER = /^[a-zA-Z0-9_]+$/;
-router.post('/import', ...OWNER_ONLY, express.json({ limit: '50mb' }), async (req, res) => {
+router.post('/import', ...ADMIN_OR_OWNER, express.json({ limit: '50mb' }), async (req, res) => {
   try {
     const db = getDb();
     const backupData = req.body;

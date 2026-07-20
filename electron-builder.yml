@@ -11,6 +11,9 @@ files:
   - "!**/node_modules/.bin"
   - "!**/*.{o,a,lib,so,so.a,gyp,gypi,target.gyp}"
   - "!backend/test-*.js"
+  - "!backend/.env.test"
+  - "!backend/.env.example"
+  - "!.env"
 
 win:
   target:

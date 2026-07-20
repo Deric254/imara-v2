@@ -68,28 +68,41 @@ const MIGRATIONS = [
       try {
         // SQLite cannot ALTER a CHECK constraint — must recreate the table.
         // All existing rows are preserved via INSERT INTO ... SELECT *.
+        // The whole rename sequence is wrapped in its own transaction (PRAGMA
+        // statements must sit outside it, per SQLite's rules) so a crash
+        // between DROP and RENAME can't leave the database without a
+        // 'payments' table at all — either the full sequence commits
+        // together, or the original payments table is left completely
+        // untouched and this migration simply retries on next startup.
         await db.exec(`PRAGMA foreign_keys = OFF`);
-        await db.exec(`
-          CREATE TABLE IF NOT EXISTS payments_v2 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            payment_date TEXT NOT NULL,
-            category TEXT NOT NULL CHECK(category IN (
-              'wages_operator','wages_knuckler','rent','supplier',
-              'sack','transport_to_market','other'
-            )),
-            payee_user_id INTEGER REFERENCES users(id),
-            payee_supplier_id INTEGER REFERENCES suppliers(id),
-            payee_name TEXT,
-            rent_month TEXT DEFAULT NULL,
-            amount REAL NOT NULL CHECK(amount > 0),
-            notes TEXT DEFAULT '',
-            recorded_by INTEGER NOT NULL REFERENCES users(id),
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-          )
-        `);
-        await db.exec(`INSERT INTO payments_v2 SELECT * FROM payments`);
-        await db.exec(`DROP TABLE payments`);
-        await db.exec(`ALTER TABLE payments_v2 RENAME TO payments`);
+        await db.exec('BEGIN TRANSACTION');
+        try {
+          await db.exec(`
+            CREATE TABLE IF NOT EXISTS payments_v2 (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              payment_date TEXT NOT NULL,
+              category TEXT NOT NULL CHECK(category IN (
+                'wages_operator','wages_knuckler','rent','supplier',
+                'sack','transport_to_market','other'
+              )),
+              payee_user_id INTEGER REFERENCES users(id),
+              payee_supplier_id INTEGER REFERENCES suppliers(id),
+              payee_name TEXT,
+              rent_month TEXT DEFAULT NULL,
+              amount REAL NOT NULL CHECK(amount > 0),
+              notes TEXT DEFAULT '',
+              recorded_by INTEGER NOT NULL REFERENCES users(id),
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+          `);
+          await db.exec(`INSERT INTO payments_v2 SELECT * FROM payments`);
+          await db.exec(`DROP TABLE payments`);
+          await db.exec(`ALTER TABLE payments_v2 RENAME TO payments`);
+          await db.exec('COMMIT');
+        } catch (innerErr) {
+          await db.exec('ROLLBACK');
+          throw innerErr;
+        }
         await db.exec(`PRAGMA foreign_keys = ON`);
       } catch (err) {
         try { await db.exec(`PRAGMA foreign_keys = ON`); } catch(_) {}

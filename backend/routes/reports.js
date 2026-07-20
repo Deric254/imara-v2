@@ -14,6 +14,7 @@ const router = require('express').Router();
 const { getDb }  = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { getCfgNumber } = require('../lib/saleCore');
+const { getPaymentGatedSoldCost } = require('../lib/paymentGatedCost');
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,6 +141,7 @@ async function checkAndNotifyStock(db, enteredBy) {
 
 // Wire cost per kg for a given piece_type_id up to toDate — used only by
 // getLandingCost (suggested price preview). Reads from stored production records.
+
 async function getWireCostPerKgForPieceType(db, pieceTypeId, toDate) {
   const runs = await db.prepare(`
     SELECT pr.id, pr.kgs_used,
@@ -235,49 +237,16 @@ async function getSalesCostSummary(db, fromDate, toDate) {
   const directCosts = wireCost + convCost + transportCost;
   const grossProfit = revenue - directCosts;
 
-  // COGS-MATCHED wire cost: reads wire_cost_per_piece directly — the TRUE
-  // FIFO-attributed cost computed once, at the moment of sale, by walking
-  // through production and all prior sales for that piece type + gauge in
-  // chronological order (see resolveWireCostPerKgForSale in saleCore.js).
-  // This is NOT quantity × a separately-recomputed kg-per-piece × a stored
-  // rate — that two-factor approach was itself a source of drift, because
-  // the kg-per-piece side used all-time production data with no concept of
-  // what earlier sales had already consumed, silently re-attributing cost
-  // that an earlier sale already claimed. wire_cost_per_piece is the single
-  // source of truth; nothing here needs to be recomputed or multiplied.
-  const cogsWireSalesRows = await db.prepare(`
-    SELECT s.quantity, s.wire_cost_per_piece
-    FROM sales s
-    WHERE s.entry_date BETWEEN ? AND ?
-  `).all(fromDate, toDate);
-  let cogsWireCost = 0;
-  for (const row of cogsWireSalesRows) {
-    cogsWireCost += row.quantity * row.wire_cost_per_piece;
-  }
-
-  // COGS-MATCHED conversion cost (labour + sacks): uses the
-  // conversion_cost_per_piece snapshot saved on each sale (blended from
-  // production up to the sale date — same methodology as wire cost above),
-  // NOT the cash paid for wages/sacks in this period. A bulk wage payment
-  // covering pieces still sitting unsold in the store must not distort this
-  // figure, exactly as with wire.
-  const cogsConvSales = await db.prepare(`
-    SELECT COALESCE(SUM(s.quantity * s.conversion_cost_per_piece), 0) AS total
-    FROM sales s
-    WHERE s.entry_date BETWEEN ? AND ?
-  `).get(fromDate, toDate);
-  const cogsConvCost = parseFloat(cogsConvSales.total) || 0;
-
-  // COGS-MATCHED transport cost: sales.transport_to_market is already a
-  // real per-sale snapshot (saved at the point of sale — see saleCore.js),
-  // so the sold-matched figure is simply the sum of that column for sales
-  // in this period, NOT cash paid to the transporter in the period.
-  const cogsTransportSales = await db.prepare(`
-    SELECT COALESCE(SUM(s.transport_to_market), 0) AS total
-    FROM sales s
-    WHERE s.entry_date BETWEEN ? AND ?
-  `).get(fromDate, toDate);
-  const cogsTransportCost = parseFloat(cogsTransportSales.total) || 0;
+  // SOLD-MATCHED COST, PAYMENT-GATED: a cost only counts once it has
+  // actually been paid — the same rule revenue already follows. Matched to
+  // specific sold pieces via FIFO (never blended with unsold stock), but
+  // capped by what's genuinely been paid so far. See paymentGatedCost.js
+  // for the full explanation and the guarantee this converges exactly to
+  // Net Profit once everything is both paid and sold through.
+  const paymentGated = await getPaymentGatedSoldCost(db, fromDate, toDate);
+  const cogsWireCost      = paymentGated.paid_wire_cost;
+  const cogsConvCost      = paymentGated.paid_conversion_cost;
+  const cogsTransportCost = paymentGated.paid_transport_cost;
 
   const cogsDirectCosts = cogsWireCost + cogsConvCost + cogsTransportCost;
 
@@ -1464,6 +1433,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
     // This replaces the old broken approach of hardcoding 0 for all rows.
     const detailRows = await db.prepare(`
       SELECT
+        s.id                                                                    AS sale_id,
         i.invoice_date                                                         AS entry_date,
         pt.name                                                                AS piece_name,
         ii.quantity,
@@ -1492,24 +1462,21 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       ORDER BY i.invoice_date DESC
     `).all(fromDate, toDate);
 
-    const convPerPiece  = salesSummary.conversion_cost_per_piece;
-
-    // Wire cost drill-down: sourced from the SAME population and formula as the
-    // COGS-matched top-line (cost_breakdown.wire_cost.cogs_amount) — each row
-    // reads wire_cost_per_piece directly (the TRUE FIFO-attributed cost
-    // computed once at the moment of sale — see saleCore.js), so these rows
-    // always sum to cogs_amount exactly, with no separate recalculation.
+    // Wire cost drill-down: sourced from the SAME payment-gated calculation
+    // as the COGS-matched top-line (cost_breakdown.wire_cost.cogs_amount) —
+    // both call getPaymentGatedSoldCost with the identical date range, so
+    // these rows always sum to cogs_amount exactly, by construction, not by
+    // coincidence. A cost only appears here once it's actually been paid,
+    // same rule as the top-line and same rule revenue already follows.
     // This is a per-sale-entry view, not cash-received based, so it does NOT
     // back the cash-basis wire_cost.amount figure above it.
-    // Deliberately separate from detailRows below, which is cash-received based
-    // and still correctly backs conversion_cost/transport_cost (those remain
-    // cash-basis, unchanged).
+    const paymentGatedDrilldown = await getPaymentGatedSoldCost(db, fromDate, toDate);
     const wireDetailRows = await db.prepare(`
-      SELECT s.entry_date        AS entry_date,
+      SELECT s.id                AS sale_id,
+             s.entry_date        AS entry_date,
              pt.name              AS piece_name,
              s.quantity           AS quantity,
              s.wire_cost_per_kg   AS wire_cost_per_kg,
-             s.wire_cost_per_piece AS wire_cost_per_piece,
              s.selling_price      AS selling_price
       FROM sales s
       JOIN piece_types pt ON pt.id = s.piece_type_id
@@ -1522,7 +1489,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       piece_name:    r.piece_name,
       quantity:      r.quantity,
       wire_cost_per_kg: parseFloat((r.wire_cost_per_kg || 0).toFixed(4)),
-      wire_cost:     parseFloat((r.quantity * r.wire_cost_per_piece).toFixed(2)),
+      wire_cost:     parseFloat((paymentGatedDrilldown.wire_cost_by_sale_id[r.sale_id] || 0).toFixed(2)),
       selling_price: r.selling_price,
       revenue:       parseFloat((r.quantity * r.selling_price).toFixed(2)),
     }));
@@ -1531,7 +1498,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
       entry_date:      r.entry_date,
       piece_name:      r.piece_name,
       quantity:        Math.round(r.quantity * r.ratio),
-      conversion_cost: parseFloat((r.quantity * r.ratio * convPerPiece).toFixed(2)),
+      conversion_cost: parseFloat((paymentGatedDrilldown.conversion_cost_by_sale_id[r.sale_id] || 0).toFixed(2)),
       selling_price:   r.selling_price,
       revenue:         parseFloat(r.paid_in_period.toFixed(2)),
     }));
@@ -1543,7 +1510,7 @@ router.get('/revenue-breakdown', authenticate, requireRole('owner', 'admin'), as
         entry_date:          r.entry_date,
         piece_name:          r.piece_name,
         quantity:            Math.round(r.quantity * r.ratio),
-        transport_to_market: parseFloat((r.transport_to_market * r.ratio).toFixed(2)),
+        transport_to_market: parseFloat((paymentGatedDrilldown.transport_cost_by_sale_id[r.sale_id] || 0).toFixed(2)),
         selling_price:       r.selling_price,
         revenue:             parseFloat(r.paid_in_period.toFixed(2)),
       }));
@@ -2056,3 +2023,5 @@ router.get('/export/sales-xlsx', authenticate, requireRole('owner', 'admin'), as
 module.exports = router;
 module.exports.writeNotification   = writeNotification;
 module.exports.checkAndNotifyStock = checkAndNotifyStock;
+module.exports.getSalesCostSummary = getSalesCostSummary;
+module.exports.getRentPaidForRange = getRentPaidForRange;
