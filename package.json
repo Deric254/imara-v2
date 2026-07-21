@@ -1,6 +1,6 @@
 {
   "name": "imara-links",
-  "version": "2.1.18",
+  "version": "2.1.19",
   "description": "IMARA LINKS - Local Desktop Application",
   "main": "electron-main.js",
   "private": true,
