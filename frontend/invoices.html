@@ -1070,6 +1070,27 @@ async function confirmPayment(id) {
   }
 }
 
+function openStatement() {
+  openModal('statementModal', `
+    <div class="modal-hd">
+      <h2>&#x1F4CA; Sales Statement</h2>
+      <button class="modal-close" onclick="closeModal('statementModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="grid2" style="margin-bottom:.9rem">
+        <div class="fg"><label>From</label>
+          <input class="input" type="date" id="stmt_from" onchange="loadStatement()"></div>
+        <div class="fg"><label>To</label>
+          <input class="input" type="date" id="stmt_to" max="${today()}" onchange="loadStatement()"></div>
+      </div>
+      <div style="display:flex;gap:.5rem;margin-bottom:.9rem">
+        <button class="btn btn-primary btn-sm" onclick="loadStatement()">&#x1F504; Load</button>
+        <button class="btn btn-secondary btn-sm" onclick="printStatement()">&#x1F5A8; Print</button>
+      </div>
+      <div id="stmtContent"><div style="text-align:center;padding:2rem;color:var(--muted)">Click Load to generate&hellip;</div></div>
+    </div>`,'wide');
+  loadStatement();
+}
 
 async function loadStatement() {
   const from=document.getElementById('stmt_from')?.value||'2000-01-01';

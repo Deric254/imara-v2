@@ -1095,6 +1095,15 @@ async function loadReconStatement() {
             <tr><td>Sack Costs</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt(summary.sack.paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,summary.sack.balance),2)}</td></tr>
             <tr><td>Transport to Market</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt((summary.transport_to_market||{accrued:0}).accrued,2)}</td><td style="text-align:right;font-family:var(--font-mono)">${cur} ${fmt((summary.transport_to_market||{paid:0}).paid,2)}</td><td style="text-align:right;font-family:var(--font-mono);font-weight:700">${cur} ${fmt(Math.max(0,(summary.transport_to_market||{balance:0}).balance),2)}</td></tr>
           </tbody>
+          <tfoot><tr style="background:var(--g50);font-weight:700">
+            <td style="padding:.6rem .75rem">TOTALS</td>
+            <td style="text-align:right;font-family:var(--font-mono);padding:.6rem .75rem">${cur} ${fmt(
+              summary.wages.total_accrued + summary.suppliers.total_billed + summary.rent.total_accrued + summary.sack.accrued + (summary.transport_to_market||{accrued:0}).accrued, 2)}</td>
+            <td style="text-align:right;font-family:var(--font-mono);padding:.6rem .75rem">${cur} ${fmt(
+              summary.wages.total_paid + summary.suppliers.total_paid + summary.rent.total_paid + summary.sack.paid + (summary.transport_to_market||{paid:0}).paid, 2)}</td>
+            <td style="text-align:right;font-family:var(--font-mono);padding:.6rem .75rem">${cur} ${fmt(
+              Math.max(0,summary.wages.balance) + Math.max(0,summary.suppliers.balance) + Math.max(0,summary.rent.balance) + Math.max(0,summary.sack.balance) + Math.max(0,(summary.transport_to_market||{balance:0}).balance), 2)}</td>
+          </tr></tfoot>
         </table>
         <div class="inv-party-label">Payments In Period</div>
         <table class="inv-items-table">
