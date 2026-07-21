@@ -206,8 +206,8 @@
 
       tableBody.innerHTML = auditData.map(row => {
         const badgeClass = actionColors[row.action] || 'badge-gray';
-        const user = row.full_name
-          ? `${escHtml(row.full_name)} <span class="mono" style="font-size:.75rem;color:var(--muted)">(${escHtml(row.username || '')})</span>`
+        const user = row.user_name
+          ? `${escHtml(row.user_name)} <span class="mono" style="font-size:.75rem;color:var(--muted)">(${escHtml(row.username || '')})</span>`
           : '<span style="color:var(--muted)">System</span>';
 
         return `
@@ -233,7 +233,7 @@
     const headers = ['Time', 'User Full Name', 'Username', 'Action', 'Table', 'Record ID', 'Details'];
     const rows = auditData.map(row => ([
       formatAuditTime(row.logged_at),
-      row.full_name || 'System',
+      row.user_name || 'System',
       row.username || '',
       actionLabels[row.action] || row.action || '',
       row.table_name || '',
