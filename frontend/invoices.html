@@ -961,7 +961,7 @@ async function receivePayment(id, total, balance) {
       </div>
       <div class="fg">
         <label>Amount Received Now <span style="color:var(--red)">*</span></label>
-        <input class="input" type="number" id="pay_amt" value="${fmtM(balance,2)}" min="0.01" max="${fmtM(balance,2)}" step="0.01"
+        <input class="input" type="number" id="pay_amt" value="${Number(balance).toFixed(2)}" min="0.01" max="${Number(balance).toFixed(2)}" step="0.01"
           style="font-size:1.1rem;font-weight:700" oninput="livePayHint(${balance})">
       </div>
       <div class="grid2">
