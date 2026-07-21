@@ -1,6 +1,5 @@
 // routes/invoices.js — IMARA LINKS Customer Invoices (ACID)
 const router = require('express').Router();
-const { body, validationResult } = require('express-validator');
 const { getDb } = require('../db');
 const { authenticate, requireRole, writeAudit } = require('../middleware/auth');
 const { writeNotification } = require('./reports');
@@ -13,25 +12,6 @@ const num = v => parseFloat(v) || 0;
 // gate used before num() on user-supplied fields, so garbage is rejected with a
 // clear error instead of silently being stored as 0.
 const isValidNumber = v => v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
-
-// ── Generate invoice number ───────────────────────────────────────────────────
-// Uses MAX(id) rather than ORDER BY id DESC LIMIT 1 so that deleting the most
-// recent invoice does not cause the sequence to regenerate an already-used number.
-// The sequence therefore only ever increases.
-async function nextInvoiceNumber(db) {
-  const prefix = (await db.prepare("SELECT value FROM config WHERE key='invoice_prefix'").get())?.value || 'INV';
-  const maxRow = await db.prepare(
-    `SELECT invoice_number FROM invoices WHERE id = (SELECT MAX(id) FROM invoices)`
-  ).get();
-  let seq = 1001;
-  if (maxRow?.invoice_number) {
-    const parts = maxRow.invoice_number.split('-');
-    const n = parseInt(parts[parts.length - 1]);
-    if (!isNaN(n)) seq = n + 1;
-  }
-  const yr = new Date().getFullYear().toString().slice(-2);
-  return `${prefix}-${yr}-${String(seq).padStart(4,'0')}`;
-}
 
 // ── Compute invoice totals ────────────────────────────────────────────────────
 function computeTotals(items, discountPct, taxPct) {
@@ -66,7 +46,6 @@ router.get('/search', ...OWNER_ADMIN, async (req, res) => {
     const q  = (req.query.q || '').trim();
     if (!q) return res.json([]);
 
-    const numQ = parseFloat(q);
     const likeQ = `%${q}%`;
 
     const results = await db.prepare(`
@@ -195,126 +174,13 @@ router.get('/:id', ...OWNER_ADMIN, async (req, res) => {
   }
 });
 
-// ── POST /api/invoices  — ACID: invoice + items in one transaction ────────────
-router.post('/', ...OWNER_ADMIN,
-  body('customer_name').notEmpty().trim(),
-  body('invoice_date').notEmpty(),
-  body('items').isArray({ min: 1 }),
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
-
-    try {
-      const db = getDb();
-      const {
-        customer_name, customer_phone = '', customer_email = '',
-        customer_address = '', invoice_date, due_date = '',
-        discount_pct = 0, notes = '', amount_paid = 0,
-        items,
-      } = req.body;
-
-      if (!items?.length) return res.status(400).json({ error: 'At least one item required' });
-      if (isFutureDate(invoice_date))
-        return res.status(400).json({ error: 'invoice_date cannot be in the future' });
-      if (!isValidNumber(discount_pct))
-        return res.status(400).json({ error: 'discount_pct must be a valid number' });
-      if (num(discount_pct) < 0 || num(discount_pct) > 100)
-        return res.status(400).json({ error: 'discount_pct must be between 0 and 100' });
-      if (!isValidNumber(amount_paid))
-        return res.status(400).json({ error: 'amount_paid must be a valid number' });
-
-      // Validate items
-      for (const [i, item] of items.entries()) {
-        if (!item.description?.trim()) return res.status(400).json({ error: `Item ${i+1}: description required` });
-        if (!isValidNumber(item.quantity)) return res.status(400).json({ error: `Item ${i+1}: quantity must be a valid number` });
-        if (!(num(item.quantity) > 0)) return res.status(400).json({ error: `Item ${i+1}: quantity must be > 0` });
-        if (!isValidNumber(item.unit_price)) return res.status(400).json({ error: `Item ${i+1}: price must be a valid number` });
-        if (num(item.unit_price) < 0) return res.status(400).json({ error: `Item ${i+1}: price cannot be negative` });
-      }
-
-      const taxPct = parseFloat((await db.prepare("SELECT value FROM config WHERE key='invoice_tax_pct'").get())?.value || 0);
-      const totals = computeTotals(items, discount_pct, taxPct);
-
-      // SAFEGUARD: amount_paid can never exceed the invoice total
-      if (num(amount_paid) > totals.total_amount + 0.005) {
-        return res.status(400).json({ error: `Overpayment not allowed. Amount paid (${num(amount_paid).toFixed(2)}) cannot exceed invoice total (${totals.total_amount.toFixed(2)}).` });
-      }
-
-      // Status is auto-calculated: if amount_paid >= total_amount → "paid", else "partial_payment"
-      const autoStatus = calculateInvoiceStatus(amount_paid, totals.total_amount, null);
-
-      // ACID transaction — invoice + all items inserted atomically
-      const result = await db.transaction(async () => {
-        const invNum = await nextInvoiceNumber(db);
-        const inv = await db.prepare(`
-          INSERT INTO invoices(
-            invoice_number, invoice_date, due_date, customer_name,
-            customer_phone, customer_email, customer_address, status,
-            subtotal, discount_pct, discount_amount, tax_pct, tax_amount,
-            total_amount, amount_paid, notes, created_by, created_by_name
-          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id
-        `).run(
-          invNum, invoice_date, due_date||'', customer_name.trim(),
-          customer_phone, customer_email, customer_address,
-          autoStatus,
-          totals.subtotal, totals.discount_pct, totals.discount_amount,
-          totals.tax_pct, totals.tax_amount, totals.total_amount,
-          num(amount_paid), (notes||'').trim(), req.user.id, req.user.full_name
-        );
-        const invId = inv.lastInsertRowid;
-
-        for (const item of items) {
-          const lineTotal = parseFloat((num(item.quantity) * num(item.unit_price)).toFixed(2));
-          await db.prepare(`
-            INSERT INTO invoice_items(invoice_id, piece_type_id, description, gauge, quantity, unit_price, line_total)
-            VALUES(?,?,?,?,?,?,?)
-          `).run(
-            invId,
-            item.piece_type_id ? parseInt(item.piece_type_id) : null,
-            item.description.trim(),
-            item.gauge || '',
-            parseInt(item.quantity),
-            num(item.unit_price),
-            lineTotal
-          );
-        }
-
-        // CRITICAL: if payment was collected at reception, record it in the cash ledger
-        // so cash-basis revenue is immediately accurate
-        const paid = num(amount_paid);
-        if (paid > 0) {
-          const payMethod = req.body.payment_method || 'cash';
-          await db.prepare(`
-            INSERT INTO invoice_payments(invoice_id, payment_date, amount, payment_method, notes, recorded_by, recorded_by_name)
-            VALUES(?,?,?,?,?,?,?)
-          `).run(invId, invoice_date, paid, payMethod, 'Collected at invoice creation', req.user.id, req.user.full_name);
-        }
-
-        return invId;
-      });
-
-      await writeAudit(db, {
-        userId: req.user.id, action: 'CREATE_INVOICE',
-        table: 'invoices', recordId: result,
-        newVals: { customer_name, total_amount: totals.total_amount },
-        ip: req.ip,
-      });
-
-      const created = await db.prepare(`
-        SELECT i.*, COALESCE(i.created_by_name, u.full_name) AS created_by_name FROM invoices i
-        JOIN users u ON i.created_by = u.id WHERE i.id = ?
-      `).get(result);
-      const createdItems = await db.prepare(
-        'SELECT ii.*, pt.name AS piece_type_name FROM invoice_items ii LEFT JOIN piece_types pt ON ii.piece_type_id = pt.id WHERE ii.invoice_id = ? ORDER BY ii.id'
-      ).all(result);
-
-      res.status(201).json({ ...created, items: createdItems });
-    } catch(e) {
-      console.error('POST invoice error:', e);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-);
+// ── POST /api/invoices ────────────────────────────────────────────────────────
+// Manual (non-sale) invoice creation was removed deliberately. It let a user
+// bill a piece type with zero stock check and zero connection to real
+// inventory — creating revenue and receivables with no corresponding wire or
+// piece ever actually leaving stock. Every invoice in this system is now
+// always auto-generated from a real sale (see saleCore.js), so it can never
+// exist without the stock/FIFO checks a real sale already enforces.
 
 // ── PUT /api/invoices/:id  — ACID update ─────────────────────────────────────
 router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
@@ -326,6 +192,17 @@ router.put('/:id', ...OWNER_ADMIN, async (req, res) => {
     if (old.status === 'cancelled') return res.status(400).json({ error: 'Cannot edit a cancelled invoice' });
     // Block setting cancelled via PUT — use PATCH /:id/cancel for proper audit trail
     if (req.body.status === 'cancelled') return res.status(400).json({ error: 'Use the Cancel action to cancel an invoice. Direct status override is not allowed.' });
+    // Block editing items/discount on a sale-linked invoice — matches the same
+    // protection DELETE already has. This invoice's billed amount must always
+    // match the real underlying sale record; editing items here would silently
+    // desync it from the sale's own quantity, price, and FIFO-costed wire
+    // attribution, with nothing to reconcile the two afterward.
+    if (old.sale_id && req.body.items) {
+      return res.status(400).json({
+        error: 'INTEGRITY_VIOLATION',
+        message: `Cannot edit items on invoice ${old.invoice_number} — it was auto-generated from a sale record. Edit the sale itself from the Daily page instead.`
+      });
+    }
 
     const {
       customer_name, customer_phone, customer_email,
