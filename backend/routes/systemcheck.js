@@ -392,13 +392,28 @@ async function runChecks(db) {
     // of what's already been sold. If this check ever fails, it means the
     // payment-gating logic itself (backend/lib/paymentGatedCost.js) has a real
     // bug, not that a supplier bill is still outstanding.
+    //
+    // IMPORTANT PRECONDITION: this invariant only holds against the portion
+    // of Net Profit that came from real inventory sales. A manual invoice
+    // (not linked to any sale — e.g. billing for something outside normal
+    // stock) has no matching inventory cost, so it correctly counts in full
+    // as both revenue AND profit for cash-basis Net Profit, while Sold Net
+    // correctly excludes it entirely. Confirmed on real data: a single
+    // manual invoice produced an exact, cent-for-cent gap that was a false
+    // alarm, not a bug. Rather than going soft the moment any manual invoice
+    // exists (which would quietly weaken this check forever after), its
+    // contribution is mathematically subtracted out of Net Profit first —
+    // the check stays strict and can still catch a real bug even while
+    // manual invoices are legitimately in use.
     try {
       const allTimeFrom = '2000-01-01', allTimeTo = '2099-12-31';
       const summary = await getSalesCostSummary(db, allTimeFrom, allTimeTo);
       const allTimeRent = await getRentPaidForRange(db, allTimeFrom, allTimeTo);
+      const nonSaleRevenue = Math.max(0, summary.revenue - summary.sold_revenue);
       const netProfit = summary.gross_profit - allTimeRent;
+      const inventoryOnlyNetProfit = netProfit - nonSaleRevenue;
       const soldNet = summary.cogs_gross_profit - allTimeRent;
-      const gap = Math.abs(netProfit - soldNet);
+      const gap = Math.abs(inventoryOnlyNetProfit - soldNet);
 
       // Reuses the same fullySoldThrough computed above (raw stock + unsold
       // pieces) — this invariant only has to hold once nothing remains unsold.
@@ -407,10 +422,10 @@ async function runChecks(db) {
         'Payment-gated Sold Net converges with cash-basis Net Profit once stock is fully sold',
         checkPasses ? 'pass' : 'fail',
         !fullySoldThrough
-          ? `Stock not fully sold through yet — Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) may differ by up to KES ${gap.toFixed(2)} until sell-through completes; this is expected.`
+          ? `Stock not fully sold through yet — inventory-only Net Profit (KES ${inventoryOnlyNetProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) may differ by up to KES ${gap.toFixed(2)} until sell-through completes; this is expected.`
           : gap < 1
-            ? `All stock is sold through — Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) match exactly, as required regardless of payment status.`
-            : `All stock is sold through, but Net Profit (KES ${netProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) differ by KES ${gap.toFixed(2)}. This must always be zero once nothing remains in stock — indicates a real bug in the payment-gating logic, needs investigating immediately.`);
+            ? `All stock is sold through — inventory-only Net Profit (KES ${inventoryOnlyNetProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) match exactly, as required regardless of payment status.${nonSaleRevenue > 0.01 ? ` (KES ${nonSaleRevenue.toFixed(2)} of manual-invoice revenue was correctly excluded from this comparison.)` : ''}`
+            : `All stock is sold through, but inventory-only Net Profit (KES ${inventoryOnlyNetProfit.toFixed(2)}) and payment-gated Sold Net (KES ${soldNet.toFixed(2)}) differ by KES ${gap.toFixed(2)}. This must always be zero once nothing remains in stock — indicates a real bug in the payment-gating logic, needs investigating immediately.`);
     } catch (e) {
       push('payment_gated_sold_net_matches_net_profit', 'Payment-gated Sold Net converges with cash-basis Net Profit once stock is fully sold', 'fail', `Check could not run: ${e.message}`);
     }

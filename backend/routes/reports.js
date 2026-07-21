@@ -845,11 +845,21 @@ router.get('/dashboard', authenticate, requireRole('owner', 'admin'), async (req
     // Earliest recorded activity across the business — lets the frontend tell
     // the difference between "no activity yet" and "zero that specific day"
     // when a wide date range is selected before the business had any records.
+    // Must cover every source the rest of this dashboard actually draws from,
+    // including invoice_payments (what Revenue Trend uses) and invoices
+    // themselves (a manual invoice can exist before any physical inventory
+    // activity) — not just purchases/production/sales. Missing either of
+    // those meant this date could be LATER than the first point the Revenue
+    // Trend chart actually plots, which is exactly the kind of two-different-
+    // answers-to-the-same-question inconsistency this system now guards
+    // against everywhere else.
     const earliestRow = await db.prepare(`
-      SELECT MIN(entry_date) AS earliest FROM (
-        SELECT entry_date FROM purchases
+      SELECT MIN(d) AS earliest FROM (
+        SELECT entry_date AS d FROM purchases
         UNION ALL SELECT entry_date FROM production
         UNION ALL SELECT entry_date FROM sales
+        UNION ALL SELECT SUBSTR(payment_date, 1, 10) FROM invoice_payments
+        UNION ALL SELECT invoice_date FROM invoices WHERE status != 'cancelled'
       )
     `).get();
     const earliestActivity = earliestRow?.earliest || null;
@@ -1170,11 +1180,16 @@ router.get('/db-stats', authenticate, requireRole('owner', 'admin'), async (_req
 
     let oldestRecord = null;
     try {
+      // Matches the exact same source list as earliestActivity in the
+      // dashboard route below — both answer "when did anything in this
+      // business first happen", and must never disagree with each other.
       const r = await db.prepare(`
-        SELECT MIN(entry_date) AS oldest FROM (
-          SELECT entry_date FROM purchases
+        SELECT MIN(d) AS oldest FROM (
+          SELECT entry_date AS d FROM purchases
           UNION ALL SELECT entry_date FROM production
           UNION ALL SELECT entry_date FROM sales
+          UNION ALL SELECT SUBSTR(payment_date, 1, 10) FROM invoice_payments
+          UNION ALL SELECT invoice_date FROM invoices WHERE status != 'cancelled'
         )
       `).get();
       oldestRecord = r?.oldest || null;
