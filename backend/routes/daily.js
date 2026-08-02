@@ -34,24 +34,12 @@ async function yesterdayMissing(db) {
   return p === 0 && pr === 0 && s === 0;
 }
 
-async function blockProductionStaff(req, res, next) {
-  if (req.user.role !== 'knuckler' && req.user.role !== 'operator') return next();
-  const db = getDb();
-  if (await yesterdayMissing(db)) {
-    // Let the catch-up entry itself through: if this request is dated strictly
-    // before today, it IS the backfill the block exists to force — refusing it
-    // would leave operators/knucklers permanently locked out with no way to
-    // self-resolve, requiring an owner/admin to step in every time. Only block
-    // attempts to move forward (today's date) while yesterday is still empty.
-    const entryDate = (req.body && req.body.entry_date) ? String(req.body.entry_date).slice(0, 10) : null;
-    if (entryDate && entryDate < localDateString()) return next();
-    return res.status(403).json({
-      error: 'BLOCKED', blocked: true,
-      message: "Yesterday's data has not been entered. Please enter yesterday's data first."
-    });
-  }
-  next();
-}
+// NOTE: yesterday-missing is informational only — it drives the dismissable
+// "Heads up!" warning banner on the Daily page (via GET /status's `blocked`
+// field) and the audit-logged dismissal at POST /dismiss-warning below. It
+// deliberately does NOT block any actual purchase/production/sale
+// submission — operators and knucklers can always enter today's data; they
+// just get reminded, gently, if yesterday looks empty.
 
 // ── Default batch naming: SupplierName-mmmDDyyyy-N (N increments per supplier) ──
 function slugifySupplierName(name) {
@@ -227,7 +215,7 @@ router.get('/purchases', authenticate, async (req, res) => {
 });
 
 /* POST /api/daily/purchases */
-router.post('/purchases', authenticate, blockProductionStaff,
+router.post('/purchases', authenticate,
   body('entry_date').isISO8601().withMessage('Valid date required')
     .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('supplier_id').isInt({ min: 1 }).withMessage('Supplier required'),
@@ -286,7 +274,7 @@ router.post('/purchases', authenticate, blockProductionStaff,
 );
 
 /* PUT /api/daily/purchases/:id/batch-name — rename a batch any time (default name is just a starting point) */
-router.put('/purchases/:id/batch-name', authenticate, blockProductionStaff,
+router.put('/purchases/:id/batch-name', authenticate,
   body('batch_name').optional().trim().isLength({ max: 80 }).withMessage('Batch name must be 80 characters or fewer'),
   async (req, res) => {
     const errs = validationResult(req);
@@ -488,7 +476,7 @@ router.get('/production', authenticate, async (req, res) => {
   }
 });
 
-router.post('/production', authenticate, blockProductionStaff,
+router.post('/production', authenticate,
   body('entry_date').isISO8601().withMessage('Valid date required')
     .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('kgs_used').isFloat({ min: 0.001 }).withMessage('Kgs used must be > 0'),
@@ -861,7 +849,7 @@ router.get('/sales', authenticate, async (req, res) => {
 // ── POST /api/daily/sales/batch — one buyer, multiple items, ONE invoice ──────
 // All items validated atomically; one invoice with N line items is created.
 // Falls back gracefully: if any item fails stock check, the whole batch is rejected.
-router.post('/sales/batch', authenticate, blockProductionStaff,
+router.post('/sales/batch', authenticate,
   body('entry_date').isISO8601().withMessage('Valid date required')
     .custom(v => !isFutureDate(v)).withMessage('entry_date cannot be in the future'),
   body('buyer_name').notEmpty().trim().withMessage('Buyer name is required'),
