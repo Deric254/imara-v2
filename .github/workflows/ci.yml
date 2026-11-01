@@ -1,0 +1,30 @@
+name: CI
+
+# Runs on every pull request and every branch push, and is called by the release workflow before it builds anything.
+on:
+  pull_request:
+  workflow_call:
+  push:
+    branches-ignore: [main, master]   # main goes through the release workflow, which calls this one first
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"   # the tests run on plain Node; no need to download the Electron app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Every script parses
+        run: |
+          for f in electron-main.js preload.js fuzz_*.js backend/*.js backend/*/*.js frontend/shared.js frontend/layout.js; do
+            node --check "$f"
+          done
+      - name: Business rules, then the randomised scenarios
+        run: npm test
+      - name: Dependency vulnerabilities (what ships to users)
+        run: npm audit --omit=dev --audit-level=high

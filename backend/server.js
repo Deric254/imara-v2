@@ -60,6 +60,8 @@ app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP
 app.use(express.json({ limit: '2mb' }));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
+// Public card for other DericBI systems (no data, no login); mounted first so no route below can intercept it.
+app.get('/api/ecosystem/card', require('./lib/ecosystem').handler);
 app.use('/api/auth',           loginLimiter, require('./routes/auth'));
 app.use('/api/users',                        require('./routes/users'));
 app.use('/api/daily',                        require('./routes/daily'));

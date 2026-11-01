@@ -1,0 +1,8 @@
+{
+  "contract": "dericbi.ecosystem/1",
+  "id": "imara-links",
+  "name": "Imara Links",
+  "role": "runs a wire-nail manufacturer's day: purchases, sales, invoices, stock and daily reconciliation",
+  "offers": ["reports.business", "backup.export"],
+  "accepts": []
+}

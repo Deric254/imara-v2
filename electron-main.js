@@ -294,6 +294,9 @@ async function startBackendServer(onStatus = () => {}) {
     backendApp.use(cors({ origin: true, credentials: true }));
     backendApp.use(express.json({ limit: '2mb' }));
 
+    // Public card for other DericBI systems (no data, no login); mounted first so no route below can intercept it.
+    backendApp.get('/api/ecosystem/card', require('./backend/lib/ecosystem').handler);
+
     backendApp.use('/api/auth',           require('./backend/routes/auth'));
     backendApp.use('/api/users',          require('./backend/routes/users'));
     backendApp.use('/api/daily',          require('./backend/routes/daily'));

@@ -33,11 +33,13 @@ function runScenario(seed) {
   console.log(`Running ${NUM_SCENARIOS} fuzz scenarios, each in a TRUE isolated child process...\n`);
 
   let totalFails = 0;
+  let convergenceChecked = 0;   // scenarios where the two profit views were required to agree
   const allResults = [];
   for (let seed = 1; seed <= NUM_SCENARIOS; seed++) {
     const result = await runScenario(seed);
     allResults.push(result);
     const converged = result.convergeDiff === null || result.convergeDiff === undefined || result.convergeDiff < 1;
+    if (result.expectConverge) convergenceChecked++;
     const ok = !result.crashed && (result.failCount || 0) === 0 && converged;
     console.log(`${ok ? '✅' : '❌'} Scenario ${seed}: sellAll=${result.sellEverything} checks=${result.checksTotal} fails=${result.failCount || 0} netProfit=${result.netProfit} soldNet=${result.soldNet} convergeDiff=${result.convergeDiff}`);
     if (result.crashed) { console.log(`   CRASHED: ${result.error}`); totalFails++; }
@@ -45,7 +47,10 @@ function runScenario(seed) {
     if (!converged) { totalFails++; console.log(`   CONVERGENCE FAIL: diff=${result.convergeDiff}`); }
   }
 
+  // A fuzz run that never reached the comparison proves nothing, so that is a failure too.
+  if (convergenceChecked === 0) { totalFails++; console.log('NO SCENARIO REACHED THE PROFIT CONVERGENCE CHECK: the generator is not exercising it'); }
   console.log(`\n${'='.repeat(70)}`);
+  console.log(`Profit views compared in ${convergenceChecked} of ${NUM_SCENARIOS} scenarios (all wire used, all sold, all paid)`);
   console.log(`FUZZ TEST COMPLETE (true process isolation): ${NUM_SCENARIOS} scenarios, ${totalFails} total failures`);
   console.log('='.repeat(70));
   process.exit(totalFails > 0 ? 1 : 0);

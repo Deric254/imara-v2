@@ -16,7 +16,13 @@ on:
       - '!*.md'
 
 jobs:
+  # The same checks every pull request gets. A release is only built when they pass.
+  test:
+    if: "!contains(github.event.head_commit.message, 'chore(release):')"
+    uses: ./.github/workflows/ci.yml
+
   build-and-release:
+    needs: test
     if: "!contains(github.event.head_commit.message, 'chore(release):')"
     runs-on: windows-latest
     permissions:

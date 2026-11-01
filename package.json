@@ -7,6 +7,9 @@
   "scripts": {
     "electron-dev": "electron .",
     "start": "node backend/server.js",
+    "test": "npm run test:unit && npm run test:fuzz",
+    "test:unit": "node backend/test-harness.js && node backend/test-sold-profit-fix.js && node backend/test-ecosystem.js",
+    "test:fuzz": "node fuzz_orchestrator.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win --publish never",
     "publish:win": "electron-builder --win --publish always"

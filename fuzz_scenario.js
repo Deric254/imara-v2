@@ -47,7 +47,8 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
     await req('POST', '/piece-types', { name: `F${i}`, length_m: randInt(3, 10), weight_kg: randInt(5, 30), default_price: randInt(500, 5000) });
   }
   const pts = await req('GET', '/piece-types');
-  for (const pt of pts.data) pieceTypeIds.push(pt.id);
+  const weightOf = {};
+  for (const pt of pts.data) { pieceTypeIds.push(pt.id); weightOf[pt.id] = pt.weight_kg; }
 
   await req('POST', '/suppliers', { name: `FuzzSupplier` });
   const sups = await req('GET', '/suppliers');
@@ -75,6 +76,7 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
     day = Math.min(day + randInt(0, 2), 28);
   }
 
+  const sellEverything = Math.random() < 0.5;
   const numProdRuns = randInt(2, 8);
   const producedByTypeGauge = {};
   const db = getDb();
@@ -88,7 +90,10 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
     if (available < 5) continue;
     const kgsToUse = Math.min(available, randInt(5, 50));
     const typesInRun = pieceTypeIds.slice(0, randInt(1, pieceTypeIds.length));
-    const piecesPerType = Math.max(1, Math.floor(kgsToUse / (typesInRun.length * 15)));
+    // The app rejects a run whose pieces weigh more than the wire used (10% scrap allowance), so size the run from the real piece weights.
+    const kgsPerSet = typesInRun.reduce((s, ptId) => s + weightOf[ptId], 0);
+    const piecesPerType = Math.floor(kgsToUse / kgsPerSet);
+    if (piecesPerType < 1) continue;
     const items = typesInRun.map(ptId => ({ piece_type_id: ptId, pieces_produced: piecesPerType }));
     const r = await req('POST', '/daily/production', {
       entry_date: `2026-01-${String(day).padStart(2, '0')}`, gauge, kgs_used: kgsToUse,
@@ -103,8 +108,30 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
     day = Math.min(day + randInt(0, 2), 28);
   }
 
+  // Net profit (cash paid out for ALL wire bought) and sold net profit (cost matched to what was sold) only meet once every
+  // kg bought has been used. So when everything is to be sold, finish each gauge's remaining wire in one last run first.
+  if (sellEverything) {
+    const lightest = pieceTypeIds.reduce((a, b) => (weightOf[a] <= weightOf[b] ? a : b));
+    for (const gauge of gauges) {
+      const st = await db.prepare(`
+        SELECT COALESCE(SUM(kgs_bought),0) b, COALESCE((SELECT SUM(kgs_used) FROM production WHERE gauge=?),0) u
+        FROM purchases WHERE gauge=?
+      `).get(gauge, gauge);
+      const remaining = st.b - st.u;
+      const pieces = Math.floor(remaining / weightOf[lightest]);
+      if (remaining <= 0 || pieces < 1) continue;
+      const r = await req('POST', '/daily/production', {
+        entry_date: `2026-01-${String(day).padStart(2, '0')}`, gauge, kgs_used: remaining,
+        operator_id: opId, knuckler_id: knId, items: [{ piece_type_id: lightest, pieces_produced: pieces }],
+      });
+      if (r.status === 201) {
+        const key = `${lightest}::${gauge}`;
+        producedByTypeGauge[key] = (producedByTypeGauge[key] || 0) + pieces;
+      }
+    }
+  }
+
   const numSales = randInt(3, 12);
-  const sellEverything = Math.random() < 0.5;
   for (let i = 0; i < numSales; i++) {
     const keys = Object.keys(producedByTypeGauge).filter(k => producedByTypeGauge[k] > 0);
     if (keys.length === 0) break;
@@ -155,8 +182,12 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
   const fails = (check.data.checks || []).filter(c => c.status === 'fail');
 
   const dash = await req('GET', '/dashboard?from=2026-01-01&to=2026-01-31');
+  // The two profit views are only expected to agree when all wire bought was used, every piece made was sold and everything was paid.
+  const rawLeft = (await db.prepare(`SELECT COALESCE((SELECT SUM(kgs_bought) FROM purchases),0) - COALESCE((SELECT SUM(kgs_used) FROM production),0) v`).get()).v;
+  const piecesUnsold = Object.values(producedByTypeGauge).reduce((s, n) => s + Math.max(0, n), 0);
+  const expectConverge = sellEverything && rawLeft < 0.001 && piecesUnsold === 0;
   let convergeDiff = null;
-  if (dash.data && dash.data.kpis) {
+  if (expectConverge && dash.data && dash.data.kpis) {
     const netProfit = dash.data.kpis.net_profit;
     const soldNet = dash.data.kpis.cogs_net_profit;
     if (netProfit !== undefined && soldNet !== undefined) {
@@ -168,7 +199,7 @@ function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
 
   // Output a single parseable JSON line for the parent process to collect
   console.log('FUZZRESULT:' + JSON.stringify({
-    seed, sellEverything,
+    seed, sellEverything, expectConverge,
     checksTotal: (check.data.checks || []).length,
     failCount: fails.length,
     fails: fails.map(f => ({ label: f.label, detail: f.detail })),
