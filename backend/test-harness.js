@@ -4,7 +4,6 @@
 // for the network-blocked native `sqlite3` driver (see node_modules/sqlite3
 // shim). Business logic under test is 100% the real project code.
 
-const assert = require('assert');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -246,7 +245,7 @@ async function main() {
     // Now the happy path — hook succeeds and its writes land in the SAME commit.
     await db.exec(`CREATE TABLE IF NOT EXISTS test_orders(id INTEGER PRIMARY KEY, status TEXT)`);
     await db.prepare(`INSERT INTO test_orders(id, status) VALUES (1, 'pending')`).run();
-    const result = await createBatchSaleCore(db, {
+    await createBatchSaleCore(db, {
       entry_date: '2026-01-02', buyer_name: 'Hook Test 2', userId: owner.id,
       items: [{ piece_type_id: pieceTypeId, quantity: 2, selling_price: 100, gauge_source: '12' }],
       onAfterInsert: async ({ saleIds, invoiceId }) => {
